@@ -32,3 +32,13 @@ export function validateZipOptions(options) {
   }
   return options;
 }
+
+// extract-v1 wire modes: Full=0, FilesOnly=1. Flattening belongs to the Rust core.
+export function validateExtractOptions(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)
+      || Object.keys(options).some((key) => key !== 'paths')
+      || (options.paths !== 0 && options.paths !== 1)) {
+    throw new Error('Invalid extraction path mode.');
+  }
+  return options;
+}

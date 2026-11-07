@@ -15,7 +15,9 @@
     "empty filesystem directory /work/original/empty",
     "sample.7z archive root (docs folder and other.txt)",
     "double-click docs folder (empty, nested, 你好.txt)",
-    "ZIP creation panel: ZIP / Normal / New archive / Single volume, do not split; cancelled without creating archive"
+    "ZIP creation panel: ZIP / Normal / New archive / Single volume, do not split; cancelled without creating archive",
+    "Extract panel: ordinary Extract, all input, cancelled without writing output",
+    "Extract panel: Extract (without path), all input, cancelled without writing output"
   ],
   "reproduce": "Use the verified asset_url and the recorded capture_steps. The automated replay under target/linux-ui-baseline/reproduced had occlusion and is not the canonical capture.",
   "limitations": [
@@ -33,7 +35,11 @@
     "1440x900-archive.png",
     "1440x900-docs.png",
     "1024x600-create-zip-normal.png",
-    "1440x900-create-zip-normal.png"
+    "1440x900-create-zip-normal.png",
+    "1024x600-extract-full-paths.png",
+    "1024x600-extract-without-path.png",
+    "1440x900-extract-full-paths.png",
+    "1440x900-extract-without-path.png"
   ],
   "capture_note": "Canonical six images manually inspected without tooltips. Automated reproduced/ run had an occlusion artifact in docs and is diagnostic only.",
   "source_revision": "367c68278a7b0e7741fd8fe3106f34d6cfcb656f",
@@ -64,7 +70,11 @@
     "1440x900-archive.png": "3e31ed695991b864482821fcc05303b7e24e19a76d4e7a0e855db4b032e7ae6d",
     "1440x900-docs.png": "46eafcfe25810f52d315be2ef45d4929f0269cefaa1c7851b4761c6a5a5819ff",
     "1024x600-create-zip-normal.png": "52ac7e0e53144039a31b95669240277f7f6e63d5f63733cba173998c0994aed8",
-    "1440x900-create-zip-normal.png": "9cfe19f867ef4db0749b72e3c0225776366812f7433d48ad8262624fe3762e70"
+    "1440x900-create-zip-normal.png": "9cfe19f867ef4db0749b72e3c0225776366812f7433d48ad8262624fe3762e70",
+    "1024x600-extract-full-paths.png": "653f2edf868c3395869ff17c3f19819ed1ab44c01304a54e33a0d3f2ad569a06",
+    "1024x600-extract-without-path.png": "ed4b03fa65aee9cd302152f5828667915bec95fa2d859b2c842e2d3a30aab4ec",
+    "1440x900-extract-full-paths.png": "59c91314f05759ca6ea987ebe1d51e89dc56a43a315b9cb3ff6d48795f868347",
+    "1440x900-extract-without-path.png": "4d345285fd6ee0d894be09857728aa4d11986b6d492d730df5509be60d269e9d"
   },
   "create_zip_normal_capture": {
     "captured_at_utc": "2026-11-07T22:45:21.789085+00:00",
@@ -137,5 +147,53 @@
       "Resize the same window to 1440x900; import -window WINDOW_ID 1440x900-create-zip-normal.png",
       "Click Cancel at (1380,875); verify input hash and absence of reference.zip."
     ]
+  },
+  "extract_capture": {
+    "captured_at_utc": "2026-11-07T23:22:22.274587+00:00",
+    "version": "11.4.0",
+    "binary_sha256": "a20276b4f8bc40faff3f1958f3d4c94c0071ca1f1997d6d49e53ff01f167cafb",
+    "source_revision_reference": "367c68278a7b0e7741fd8fe3106f34d6cfcb656f",
+    "source_file": "peazip-sources/dev/peach.pas",
+    "source_sha256": "4c58f314d252f05da57c331d099f6671e7881e017b39a64da3beaa53c31d8e48",
+    "theme": "main-embedded embedded neutral/light theme; default GTK2 widget styling",
+    "environment": "Ubuntu 24.04 arm64; GTK2 2.24.33; Xvfb X11; no window manager; root user; Noto CJK fonts",
+    "ui_kind": "Original main-window Extract panel, not a separate GtkDialog",
+    "fixture": "tests/fixtures/sample.7z",
+    "fixture_sha256": "05a4cd9a8e1f96141e786122181fc49f40e8dd8a216cc1ab08e902e8c153dc60",
+    "normal_function_label": "Extract",
+    "without_directories_function_label": "Extract (without path)",
+    "common_settings": {
+      "input_scope": "(all) from sample.7z",
+      "output": "/work/original/extract-reference/output/",
+      "naming": "Skip existing files",
+      "delete_archives_after_extraction": false,
+      "extract_in_new_folder": false,
+      "extract_to_original_path": false,
+      "extract_then_move_to_destination": true,
+      "password_or_keyfile": "not entered"
+    },
+    "screenshots": {
+      "1024x600-extract-full-paths.png": "653f2edf868c3395869ff17c3f19819ed1ab44c01304a54e33a0d3f2ad569a06",
+      "1024x600-extract-without-path.png": "ed4b03fa65aee9cd302152f5828667915bec95fa2d859b2c842e2d3a30aab4ec",
+      "1440x900-extract-full-paths.png": "59c91314f05759ca6ea987ebe1d51e89dc56a43a315b9cb3ff6d48795f868347",
+      "1440x900-extract-without-path.png": "4d345285fd6ee0d894be09857728aa4d11986b6d492d730df5509be60d269e9d"
+    },
+    "capture_steps": [
+      "Reuse cached official 11.4.0 LINUX.GTK2.aarch64 binary; no download. Copy portable directory inside owned container for isolated settings.",
+      "Launch original binary on a copied sample.7z under Xvfb/DBus, English locale, client origin 0,0.",
+      "Resize file/archive browser to 1024x600 before clicking toolbar Extract at (302,49).",
+      "Set owned output path using Home/Shift+End in Output; keep Function=Extract and Naming=Skip existing files. Capture 1024x600 ordinary panel.",
+      "Open Function dropdown (491,435), choose Extract (without path) at (340,457). Capture 1024x600 without-path panel.",
+      "Resize upward to 1440x900, capture without-path panel; open Function at (700,735), choose Extract at (500,714) and capture ordinary panel.",
+      "Move pointer outside client for screenshots; use ImageMagick import -window WINDOW_ID without repainting or compositing image content.",
+      "Click Cancel at (1380,875), never OK. Verify sample.7z SHA256 unchanged and output sentinel SHA256 unchanged; both directories retain only their one pre-existing file."
+    ],
+    "capture_note": "Small captures were made with a freshly opened 1024x600 panel. Discarded resize-down attempts clipped settings and are not canonical.",
+    "cancel_verification": {
+      "passed": true,
+      "archive_hash_unchanged": true,
+      "output_only_preexisting_sentinel": true,
+      "no_extraction_started": true
+    }
   }
 }

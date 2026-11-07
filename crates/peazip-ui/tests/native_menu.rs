@@ -127,7 +127,7 @@ fn real_app_mounts_native_menus_and_dispatches_live_archive_and_layout_actions()
     );
     assert!(!app.action("File", "Close archive").enabled);
     assert!(!app.action("Tools", "Test archive").enabled);
-    assert!(!app.action("Tools", "Extract selected…").enabled);
+    assert!(!app.action("Tools", "Extract…").enabled);
     for (group, labels) in [
         ("Edit", &["Select all", "Clear selection"][..]),
         ("Browser", &["Back", "Forward", "Up", "Archive root"][..]),
@@ -182,14 +182,14 @@ fn real_app_mounts_native_menus_and_dispatches_live_archive_and_layout_actions()
     app.until(|app, _| {
         app.action("File", "Close archive").enabled && app.action("Tools", "Test archive").enabled
     });
-    assert!(!app.action("Tools", "Extract selected…").enabled);
+    assert!(app.action("Tools", "Extract…").enabled);
     app.choose("Edit", "Select all");
-    app.until(|app, _| app.action("Tools", "Extract selected…").enabled);
+    app.until(|app, _| app.action("Edit", "Clear selection").enabled);
     app.choose("File", "Close archive");
     app.until(|app, _| {
         !app.action("File", "Close archive").enabled && !app.action("Tools", "Test archive").enabled
     });
-    assert!(!app.action("Tools", "Extract selected…").enabled);
+    assert!(!app.action("Tools", "Extract…").enabled);
     assert_eq!(std::fs::read(&source).unwrap(), fixture);
     assert_eq!(std::fs::read_dir(sandbox.path()).unwrap().count(), 1);
 }

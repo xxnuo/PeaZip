@@ -145,7 +145,7 @@ mod host {
         fn pc_list_start(ptr: *const u8, len: usize) -> u32;
         fn pc_test_start(ptr: *const u8, len: usize) -> u32;
         fn pc_can_extract() -> u32;
-        fn pc_extract_start(ptr: *const u8, len: usize) -> u32;
+        fn pc_extract_with_options_start(ptr: *const u8, len: usize, paths: u32) -> u32;
         fn pc_cancel() -> u32;
         fn pc_download(ptr: *const u8, len: usize, format: u32) -> u32;
     }
@@ -237,8 +237,13 @@ mod host {
     pub async fn extract_archive(
         bytes: &[u8],
         selected: &[String],
+        options: peazip_core::ExtractOptions,
         progress: impl FnMut(String),
     ) -> Result<Option<String>, String> {
+        let paths = match options.paths {
+            peazip_core::ExtractPaths::Full => 0,
+            peazip_core::ExtractPaths::FilesOnly => 1,
+        };
         let limits = peazip_core::Limits::default();
         if selected.is_empty()
             || selected.len() > limits.max_entries
@@ -258,7 +263,7 @@ mod host {
         packet.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
         packet.extend_from_slice(bytes);
         let result = run(
-            move || unsafe { pc_extract_start(packet.as_ptr(), packet.len()) },
+            move || unsafe { pc_extract_with_options_start(packet.as_ptr(), packet.len(), paths) },
             progress,
         )
         .await?;

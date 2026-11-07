@@ -49,7 +49,7 @@ ocr() {
 # native dialog buttons from the toolbar behind them. Coordinates are unscaled.
 locate() {
   awk -F '\t' -v word="$1" -v minx="${2:-0}" -v miny="${3:-0}" -v maxy="${4:-$height}" -v maxx="${5:-$width}" -v first="${6:-0}" '
-    $12 == word && $7/3 >= minx && $8/3 >= miny && $8/3 <= maxy && $7/3 <= maxx {if(!found || !first || $8<top) {x=int(($7+$9/2)/3); y=int(($8+$10/2)/3); top=$8; found=1}}
+    ($12 == word || $12 == word "..." || $12 == word "…") && $7/3 >= minx && $8/3 >= miny && $8/3 <= maxy && $7/3 <= maxx {if(!found || !first || $8<top) {x=int(($7+$9/2)/3); y=int(($8+$10/2)/3); top=$8; found=1}}
     END {if(found) print x,y; else exit 1}' "$artifacts/current.tsv"
 }
 click_word() {
@@ -312,7 +312,10 @@ selection_count 1
 mkdir "$run_dir/output"
 cp "$run_dir/sentinel.txt" "$run_dir/output/sentinel.txt"
 menu_action Tools Extract
-output_picker=$(timeout 20 xdotool search --sync --onlyvisible --name '^Extract selected — choose new folder name$' | head -n1)
+click_word Selected "$((width/2-230))" 100
+click_word Full "$((width/2-230))" 100
+click_word Continue
+output_picker=$(timeout 20 xdotool search --sync --onlyvisible --name '^Extract — choose new folder name$' | head -n1)
 xdotool windowfocus --sync "$output_picker"
 sleep 1
 screen 05-output-picker

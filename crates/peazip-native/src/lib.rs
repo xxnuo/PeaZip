@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use peazip_core::create_zip;
-pub use peazip_core::{Entry, Error, Limits, ZipCompression, ZipOptions};
+pub use peazip_core::{
+    Entry, Error, ExtractOptions, ExtractPaths, Limits, ZipCompression, ZipOptions,
+};
 use peazip_core::{MemoryEntry, create_zip_with_options, list_zip};
 
 mod browse;
@@ -338,10 +340,27 @@ pub fn extract_archive_to_directory(
     destination: &Path,
     limits: Limits,
 ) -> Result<usize, Error> {
-    if selected.is_empty() {
+    extract_archive_to_directory_with_options(
+        bytes,
+        selected,
+        destination,
+        limits,
+        ExtractOptions::default(),
+    )
+}
+
+pub fn extract_archive_to_directory_with_options(
+    bytes: &[u8],
+    selected: &[String],
+    destination: &Path,
+    limits: Limits,
+    options: ExtractOptions,
+) -> Result<usize, Error> {
+    if selected.is_empty() && options.paths == ExtractPaths::Full {
         return Err(Error::UnsupportedEntry("empty selection".into()));
     }
-    let entries = peazip_core::extract_selected_archive(bytes, selected, limits)?;
+    let entries =
+        peazip_core::extract_selected_archive_with_options(bytes, selected, limits, options)?;
     publish_extracted(entries, destination)
 }
 

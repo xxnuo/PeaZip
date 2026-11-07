@@ -1,4 +1,4 @@
-import { validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH } from './archive-limits.js';
+import { validateExtractOptions, validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH } from './archive-limits.js';
 import { exportEntries } from './directory-export.js';
 
 let wasm;
@@ -100,13 +100,24 @@ function inspect(ptr, length, operation) {
   return 1;
 }
 
-function extract(ptr, length) {
+function extract(ptr, length, options) {
+  if (options !== undefined) {
+    try { validateExtractOptions(options); } catch { return 0; }
+  }
   if (active || !wasm || typeof Worker === 'undefined' || typeof window.showDirectoryPicker !== 'function') return 0;
   const job = { worker: null, phase: 'pick', controller: new AbortController(), outputName: null };
   active = job;
   try {
-    if (length > MAX_ARCHIVE + MAX_ENTRIES * (4 + MAX_PATH) + 8) throw new Error('Extraction request exceeds the limit.');
-    const packet = new Uint8Array(wasm.memory.buffer, ptr >>> 0, length).slice();
+    if (!Number.isInteger(length) || length < 8
+        || length > MAX_ARCHIVE + MAX_ENTRIES * (4 + MAX_PATH) + 8) throw new Error('Invalid extraction request size.');
+    const packet = new Uint8Array(length + (options === undefined ? 0 : 8));
+    const offset = options === undefined ? 0 : 8;
+    if (offset) {
+      const header = new DataView(packet.buffer);
+      header.setUint32(0, 1, true);
+      header.setUint32(4, options.paths, true);
+    }
+    packet.set(new Uint8Array(wasm.memory.buffer, ptr >>> 0, length), offset);
     // Request permission during the user's action, before waiting for decompression.
     Promise.resolve(window.showDirectoryPicker({ mode: 'readwrite' })).then((parent) => {
       if (active !== job) return;
@@ -127,7 +138,7 @@ function extract(ptr, length) {
       };
       worker.onerror = (event) => { event.preventDefault(); fail(new Error('Archive worker failed.'), job); };
       worker.onmessageerror = () => fail(new Error('Archive worker returned an invalid response.'), job);
-      worker.postMessage({ operation: 'extract', packet: packet.buffer }, [packet.buffer]);
+      worker.postMessage({ operation: options === undefined ? 'extract' : 'extract-v1', packet: packet.buffer }, [packet.buffer]);
     }).catch((error) => {
       if (error.name === 'AbortError') reply(2, undefined, job);
       else fail(error, job);
@@ -179,7 +190,9 @@ export function __nsh_imports() {
     pc_create_with_options_start: (compression, level) => create({ compression, level }), pc_download: download, pc_cancel: cancel,
     pc_list_start: (ptr, length) => inspect(ptr, length, 'list'),
     pc_test_start: (ptr, length) => inspect(ptr, length, 'test'),
-    pc_extract_start: extract, pc_can_extract: () => typeof window.showDirectoryPicker === 'function' ? 1 : 0,
+    pc_extract_start: (ptr, length) => extract(ptr, length),
+    pc_extract_with_options_start: (ptr, length, paths) => extract(ptr, length, { paths }),
+    pc_can_extract: () => typeof window.showDirectoryPicker === 'function' ? 1 : 0,
   } };
 }
 

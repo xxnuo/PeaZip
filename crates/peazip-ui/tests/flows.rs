@@ -65,6 +65,8 @@ fn shortcuts_share_archive_actions_and_leave_path_editing_to_the_input() {
     let destination = temp.path().join("selected");
     app.on_pick_save_path(Some(destination.clone())).unwrap();
     app.press_key("mod+enter").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 4 entries").unwrap();
     assert_eq!(
         std::fs::read(destination.join("docs/你好.txt")).unwrap(),
@@ -112,7 +114,9 @@ fn browses_implicit_directories_and_extracts_only_their_real_descendants() {
     assert!(app.screen().shows("1 selected"));
     let output = temp.path().join("output");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 1 entries").unwrap();
     assert_eq!(
         std::fs::read(output.join("docs/nested/data.bin")).unwrap(),
@@ -156,7 +160,9 @@ fn unchecking_a_child_of_a_selected_directory_excludes_it_from_extraction() {
     app.press("role:checkbox[docs/你好.txt]").unwrap();
     let output = temp.path().join("output");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 2 entries").unwrap();
     assert!(!output.join("docs/你好.txt").exists());
     assert!(output.join("docs/empty").is_dir());
@@ -239,7 +245,9 @@ fn archive_test_detects_unselected_zip_corruption_and_preserves_snapshot() {
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     let output = temp.path().join("selected");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 1 entries").unwrap();
     assert!(output.join("你好.txt").is_file());
 }
@@ -261,7 +269,9 @@ fn opens_tar_by_content_and_extracts_selected_directory() {
     app.press("role:checkbox[docs/]").unwrap();
     let destination = temp.path().join("output");
     app.on_pick_save_path(Some(destination.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 4 entries").unwrap();
     assert_eq!(
         std::fs::read(destination.join("docs/你好.txt")).unwrap(),
@@ -296,7 +306,9 @@ fn opens_gzip_tar_and_preserves_snapshot_after_crc_failure() {
     assert!(app.screen().shows("docs/你好.txt"));
     let destination = temp.path().join("output");
     app.on_pick_save_path(Some(destination.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 4 entries").unwrap();
     assert_eq!(
         std::fs::read(destination.join("docs/你好.txt")).unwrap(),
@@ -327,7 +339,9 @@ fn opens_seven_zip_and_preserves_snapshot_after_header_crc_failure() {
     assert!(app.screen().shows("docs/你好.txt"));
     let destination = temp.path().join("output");
     app.on_pick_save_path(Some(destination.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 5 entries").unwrap();
     assert_eq!(
         std::fs::read(destination.join("docs/你好.txt")).unwrap(),
@@ -578,11 +592,7 @@ fn extracts_selection_from_snapshot_and_retries_without_overwriting() {
     .unwrap();
     std::fs::write(&source, bytes).unwrap();
     let mut app = start();
-    assert!(
-        !app.screen()
-            .enabled("role:button[Extract selected…]")
-            .unwrap()
-    );
+    assert!(!app.screen().enabled("role:button[Extract…]").unwrap());
     app.on_pick_paths(vec![source.clone()]).unwrap();
     app.press("role:button[Open archive…]").unwrap();
     app.wait_for("4 entries").unwrap();
@@ -601,8 +611,11 @@ fn extracts_selection_from_snapshot_and_retries_without_overwriting() {
     .unwrap();
     std::fs::write(&source, replacement).unwrap();
     app.on_pick_save_path(None).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
-    app.wait_for("4 entries").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
+    app.wait_for("Extraction cancelled.").unwrap();
+    assert_eq!(app.screen().count("role:checkbox").unwrap(), 4);
     assert!(app.screen().shows("1 selected"));
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     match app.screen().file_requests().last().unwrap() {
@@ -622,7 +635,9 @@ fn extracts_selection_from_snapshot_and_retries_without_overwriting() {
     std::fs::create_dir(&existing).unwrap();
     std::fs::write(existing.join("sentinel"), b"untouched").unwrap();
     app.on_pick_save_path(Some(existing.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("text:/^Could not extract archive:/").unwrap();
     assert_eq!(
         std::fs::read(existing.join("sentinel")).unwrap(),
@@ -632,7 +647,9 @@ fn extracts_selection_from_snapshot_and_retries_without_overwriting() {
     assert!(app.screen().shows("1 selected"));
     let output = temp.path().join("partial");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 1 entries").unwrap();
     assert_eq!(std::fs::read(output.join("keep.txt")).unwrap(), b"original");
     assert!(!output.join("skip.txt").exists());
@@ -644,7 +661,9 @@ fn extracts_selection_from_snapshot_and_retries_without_overwriting() {
     app.wait_for("1 selected").unwrap();
     let output = temp.path().join("directory");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 2 entries").unwrap();
     assert_eq!(
         std::fs::read(output.join("folder/child.txt")).unwrap(),
@@ -672,7 +691,9 @@ fn created_archive_snapshot_survives_deleted_output() {
     app.press("role:checkbox[input.txt]").unwrap();
     std::fs::remove_file(archive).unwrap();
     app.on_pick_save_path(Some(destination.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 1 entries").unwrap();
     assert_eq!(
         std::fs::read(destination.join("input.txt")).unwrap(),
@@ -726,7 +747,9 @@ fn creates_and_extracts_directory_tree_with_empty_directories() {
     app.press("role:button[Select all]").unwrap();
     let output = temp.path().join("extracted");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Extract selected…]").unwrap();
+    app.press("role:button[Extract…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Extracted 6 entries").unwrap();
     assert_eq!(
         std::fs::read(output.join("tree/nested/中文.txt")).unwrap(),

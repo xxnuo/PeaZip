@@ -18,6 +18,18 @@ pub enum ArchiveFormat {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExtractPaths {
+    #[default]
+    Full,
+    FilesOnly,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExtractOptions {
+    pub paths: ExtractPaths,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ZipCompression {
     #[default]
     Automatic,
@@ -70,6 +82,7 @@ impl Default for Limits {
 
 #[derive(Debug)]
 pub enum Error {
+    NoFilesSelected,
     InvalidZipOptions(&'static str),
     Limit(&'static str),
     UnsafePath(String),
@@ -87,6 +100,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NoFilesSelected => write!(f, "no files selected for extraction"),
             Self::InvalidZipOptions(message) => write!(f, "invalid ZIP options: {message}"),
             Self::Limit(kind) => write!(f, "Archive limit exceeded: {kind}"),
             Self::UnsafePath(path) => write!(f, "unsafe archive path: {path:?}"),
@@ -314,7 +328,30 @@ pub fn extract_selected_archive(
     selected: &[String],
     limits: Limits,
 ) -> Result<Vec<MemoryEntry>, Error> {
-    extract_matching_archive(bytes, Some(selected), limits)
+    extract_selected_archive_with_options(bytes, selected, limits, ExtractOptions::default())
+}
+
+pub fn extract_selected_archive_with_options(
+    bytes: &[u8],
+    selected: &[String],
+    limits: Limits,
+    options: ExtractOptions,
+) -> Result<Vec<MemoryEntry>, Error> {
+    let mut output = extract_matching_archive(bytes, Some(selected), limits)?;
+    if options.paths == ExtractPaths::FilesOnly {
+        // Preserve source validation, resource checks and selected CRC checks before renaming.
+        output.retain(|entry| !entry.is_dir);
+        if output.is_empty() {
+            return Err(Error::NoFilesSelected);
+        }
+        let mut paths = BTreeMap::new();
+        for entry in &mut output {
+            let name = entry.path.rsplit('/').next().unwrap_or("");
+            insert_path(&mut paths, path_key(name, false, limits)?, false)?;
+            entry.path = name.to_owned();
+        }
+    }
+    Ok(output)
 }
 
 fn extract_matching_archive(

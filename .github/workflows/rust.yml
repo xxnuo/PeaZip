@@ -71,6 +71,8 @@ jobs:
         run: bash scripts/smoke_linux_filesystem.sh target/debug/peazip-ui target/linux-filesystem
       - if: runner.os == 'Linux'
         run: bash scripts/smoke_linux_create_options.sh target/debug/peazip-ui target/linux-create-options
+      - if: runner.os == 'Linux'
+        run: bash scripts/smoke_linux_extract_options.sh target/debug/peazip-ui target/linux-extract-options
       - if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
@@ -79,6 +81,7 @@ jobs:
             target/linux-smoke/
             target/linux-filesystem/
             target/linux-create-options/
+            target/linux-extract-options/
   android-build:
     runs-on: ubuntu-latest
     steps:

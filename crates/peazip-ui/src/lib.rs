@@ -15,6 +15,14 @@ mod commands;
 ))]
 mod create_dialog;
 mod explorer;
+#[cfg(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "windows"
+))]
+mod extract_dialog;
 mod icons;
 mod menus;
 mod navigation;
@@ -25,6 +33,21 @@ struct OpenedArchive {
     name: String,
     data: LoadedArchive,
     source_path: Option<PathBuf>,
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "windows"
+))]
+#[derive(Clone)]
+struct ExtractionRequest {
+    name: String,
+    bytes: Arc<Vec<u8>>,
+    selected: Vec<String>,
+    all: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -99,6 +122,23 @@ pub fn App() -> impl IntoElement {
     let controls = explorer::Controls::new(entries, navigation);
     let owner = Owner::current();
     let creating = signal(None::<bool>);
+    let extracting = signal(false);
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
+    let pending_extract = stored(None::<ExtractionRequest>);
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
+    let extract_options = signal(peazip_core::ExtractOptions::default());
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
@@ -654,40 +694,68 @@ pub fn App() -> impl IntoElement {
     }
     #[cfg(target_arch = "wasm32")]
     let can_extract = browser::can_extract();
-    #[cfg(target_arch = "wasm32")]
-    all.push(
-        Command::new(
-            CommandId::Extract,
-            "Extract selected…",
-            move || !busy.get() && !selected.with(BTreeSet::is_empty) && can_extract,
-            move || {
-                if busy.get_untracked() || !can_extract || selected.with(BTreeSet::is_empty) {
-                    return;
-                }
-                let bytes = snapshot.get_untracked();
-                let paths = selected.with(|paths| paths.iter().cloned().collect::<Vec<_>>());
-                busy.set(true);
-                cancellable.set(true);
-                cancel_message.set("Extraction cancellation requested.".into());
-                activity.set("Choose an export directory…".into());
-                spawn(async move {
-                    match browser::extract_archive(&bytes, &paths, move |message| {
-                        activity.set(message)
-                    })
-                    .await
-                    {
-                        Ok(Some(report)) => status.set(report),
-                        Ok(None) => status.set("Extraction cancelled.".into()),
-                        Err(error) => status.set(format!("Could not extract archive: {error}")),
-                    }
-                    busy.set(false);
-                    cancellable.set(false);
-                });
-            },
-        )
-        .icon("extract"),
-    );
     #[cfg(any(
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
+    let can_extract = true;
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
+    let extract = move |request: ExtractionRequest,
+                        scope: extract_dialog::ExtractScope,
+                        options: peazip_core::ExtractOptions| {
+        if busy.get_untracked() {
+            return;
+        }
+        let bytes = request.bytes;
+        let paths = match scope {
+            extract_dialog::ExtractScope::Selected => request.selected,
+            extract_dialog::ExtractScope::All => request.all,
+        };
+        busy.set(true);
+        #[cfg(target_arch = "wasm32")]
+        {
+            cancellable.set(true);
+            cancel_message.set("Extraction cancellation requested.".into());
+        }
+        activity.set("Extracting archive…".into());
+        spawn(async move {
+            #[cfg(target_arch = "wasm32")]
+            match browser::extract_archive(&bytes, &paths, options, move |message| {
+                activity.set(message)
+            })
+            .await
+            {
+                Ok(Some(report)) => status.set(report),
+                Ok(None) => status.set("Extraction cancelled.".into()),
+                Err(error) => status.set(format!("Could not extract archive: {error}")),
+            }
+            #[cfg(target_os = "android")]
+            match extract_android_archive(bytes, paths, options).await {
+                Ok(Some(report)) => status.set(report),
+                Ok(None) => status.set("Extraction cancelled.".into()),
+                Err(error) => status.set(format!("Could not extract archive: {error}")),
+            }
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            match extract_archive(bytes, paths, options).await {
+                Ok(Some(count)) => status.set(format!("Extracted {count} entries")),
+                Ok(None) => status.set("Extraction cancelled.".into()),
+                Err(error) => status.set(format!("Could not extract archive: {error}")),
+            }
+            busy.set(false);
+            #[cfg(target_arch = "wasm32")]
+            cancellable.set(false);
+        });
+    };
+    #[cfg(any(
+        target_arch = "wasm32",
         target_os = "android",
         target_os = "macos",
         target_os = "linux",
@@ -696,31 +764,16 @@ pub fn App() -> impl IntoElement {
     all.push(desktop_shortcut(
         Command::new(
             CommandId::Extract,
-            "Extract selected…",
-            move || !busy.get() && !file_view() && !selected.with(BTreeSet::is_empty),
+            "Extract…",
+            move || !busy.get() && !file_view() && can_extract && !entries.with(Vec::is_empty),
             move || {
-                if busy.get_untracked() || selected.with(BTreeSet::is_empty) {
-                    return;
-                }
-                let bytes = snapshot.get_untracked();
-                let paths = selected.with(|paths| paths.iter().cloned().collect::<Vec<_>>());
-                busy.set(true);
-                activity.set("Extracting archive…".to_owned());
-                spawn(async move {
-                    #[cfg(target_os = "android")]
-                    match extract_android_archive(bytes, paths).await {
-                        Ok(Some(report)) => status.set(report),
-                        Ok(None) => status.set("Extraction cancelled.".into()),
-                        Err(error) => status.set(format!("Could not extract archive: {error}")),
-                    }
-                    #[cfg(not(target_os = "android"))]
-                    match extract_archive(bytes, paths).await {
-                        Ok(Some(count)) => status.set(format!("Extracted {count} entries")),
-                        Ok(None) => {}
-                        Err(error) => status.set(format!("Could not extract archive: {error}")),
-                    }
-                    busy.set(false);
-                });
+                let _ = pending_extract.replace(Some(ExtractionRequest {
+                    name: path.get_untracked(),
+                    bytes: snapshot.get_untracked(),
+                    selected: selected.with(|paths| paths.iter().cloned().collect()),
+                    all: entries.with(|rows| rows.iter().map(|row| row.path.clone()).collect()),
+                }));
+                extracting.set(true);
             },
         )
         .icon("extract"),
@@ -769,7 +822,7 @@ pub fn App() -> impl IntoElement {
             .map(|command| {
                 command
                     .in_owner(owner)
-                    .unless(move || creating.get().is_some())
+                    .unless(move || creating.get().is_some() || extracting.get())
             })
             .collect(),
     );
@@ -972,6 +1025,47 @@ pub fn App() -> impl IntoElement {
             )
         },
     ));
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
+    let root = root.child(when(
+        move || extracting.get(),
+        move || {
+            let request = pending_extract
+                .get()
+                .expect("open extraction has a snapshot");
+            extract_dialog::show(
+                request.name,
+                request.selected.len(),
+                request.all.len(),
+                extract_options.get_untracked(),
+                move |scope, options| {
+                    owner.run(|| {
+                        if !extracting.get_untracked() || busy.get_untracked() {
+                            return;
+                        }
+                        let request = pending_extract.replace(None);
+                        extracting.set(false);
+                        if let Some(request) = request {
+                            extract_options.set(options);
+                            extract(request, scope, options);
+                        }
+                    })
+                },
+                move || {
+                    owner.run(|| {
+                        let _ = pending_extract.replace(None);
+                        extracting.set(false);
+                        after_answer(move || controls.content.focus());
+                    })
+                },
+            )
+        },
+    ));
     root.child(
         text(move || {
             if busy.get() {
@@ -1070,9 +1164,15 @@ fn desktop_shortcut(command: Command, key: &'static str) -> Command {
 async fn extract_android_archive(
     bytes: Arc<Vec<u8>>,
     selected: Vec<String>,
+    options: peazip_core::ExtractOptions,
 ) -> Result<Option<String>, String> {
     let entries = blocking(move || {
-        peazip_core::extract_selected_archive(&bytes, &selected, peazip_core::Limits::default())
+        peazip_core::extract_selected_archive_with_options(
+            &bytes,
+            &selected,
+            peazip_core::Limits::default(),
+            options,
+        )
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1262,11 +1362,12 @@ fn load_archive(bytes: Arc<Vec<u8>>) -> Result<LoadedArchive, String> {
 async fn extract_archive(
     bytes: Arc<Vec<u8>>,
     selected: Vec<String>,
+    options: peazip_core::ExtractOptions,
 ) -> Result<Option<usize>, String> {
     use nsh_core::file_dialog::SaveDialog;
     let Some(destination) = pick_save_path(
         SaveDialog::new()
-            .title("Extract selected — choose new folder name")
+            .title("Extract — choose new folder name")
             .button_label("Extract")
             .file_name("Extracted"),
     )
@@ -1275,11 +1376,12 @@ async fn extract_archive(
         return Ok(None);
     };
     blocking(move || {
-        peazip_native::extract_archive_to_directory(
+        peazip_native::extract_archive_to_directory_with_options(
             &bytes,
             &selected,
             &destination,
             peazip_core::Limits::default(),
+            options,
         )
     })
     .await

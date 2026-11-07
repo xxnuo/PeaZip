@@ -1,4 +1,4 @@
-import { validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH, MAX_TOTAL } from './archive-limits.js';
+import { validateExtractOptions, validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH, MAX_TOTAL } from './archive-limits.js';
 import init from './worker-core.js';
 
 self.onmessage = async ({ data: request }) => {
@@ -23,20 +23,27 @@ self.onmessage = async ({ data: request }) => {
       self.postMessage({ code: ok ? 1 : 0, bytes: result }, [result.buffer]);
       return;
     }
-    if (request?.operation === 'extract') {
+    if (request?.operation === 'extract' || request?.operation === 'extract-v1') {
+      const versioned = request.operation === 'extract-v1';
       const packet = request.packet;
-      const maxRequest = MAX_ARCHIVE + MAX_ENTRIES * (4 + MAX_PATH) + 8;
-      if (!(packet instanceof ArrayBuffer) || packet.byteLength < 8 || packet.byteLength > maxRequest) {
+      const headerSize = versioned ? 8 : 0;
+      const maxRequest = MAX_ARCHIVE + MAX_ENTRIES * (4 + MAX_PATH) + 8 + headerSize;
+      if (!(packet instanceof ArrayBuffer) || packet.byteLength < 8 + headerSize || packet.byteLength > maxRequest) {
         throw new Error('Invalid extraction request.');
       }
-      const selectedCount = new DataView(packet).getUint32(0, true);
+      const view = new DataView(packet);
+      if (versioned) {
+        if (view.getUint32(0, true) !== 1) throw new Error('Unsupported extract request version.');
+        validateExtractOptions({ paths: view.getUint32(4, true) });
+      }
+      const selectedCount = view.getUint32(headerSize, true);
       if (!selectedCount || selectedCount > MAX_ENTRIES) throw new Error('Invalid selection count.');
       const wasm = await init({ module_or_path: new URL('./worker-core_bg.wasm', import.meta.url) });
       const pointer = wasm.pw_input_resize(packet.byteLength) >>> 0;
       if (!pointer) throw new Error('Archive request is too large.');
       new Uint8Array(wasm.memory.buffer, pointer, packet.byteLength).set(new Uint8Array(packet));
       self.postMessage({ progress: { phase: 'extract', done: 0, total: selectedCount } });
-      const ok = wasm.pw_extract() === 1;
+      const ok = (versioned ? wasm.pw_extract_v1() : wasm.pw_extract()) === 1;
       const length = wasm.pw_output_len() >>> 0;
       if (length > MAX_TOTAL + MAX_ENTRIES * (12 + MAX_PATH) + 4) {
         throw new Error('Worker output exceeds the extraction limit.');

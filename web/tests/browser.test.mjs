@@ -331,7 +331,7 @@ test('Chromium runs WASM: open ZIP, select entries, recover from invalid ZIP', {
   await expect(all).toBeDisabled();
   await expect(clear).toBeDisabled();
   await expect(selected(0)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Extract selected…', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Extract…', exact: true })).toBeDisabled();
 
   async function choose(name) {
     const chooser = page.waitForEvent('filechooser');
@@ -965,7 +965,7 @@ async function extractionPage(t, available = true, options = {}) {
   await bootPage(page, await serve(t));
   const button = (name) => page.getByRole('button', { name, exact: true });
   await expect(button('Open archive…')).toBeEnabled();
-  await expect(button('Extract selected…')).toBeDisabled();
+  await expect(button('Extract…')).toBeDisabled();
   await page.evaluate(async () => {
     const root = await navigator.storage.getDirectory();
     const directory = await root.getDirectoryHandle(window.testDirectoryName, { create: true });
@@ -1103,7 +1103,7 @@ test('Application menus share archive, hierarchy, layout and keyboard commands',
   await expect(page.getByText('Open an archive to view its contents.', { exact: true })).toBeVisible();
   await expect(path).toHaveValue('/');
   await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
-  for (const name of ['Back', 'Forward', 'Up', 'Download ZIP', 'Test archive', 'Extract selected…']) await expect(button(name)).toBeDisabled();
+  for (const name of ['Back', 'Forward', 'Up', 'Download ZIP', 'Test archive', 'Extract…']) await expect(button(name)).toBeDisabled();
   await openMenu('File');
   for (const name of ['Download archive', 'Close archive']) await expect(popup.getByRole('menuitem', { name, exact: true })).toBeDisabled();
   assert.equal(downloads.length, 1);
@@ -1133,7 +1133,7 @@ test('Busy application menu items match toolbar eligibility and menu Cancel stop
     await expect(popup.getByRole('menuitem', { name: 'Close archive', exact: true })).toBeDisabled();
     await button('Tools').hover();
     await expect(popup).toHaveCount(1);
-    for (const name of ['Test archive', 'Extract selected…']) {
+    for (const name of ['Test archive', 'Extract…']) {
       await expect(popup.getByRole('menuitem', { name, exact: true })).toBeDisabled();
       await expect(button(name)).toBeDisabled();
     }
@@ -1257,7 +1257,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 360, height: 800 
     await expect(page.getByRole('checkbox', { name: 'docs/', exact: true })).toHaveAttribute('aria-checked', 'mixed');
     await button('Open folder docs/').click();
     await expect(chinese).not.toBeChecked();
-    await button('Extract selected…').click();
+    await button('Extract…').click();
+    await button('Continue').click();
     const report = page.getByText(/^Extracted 2 entries to PeaZip-/);
     await expect(report).toBeVisible();
     const output = await tree();
@@ -1361,7 +1362,7 @@ for (const cancellation of ['Cancel', 'pagehide']) {
       await expect.poll(() => intercepted).toBe(true);
       await expect(page.getByText('Testing archive…', { exact: true })).toBeVisible();
       await expect(button('Cancel')).toBeEnabled();
-      for (const name of ['Test archive', 'Open archive…', 'Create ZIP…', 'Download ZIP', 'Extract selected…', 'Select all', 'Clear selection']) await expect(button(name)).toBeDisabled();
+      for (const name of ['Test archive', 'Open archive…', 'Create ZIP…', 'Download ZIP', 'Extract…', 'Select all', 'Clear selection']) await expect(button(name)).toBeDisabled();
       if (cancellation === 'Cancel') await button('Cancel').click();
       else await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
       await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
@@ -1484,7 +1485,8 @@ test('7Z uses real list/extract workers and preserves its snapshot after header 
   await expect(page.getByText('retry.7z', { exact: true })).toBeVisible();
   await expect(selected).not.toBeChecked();
   await selected.click();
-  await button('Extract selected…').click();
+  await button('Extract…').click();
+  await button('Continue').click();
   const report = page.getByText(/^Extracted 5 entries to PeaZip-/);
   await expect(report).toBeVisible();
   const folder = (await report.innerText()).split(' to ')[1];
@@ -1562,7 +1564,8 @@ test('TAR gzip uses a real listing worker, preserves snapshots on bad CRC, downl
   await expect(page.getByText('retry.tar.gz', { exact: true })).toBeVisible();
   await expect(selected).not.toBeChecked();
   await selected.click();
-  await button('Extract selected…').click();
+  await button('Extract…').click();
+  await button('Continue').click();
   const report = page.getByText(/^Extracted 4 entries to PeaZip-/);
   await expect(report).toBeVisible();
   const folder = (await report.innerText()).split(' to ')[1];
@@ -1652,7 +1655,8 @@ test('TAR is detected by content, downloaded unchanged and extracted by the Rust
   for await (const chunk of await download.createReadStream()) chunks.push(chunk);
   assert.deepEqual(Buffer.concat(chunks), bytes, 'TAR bytes must not be mislabeled or recompressed');
   await page.getByRole('checkbox', { name: 'docs/', exact: true }).click();
-  await button('Extract selected…').click();
+  await button('Extract…').click();
+  await button('Continue').click();
   const report = page.getByText(/^Extracted 4 entries to PeaZip-/);
   await expect(report).toBeVisible();
   const folder = (await report.innerText()).split(' to ')[1];
@@ -1662,12 +1666,122 @@ test('TAR is detected by content, downloaded unchanged and extracted by the Rust
   assert.equal(downloads.length, 1);
 });
 
+for (const [width, height, colorScheme] of [[1024, 600, 'light'], [1440, 900, 'dark'], [360, 800, 'light'], [430, 800, 'dark']]) {
+  test(`Extraction dialog is usable at ${width}x${height} ${colorScheme}`, { timeout: 120_000 }, async (t) => {
+    const { page, button, choose, tree } = await extractionPage(t, true, { viewport: { width, height }, colorScheme, isMobile: width < 600, hasTouch: width < 600 });
+    await choose();
+    if (width >= 1024) await page.getByRole('checkbox', { name: '你好.txt', exact: true }).click();
+    await button('Extract…').click();
+    const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
+    await modal.getByRole('radio', { name: 'Files only (no folders)', exact: true }).click();
+    await expect(modal.getByRole('button', { name: 'Continue', exact: true })).toBeInViewport();
+    await expect(modal.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport();
+    const box = await modal.boundingBox();
+    assert.ok(box.x >= 0 && box.x + box.width <= width + 1);
+    const screenshot = fileURLToPath(new URL(`../../target/extract-dialog-${width}-${colorScheme}.png`, import.meta.url));
+    await page.screenshot({ path: screenshot });
+    t.diagnostic(`Screenshot: ${screenshot}`);
+    await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(button('Extract…')).toBeEnabled();
+    assert.deepEqual(await tree(), sentinelTree);
+    assert.deepEqual(await page.evaluate(() => window.pickerCalls), []);
+  });
+}
+
+async function extractionFixture(entries) {
+  const { stdout } = await promisify(execFile)('uv', ['run', 'python', '-c', `
+import base64, io, json, sys, zipfile
+out = io.BytesIO()
+with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_STORED) as archive:
+    for name, text in json.loads(sys.argv[1]):
+        archive.writestr(name, text.encode())
+print(base64.b64encode(out.getvalue()).decode())
+`, JSON.stringify(entries)]);
+  return { name: 'nested.zip', mimeType: 'application/zip', buffer: Buffer.from(stdout.trim(), 'base64') };
+}
+
+async function finishExtraction(page, button) {
+  await button('Continue').click();
+  const report = page.getByText(/^Extracted [0-9]+ entries to PeaZip-/);
+  await expect(report).toBeVisible();
+  await expect(button('Extract…')).toBeEnabled();
+  return (await report.innerText()).split(' to ')[1];
+}
+
+test('Extraction dialog supports All without selecting rows and Files only with independent output checks', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree } = await extractionPage(t);
+  await choose(await extractionFixture([['docs/你好.txt', 'hello 中文'], ['other/data.bin', 'binary text'], ['empty/', '']]));
+  await expect(button('Extract…')).toBeEnabled();
+  await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+  for (const cancel of ['Cancel', 'Escape']) {
+    await button('Extract…').click();
+    const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
+    await expect(modal.getByRole('radio', { name: 'All entries', exact: true })).toBeChecked();
+    await expect(modal.getByRole('radio', { name: 'Selected entries', exact: true })).toBeDisabled();
+    if (cancel === 'Escape') await page.keyboard.press('Escape');
+    else await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(modal).toHaveCount(0);
+  }
+  assert.deepEqual(await page.evaluate(() => window.pickerCalls), []);
+  assert.deepEqual(await tree(), sentinelTree);
+  await button('Extract…').click();
+  const full = await finishExtraction(page, button);
+  const fullTree = { docs: { '你好.txt': Array.from(Buffer.from('hello 中文')) }, other: { 'data.bin': Array.from(Buffer.from('binary text')) }, empty: {} };
+  assert.deepEqual(await tree(), { ...sentinelTree, [full]: fullTree });
+  await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true }).click();
+  await button('Extract…').click();
+  const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
+  await expect(modal.getByRole('radio', { name: 'Selected entries', exact: true })).toBeChecked();
+  await modal.getByRole('radio', { name: 'Files only (no folders)', exact: true }).click();
+  const selected = await finishExtraction(page, button);
+  const before = { ...sentinelTree, [full]: fullTree, [selected]: { '你好.txt': Array.from(Buffer.from('hello 中文')) } };
+  assert.deepEqual(await tree(), before);
+  await expect(page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true })).toBeChecked();
+  await button('Extract…').click();
+  await modal.getByRole('radio', { name: 'All entries', exact: true }).click();
+  const flat = await finishExtraction(page, button);
+  const flatTree = { ...before, [flat]: { '你好.txt': Array.from(Buffer.from('hello 中文')), 'data.bin': Array.from(Buffer.from('binary text')) } };
+  assert.deepEqual(await tree(), flatTree);
+  await button('Clear selection').click();
+  await page.getByRole('checkbox', { name: 'empty/', exact: true }).click();
+  await button('Extract…').click();
+  await button('Continue').click();
+  await expect(page.getByText(/^Could not extract archive:.*no files selected/)).toBeVisible();
+  assert.deepEqual(await tree(), flatTree);
+  await expect(page.getByRole('checkbox', { name: 'empty/', exact: true })).toBeChecked();
+  await button('Extract…').click();
+  await modal.getByRole('radio', { name: 'Full paths', exact: true }).click();
+  const empty = await finishExtraction(page, button);
+  assert.deepEqual(await tree(), { ...flatTree, [empty]: { empty: {} } });
+  assert.ok((await page.evaluate(() => window.pickerCalls)).every(call => call.active));
+});
+
+test('Files-only duplicate names fail before output and Full paths retry preserves archive selection', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree } = await extractionPage(t);
+  await choose(await extractionFixture([['a/same.txt', 'first'], ['b/same.txt', 'second'], ['empty/', '']]));
+  await button('Select all').click();
+  await button('Extract…').click();
+  const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
+  await modal.getByRole('radio', { name: 'Files only (no folders)', exact: true }).click();
+  await button('Continue').click();
+  await expect(page.getByText(/^Could not extract archive:.*duplicate or conflicting archive path:/)).toBeVisible();
+  assert.deepEqual(await tree(), sentinelTree);
+  await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+  await button('Extract…').click();
+  await modal.getByRole('radio', { name: 'Full paths', exact: true }).click();
+  const output = await finishExtraction(page, button);
+  assert.deepEqual(await tree(), { ...sentinelTree, [output]: { a: { 'same.txt': Array.from(Buffer.from('first')) }, b: { 'same.txt': Array.from(Buffer.from('second')) }, empty: {} } });
+  await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+});
+
 test('Web extraction writes selected bytes and empty directories through real OPFS and Rust worker', { timeout: 120_000 }, async (t) => {
   const { page, button, choose, tree, downloads } = await extractionPage(t);
   await choose();
   await page.getByRole('checkbox', { name: '你好.txt', exact: true }).click();
   await page.getByRole('checkbox', { name: '空目录/', exact: true }).click();
-  await button('Extract selected…').click();
+  await button('Extract…').click();
+  await button('Continue').click();
   const report = page.getByText(/^Extracted 2 entries to PeaZip-[0-9a-f-]{36}$/);
   await expect(report).toBeVisible();
   const output = (await report.innerText()).split(' to ')[1];
@@ -1689,9 +1803,10 @@ test('Web extraction handles picker cancellation and denial, CRC failure, then r
   await selected.click();
   for (const failure of ['AbortError', 'NotAllowedError']) {
     await page.evaluate((name) => { window.pickerFailure = name; }, failure);
-    await button('Extract selected…').click();
+    await button('Extract…').click();
+    await button('Continue').click();
     await expect(page.getByText(failure === 'AbortError' ? 'Extraction cancelled.' : /^Could not extract archive:.*Test picker rejection/)).toBeVisible();
-    await expect(button('Extract selected…')).toBeEnabled();
+    await expect(button('Extract…')).toBeEnabled();
     await expect(selected).toBeChecked();
     assert.deepEqual(await tree(), sentinelTree);
     assert.deepEqual(await page.evaluate(() => window.extractionWorkers), [], 'picker rejection must not start a worker');
@@ -1703,15 +1818,17 @@ test('Web extraction handles picker cancellation and denial, CRC failure, then r
   corrupt[payload] ^= 1; // Keep headers and central directory intact so listing still succeeds.
   await choose({ name: 'bad-crc.zip', mimeType: 'application/zip', buffer: corrupt });
   await selected.click();
-  await button('Extract selected…').click();
+  await button('Extract…').click();
+  await button('Continue').click();
   await expect(page.getByText(/^Could not extract archive:/)).toBeVisible();
-  await expect(button('Extract selected…')).toBeEnabled();
+  await expect(button('Extract…')).toBeEnabled();
   await expect(selected).toBeChecked();
   assert.deepEqual(await tree(), sentinelTree, 'CRC validation must finish before any output directory is created');
   await expect.poll(() => page.evaluate(() => window.extractionWorkers)).toEqual([{ terminated: true, codes: [0] }]);
   await choose();
   await selected.click();
-  await button('Extract selected…').click();
+  await button('Extract…').click();
+  await button('Continue').click();
   await expect(page.getByText(/^Extracted 1 entries to PeaZip-/)).toBeVisible();
   const result = await tree();
   assert.deepEqual(result['sentinel.txt'], sentinelTree['sentinel.txt']);
@@ -1723,7 +1840,7 @@ test('Web extraction is disabled with an explanation when directory picker capab
   await choose();
   await button('Select all').click();
   await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
-  await expect(button('Extract selected…')).toBeDisabled();
+  await expect(button('Extract…')).toBeDisabled();
   await expect(page.getByText('Directory export is unavailable in this browser.', { exact: true })).toBeVisible();
   assert.deepEqual(await page.evaluate(() => window.pickerCalls), []);
   assert.deepEqual(await page.evaluate(() => window.extractionWorkers), []);
@@ -1758,10 +1875,11 @@ test('Cancel extraction during real worker WASM loading preserves archive snapsh
     await route.continue().catch(() => {});
   });
   try {
-    await button('Extract selected…').click();
+    await button('Extract…').click();
+    await button('Continue').click();
     await expect.poll(() => intercepted).toBe(true);
     await expect(button('Cancel')).toBeEnabled();
-    for (const name of ['Create ZIP…', 'Open archive…', 'Download ZIP', 'Select all', 'Clear selection', 'Extract selected…']) await expect(button(name)).toBeDisabled();
+    for (const name of ['Create ZIP…', 'Open archive…', 'Download ZIP', 'Select all', 'Clear selection', 'Extract…']) await expect(button(name)).toBeDisabled();
     await button('Cancel').click();
     await expect(page.getByText('Extraction cancelled.', { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.extractionWorkers[1])).toEqual({ terminated: true, codes: [] });
@@ -1769,7 +1887,7 @@ test('Cancel extraction during real worker WASM loading preserves archive snapsh
     await expect(selected).toBeChecked();
     await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
     await expect(button('Cancel')).toBeDisabled();
-    await expect(button('Extract selected…')).toBeEnabled();
+    await expect(button('Extract…')).toBeEnabled();
     assert.deepEqual(await tree(), sentinelTree);
     assert.equal(downloads.length, downloadsBefore);
     assert.deepEqual(await snapshot(), before, 'cancel must preserve exact archive bytes');
@@ -1778,7 +1896,8 @@ test('Cancel extraction during real worker WASM loading preserves archive snapsh
     await page.unrouteAll({ behavior: 'wait' });
   }
   await expect(selected).toBeChecked();
-  await button('Extract selected…').click();
+  await button('Extract…').click();
+  await button('Continue').click();
   await expect(page.getByText(/^Extracted 1 entries to PeaZip-/)).toBeVisible();
   assert.deepEqual(await tree(), {
     ...sentinelTree,
@@ -1822,13 +1941,14 @@ test('Cancel during an OPFS write waits for abort and reports retained partial o
     }
     window.showDirectoryPicker = async (options) => directory(await picker(options));
   });
-  await button('Extract selected…').click();
+  await button('Extract…').click();
+  await button('Continue').click();
   await expect.poll(() => page.evaluate(() => window.exportWriteStarted === true)).toBe(true);
   await button('Cancel').click();
   await expect(page.getByText(/^Could not extract archive: Cancelled:.*completed: 0.*possibly unfinished: 你好.txt.*output may remain/)).toBeVisible();
   assert.equal(await page.evaluate(() => window.exportWriteAborted), true);
   await expect(selected).toBeChecked();
-  await expect(button('Extract selected…')).toBeEnabled();
+  await expect(button('Extract…')).toBeEnabled();
   await expect(button('Cancel')).toBeDisabled();
   const result = await tree();
   const output = Object.keys(result).find((name) => name.startsWith('PeaZip-'));

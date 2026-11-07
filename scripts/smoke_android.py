@@ -338,12 +338,12 @@ class Smoke:
         def valid(tree):
             parents = {child: parent for parent in tree.iter() for child in parent}
             for node in tree.iter("node"):
-                if self.match(node, "Extract selected…"):
+                if self.match(node, "Extract…"):
                     while node.get("class") != "android.widget.Button" and node in parents:
                         node = parents[node]
                     return node.get("enabled") == str(enabled).lower()
             return False
-        self.wait(f"Extract selected enabled={enabled}", valid)
+        self.wait(f"Extract enabled={enabled}", valid)
 
     def extraction_state(self, filename, status=None, selected_entry="tree/"):
         self.label(filename)
@@ -364,8 +364,17 @@ class Smoke:
         return {p.relative_to(local).as_posix(): None if p.is_dir() else p.read_bytes()
                 for p in local.rglob("*")}
 
+    def extract_dialog(self, scope=None, paths="Full paths"):
+        self.tap("Extract…")
+        self.label("Extract archive")
+        if scope is not None:
+            self.tap(scope)
+        if paths is not None:
+            self.tap(paths)
+
     def tree_picker(self, evidence="extract-tree-picker"):
-        self.tap("Extract selected…")
+        self.extract_dialog()
+        self.tap("Continue")
         self.documents()
         self.save(evidence)
         self.wait("tree picker folder action", lambda t: any(
@@ -441,7 +450,7 @@ class Smoke:
         self.entries = list(contents)
         self.choose(good.name)
         self.archive(good.name)
-        self.extraction_button(False)
+        self.extraction_button(True)
         self.tap("tree/")
         self.extraction_state(good.name)
         self.tree_picker()
@@ -458,7 +467,8 @@ class Smoke:
                           3, "test-zip-crc-rejected", reject=True)
         self.tap("other.txt")
         self.tap("tree/")
-        self.tap("Extract selected…")
+        self.extract_dialog()
+        self.tap("Continue")
         def rejected(tree):
             if any(n.get("package", "").endswith(".documentsui") for n in tree.iter("node")):
                 raise AssertionError("CRC-invalid payload opened DocumentsUI before rejection")

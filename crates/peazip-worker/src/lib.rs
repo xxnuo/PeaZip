@@ -1,8 +1,9 @@
-use peazip_core::{Limits, MemoryEntry, ZipCompression, ZipOptions};
+use peazip_core::{ExtractOptions, ExtractPaths, Limits, MemoryEntry, ZipCompression, ZipOptions};
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024 + 4096 * (8 + 1024) + 4;
 pub const MAX_CREATE_V1_REQUEST_BYTES: usize = MAX_REQUEST_BYTES + 12;
 pub const MAX_EXTRACT_REQUEST_BYTES: usize = 32 * 1024 * 1024 + 4096 * (4 + 1024) + 8;
+pub const MAX_EXTRACT_V1_REQUEST_BYTES: usize = MAX_EXTRACT_REQUEST_BYTES + 8;
 pub const MAX_EXTRACT_OUTPUT_BYTES: usize = 64 * 1024 * 1024 + 4096 * (12 + 1024) + 4;
 pub const MAX_LIST_OUTPUT_BYTES: usize = 5 + 4096 * (24 + 1024);
 pub const TEST_REPORT_BYTES: usize = 20;
@@ -71,6 +72,31 @@ pub fn extract_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
     if packet.len() > MAX_EXTRACT_REQUEST_BYTES {
         return Err("request byte limit exceeded".into());
     }
+    extract_entries(
+        packet,
+        ExtractOptions {
+            paths: ExtractPaths::Full,
+        },
+    )
+}
+
+pub fn extract_v1_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
+    if packet.len() > MAX_EXTRACT_V1_REQUEST_BYTES {
+        return Err("request byte limit exceeded".into());
+    }
+    let mut remaining = packet;
+    if read_u32(&mut remaining)? != 1 {
+        return Err("unsupported extract request version".into());
+    }
+    let paths = match read_u32(&mut remaining)? {
+        0 => ExtractPaths::Full,
+        1 => ExtractPaths::FilesOnly,
+        _ => return Err("invalid extraction path mode".into()),
+    };
+    extract_entries(remaining, ExtractOptions { paths })
+}
+
+fn extract_entries(packet: &[u8], options: ExtractOptions) -> Result<Vec<u8>, String> {
     let limits = Limits::default();
     let mut remaining = packet;
     let count = read_u32(&mut remaining)?;
@@ -95,8 +121,9 @@ pub fn extract_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
     if !remaining.is_empty() {
         return Err("trailing request bytes".into());
     }
-    let entries = peazip_core::extract_selected_archive(archive, &selected, limits)
-        .map_err(|error| error.to_string())?;
+    let entries =
+        peazip_core::extract_selected_archive_with_options(archive, &selected, limits, options)
+            .map_err(|error| error.to_string())?;
     let size = 4 + entries
         .iter()
         .map(|entry| 12 + entry.path.len() + entry.data.len())
@@ -199,7 +226,7 @@ fn create_entries(packet: &[u8], options: ZipOptions) -> Result<Vec<u8>, String>
 mod wasm {
     use super::{
         MAX_CREATE_V1_REQUEST_BYTES, create_from_request, create_v1_from_request,
-        extract_from_request, list_from_request, test_from_request,
+        extract_from_request, extract_v1_from_request, list_from_request, test_from_request,
     };
     use std::cell::RefCell;
 
@@ -233,6 +260,11 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn pw_extract() -> u32 {
         run(extract_from_request)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn pw_extract_v1() -> u32 {
+        run(extract_v1_from_request)
     }
 
     #[unsafe(no_mangle)]
