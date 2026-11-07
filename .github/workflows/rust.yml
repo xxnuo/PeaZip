@@ -23,8 +23,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
-      - run: cargo test -p peazip-core --locked
-      - run: cargo clippy -p peazip-core --all-targets --locked -- -D warnings
+      - run: cargo test -p peazip-core -p peazip-native --locked
+      - run: cargo clippy -p peazip-core -p peazip-native --all-targets --locked -- -D warnings
   web-core:
     runs-on: ubuntu-latest
     steps:

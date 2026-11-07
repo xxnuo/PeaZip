@@ -10,6 +10,9 @@ peazip-core = { path = "../peazip-core" }
 nsh-core = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
 nsh-base = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
 
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+peazip-native = { path = "../peazip-native" }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
 

@@ -2054,6 +2054,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "peazip-native"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "peazip-core",
+ "tempfile",
+]
+
+[[package]]
 name = "peazip-ui"
 version = "0.1.0"
 dependencies = [
@@ -2065,6 +2074,7 @@ dependencies = [
  "nsh-platform-windows",
  "nsh-testing",
  "peazip-core",
+ "peazip-native",
  "tempfile",
 ]
 

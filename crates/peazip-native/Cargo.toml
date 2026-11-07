@@ -1,0 +1,13 @@
+[package]
+name = "peazip-native"
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+peazip-core = { path = "../peazip-core" }
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

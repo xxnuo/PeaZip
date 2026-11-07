@@ -144,3 +144,69 @@ fn selects_individual_entries_all_and_none_and_resets_on_new_archive() {
         Some(nsh_core::Checked::False)
     );
 }
+
+#[test]
+fn creates_zip_from_selected_files_and_refuses_to_overwrite_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first.txt");
+    let second = temp.path().join("中文.txt");
+    let output = temp.path().join("created.zip");
+    std::fs::write(&first, b"first contents").unwrap();
+    std::fs::write(&second, b"second contents").unwrap();
+    let mut app = start();
+    app.on_pick_paths(vec![first.clone(), second.clone()])
+        .unwrap();
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("Created ZIP: 2 entries").unwrap();
+    app.wait_for("first.txt").unwrap();
+    app.wait_for("中文.txt").unwrap();
+    assert!(app.screen().enabled("role:button[Open ZIP…]").unwrap());
+    assert!(app.screen().enabled("role:button[Create ZIP…]").unwrap());
+    let original = std::fs::read(&output).unwrap();
+    let extracted = peazip_core::extract_zip(&original, Limits::default()).unwrap();
+    assert_eq!(extracted[0].data, b"first contents");
+    assert_eq!(extracted[1].data, b"second contents");
+    assert_eq!(std::fs::read(&first).unwrap(), b"first contents");
+    assert_eq!(std::fs::read(&second).unwrap(), b"second contents");
+
+    app.press("role:checkbox[first.txt]").unwrap();
+    app.wait_for("1 selected").unwrap();
+    std::fs::write(&first, b"changed").unwrap();
+    app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("text:/^Could not create ZIP:/").unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), original);
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 3);
+    assert!(app.screen().shows("1 selected"));
+    assert!(app.screen().enabled("role:button[Create ZIP…]").unwrap());
+
+    let next = temp.path().join("next.zip");
+    app.on_pick_save_path(Some(next.clone())).unwrap();
+    app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("Created ZIP: 2 entries").unwrap();
+    app.wait_for("0 selected").unwrap();
+    assert!(next.is_file());
+}
+
+#[test]
+fn cancelling_creation_at_either_dialog_writes_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.txt");
+    std::fs::write(&input, b"unchanged").unwrap();
+    let mut app = start();
+    app.on_pick_paths(vec![]).unwrap();
+    app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("Open a ZIP archive to view its contents.")
+        .unwrap();
+    assert_eq!(app.screen().file_requests().len(), 1);
+    assert!(app.screen().enabled("role:button[Create ZIP…]").unwrap());
+    app.on_pick_paths(vec![input.clone()]).unwrap();
+    app.on_pick_save_path(None).unwrap();
+    app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("Open a ZIP archive to view its contents.")
+        .unwrap();
+    assert_eq!(app.screen().file_requests().len(), 3);
+    assert!(app.screen().enabled("role:button[Create ZIP…]").unwrap());
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    assert_eq!(std::fs::read(input).unwrap(), b"unchanged");
+}

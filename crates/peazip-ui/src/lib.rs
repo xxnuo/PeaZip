@@ -15,12 +15,14 @@ pub fn App() -> impl IntoElement {
     let path = signal(String::new());
     let status = signal("Open a ZIP archive to view its contents.".to_owned());
     let busy = signal(false);
+    let activity = signal("Opening ZIP…".to_owned());
     let selected = signal(BTreeSet::<String>::new());
     let open = move || {
         if busy.get_untracked() {
             return;
         }
         busy.set(true);
+        activity.set("Opening ZIP…".to_owned());
         spawn(async move {
             match choose_archive().await {
                 Ok(Some((name, rows))) => {
@@ -35,32 +37,63 @@ pub fn App() -> impl IntoElement {
             busy.set(false);
         });
     };
+    let actions = toolbar()
+        .items_center()
+        .gap_3()
+        .p_2()
+        .border_b_1()
+        .border_color(move || theme().border)
+        .child(
+            button()
+                .disabled(move || busy.get())
+                .on_press(open)
+                .px_3()
+                .py_2()
+                .border_1()
+                .border_color(move || theme().border)
+                .bg(move || theme().muted)
+                .active(|s| s.opacity(0.6))
+                .disabled_style(|s| s.opacity(0.4))
+                .child(text("Open ZIP…")),
+        );
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let actions = actions.child(
+        button()
+            .disabled(move || busy.get())
+            .on_press(move || {
+                if busy.get_untracked() {
+                    return;
+                }
+                busy.set(true);
+                activity.set("Creating ZIP…".to_owned());
+                spawn(async move {
+                    match create_archive().await {
+                        Ok(Some((name, rows))) => {
+                            status.set(format!("Created ZIP: {} entries", rows.len()));
+                            path.set(name);
+                            entries.set(rows);
+                            selected.set(BTreeSet::new());
+                        }
+                        Ok(None) => {}
+                        Err(error) => status.set(format!("Could not create ZIP: {error}")),
+                    }
+                    busy.set(false);
+                });
+            })
+            .px_3()
+            .py_2()
+            .border_1()
+            .border_color(move || theme().border)
+            .bg(move || theme().muted)
+            .active(|s| s.opacity(0.6))
+            .disabled_style(|s| s.opacity(0.4))
+            .child(text("Create ZIP…")),
+    );
     view()
         .flex_1()
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
-        .child(
-            toolbar()
-                .items_center()
-                .gap_3()
-                .p_2()
-                .border_b_1()
-                .border_color(move || theme().border)
-                .child(
-                    button()
-                        .disabled(move || busy.get())
-                        .on_press(open)
-                        .px_3()
-                        .py_2()
-                        .border_1()
-                        .border_color(move || theme().border)
-                        .bg(move || theme().muted)
-                        .active(|s| s.opacity(0.6))
-                        .disabled_style(|s| s.opacity(0.4))
-                        .child(text("Open ZIP…")),
-                )
-                .child(text(move || path.get()).flex_1()),
-        )
+        .child(actions.child(text(move || path.get()).flex_1()))
         .child(
             toolbar()
                 .flex_row()
@@ -176,7 +209,7 @@ pub fn App() -> impl IntoElement {
         .child(
             text(move || {
                 if busy.get() {
-                    "Opening ZIP…".to_owned()
+                    activity.get()
                 } else {
                     status.get()
                 }
@@ -185,6 +218,40 @@ pub fn App() -> impl IntoElement {
             .border_t_1()
             .border_color(move || theme().border),
         )
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+async fn create_archive() -> Result<Option<(String, Vec<Entry>)>, String> {
+    use nsh_core::file_dialog::{FileFilter, OpenDialog, SaveDialog};
+    let Some(paths) = pick_paths(
+        OpenDialog::files()
+            .multiple(true)
+            .title("Select files to archive")
+            .button_label("Add files"),
+    )
+    .await?
+    .filter(|paths| !paths.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(destination) = pick_save_path(
+        SaveDialog::new()
+            .title("Create ZIP — choose a new filename")
+            .button_label("Create")
+            .file_name("Archive.zip")
+            .filter(FileFilter::new("ZIP archives", ["zip"])),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let name = destination.display().to_string();
+    let rows = blocking(move || {
+        peazip_native::create_zip_from_paths(&paths, &destination, peazip_core::Limits::default())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    Ok(Some((name, rows)))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
