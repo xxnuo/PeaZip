@@ -1,0 +1,178 @@
+use nsh_base::{button, theme, toolbar};
+use nsh_core::{element::Position, prelude::*};
+use peazip_core::Entry;
+
+#[native_module("peazip/native")]
+fn native(registry: &mut Registry) {
+    registry.register::<App>();
+}
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let entries = signal(Vec::<Entry>::new());
+    let path = signal(String::new());
+    let status = signal("Open a ZIP archive to view its contents.".to_owned());
+    let busy = signal(false);
+    let open = move || {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        spawn(async move {
+            match choose_archive().await {
+                Ok(Some((name, rows))) => {
+                    status.set(format!("{} entries", rows.len()));
+                    path.set(name);
+                    entries.set(rows);
+                }
+                Ok(None) => {}
+                Err(error) => status.set(format!("Could not open ZIP: {error}")),
+            }
+            busy.set(false);
+        });
+    };
+    view()
+        .flex_1()
+        .bg(move || theme().background)
+        .text_color(move || theme().foreground)
+        .child(
+            toolbar()
+                .items_center()
+                .gap_3()
+                .p_2()
+                .border_b_1()
+                .border_color(move || theme().border)
+                .child(
+                    button()
+                        .disabled(move || busy.get())
+                        .on_press(open)
+                        .px_3()
+                        .py_2()
+                        .border_1()
+                        .border_color(move || theme().border)
+                        .bg(move || theme().muted)
+                        .active(|s| s.opacity(0.6))
+                        .disabled_style(|s| s.opacity(0.4))
+                        .child(text("Open ZIP…")),
+                )
+                .child(text(move || path.get()).flex_1()),
+        )
+        .child(
+            view()
+                .flex_row()
+                .px_3()
+                .py_2()
+                .bg(move || theme().muted)
+                .child(text("Name").flex_1())
+                .child(text("Size (bytes)").w(px(140.0))),
+        )
+        .child(
+            virtual_list(
+                move || entries.with(Vec::len),
+                move |at: Position| {
+                    view()
+                        .flex_row()
+                        .px_3()
+                        .py_2()
+                        .child(
+                            text(move || {
+                                entries.with(|rows| {
+                                    rows.get(at.index())
+                                        .map(|row| row.path.clone())
+                                        .unwrap_or_default()
+                                })
+                            })
+                            .flex_1(),
+                        )
+                        .child(
+                            text(move || {
+                                entries.with(|rows| {
+                                    rows.get(at.index())
+                                        .map(|row| {
+                                            if row.is_dir {
+                                                "—".to_owned()
+                                            } else {
+                                                row.size.to_string()
+                                            }
+                                        })
+                                        .unwrap_or_default()
+                                })
+                            })
+                            .w(px(140.0)),
+                        )
+                },
+            )
+            .estimated_item_size(px(36.0))
+            .flex_1(),
+        )
+        .child(
+            text(move || {
+                if busy.get() {
+                    "Opening ZIP…".to_owned()
+                } else {
+                    status.get()
+                }
+            })
+            .p_2()
+            .border_t_1()
+            .border_color(move || theme().border),
+        )
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+async fn choose_archive() -> Result<Option<(String, Vec<Entry>)>, String> {
+    use nsh_core::file_dialog::{FileFilter, OpenDialog};
+    let paths = pick_paths(
+        OpenDialog::files()
+            .title("Open ZIP archive")
+            .button_label("Open")
+            .filter(FileFilter::new("ZIP archives", ["zip"])),
+    )
+    .await?;
+    let Some(path) = paths.and_then(|paths| paths.into_iter().next()) else {
+        return Ok(None);
+    };
+    let name = path.display().to_string();
+    let entries = blocking(move || read_archive(&path))
+        .await
+        .map_err(|error| error.to_string())??;
+    Ok(Some((name, entries)))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn choose_archive() -> Result<Option<(String, Vec<Entry>)>, String> {
+    use nsh_core::{file_dialog::FileFilter, picker::FilePickRequest};
+    let files =
+        pick_files(FilePickRequest::new(false, 1).filter(FileFilter::new("ZIP archives", ["zip"])))
+            .await;
+    let Some(file) = files.into_iter().next() else {
+        return Ok(None);
+    };
+    let limits = peazip_core::Limits::default();
+    // NSH's picker reads up to 512 MiB before delivery; its API has no per-request byte limit.
+    if file.data.len() as u64 > limits.max_archive_bytes {
+        return Err("Archive exceeds the 32 MiB limit.".to_owned());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let entries = blocking(move || peazip_core::list_zip(file.data.bytes(), limits))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    #[cfg(target_arch = "wasm32")]
+    let entries =
+        peazip_core::list_zip(file.data.bytes(), limits).map_err(|error| error.to_string())?;
+    Ok(Some((file.name, entries)))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn read_archive(path: &std::path::Path) -> Result<Vec<Entry>, String> {
+    use std::io::Read;
+    let limits = peazip_core::Limits::default();
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(|error| error.to_string())?
+        .take(limits.max_archive_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    peazip_core::list_zip(&bytes, limits).map_err(|error| error.to_string())
+}

@@ -33,6 +33,22 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - run: cargo check -p peazip-core --locked --target wasm32-unknown-unknown
+      - run: cargo check -p peazip-ui --lib --locked --target wasm32-unknown-unknown
+  desktop-ui:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - run: cargo test -p peazip-ui --locked
+      - run: cargo clippy -p peazip-ui --all-targets --locked -- -D warnings
   upstream-report:
     runs-on: ubuntu-latest
     steps:

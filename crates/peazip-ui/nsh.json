@@ -1,0 +1,7 @@
+{
+  "name": "PeaZip",
+  "id": "io.peazip.desktop",
+  "appearance": "system",
+  "rust": ".",
+  "root": "App"
+}
