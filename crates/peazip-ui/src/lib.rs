@@ -42,6 +42,7 @@ pub fn App() -> impl IntoElement {
         });
     };
     let actions = toolbar()
+        .flex_wrap()
         .items_center()
         .gap_3()
         .p_2()
@@ -61,30 +62,32 @@ pub fn App() -> impl IntoElement {
                 .child(text("Open ZIP…")),
         );
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let create = move |folders: bool| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        activity.set("Creating ZIP…".to_owned());
+        spawn(async move {
+            match create_archive(folders).await {
+                Ok(Some((name, (bytes, rows)))) => {
+                    snapshot.set(bytes);
+                    status.set(format!("Created ZIP: {} entries", rows.len()));
+                    path.set(name);
+                    entries.set(rows);
+                    selected.set(BTreeSet::new());
+                }
+                Ok(None) => {}
+                Err(error) => status.set(format!("Could not create ZIP: {error}")),
+            }
+            busy.set(false);
+        });
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let actions = actions.child(
         button()
             .disabled(move || busy.get())
-            .on_press(move || {
-                if busy.get_untracked() {
-                    return;
-                }
-                busy.set(true);
-                activity.set("Creating ZIP…".to_owned());
-                spawn(async move {
-                    match create_archive().await {
-                        Ok(Some((name, (bytes, rows)))) => {
-                            snapshot.set(bytes);
-                            status.set(format!("Created ZIP: {} entries", rows.len()));
-                            path.set(name);
-                            entries.set(rows);
-                            selected.set(BTreeSet::new());
-                        }
-                        Ok(None) => {}
-                        Err(error) => status.set(format!("Could not create ZIP: {error}")),
-                    }
-                    busy.set(false);
-                });
-            })
+            .on_press(move || create(false))
             .px_3()
             .py_2()
             .border_1()
@@ -93,6 +96,20 @@ pub fn App() -> impl IntoElement {
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
             .child(text("Create ZIP…")),
+    );
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let actions = actions.child(
+        button()
+            .disabled(move || busy.get())
+            .on_press(move || create(true))
+            .px_3()
+            .py_2()
+            .border_1()
+            .border_color(move || theme().border)
+            .bg(move || theme().muted)
+            .active(|s| s.opacity(0.6))
+            .disabled_style(|s| s.opacity(0.4))
+            .child(text("Create folder ZIP…")),
     );
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let actions = actions.child(
@@ -266,16 +283,21 @@ pub fn App() -> impl IntoElement {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-async fn create_archive() -> Result<Option<(String, LoadedArchive)>, String> {
+async fn create_archive(folders: bool) -> Result<Option<(String, LoadedArchive)>, String> {
     use nsh_core::file_dialog::{FileFilter, OpenDialog, SaveDialog};
-    let Some(paths) = pick_paths(
+    let dialog = if folders {
+        OpenDialog::folders()
+            .title("Select folders to archive")
+            .button_label("Add folders")
+    } else {
         OpenDialog::files()
-            .multiple(true)
             .title("Select files to archive")
-            .button_label("Add files"),
-    )
-    .await?
-    .filter(|paths| !paths.is_empty()) else {
+            .button_label("Add files")
+    };
+    let Some(paths) = pick_paths(dialog.multiple(true))
+        .await?
+        .filter(|paths| !paths.is_empty())
+    else {
         return Ok(None);
     };
     let Some(destination) = pick_save_path(

@@ -342,3 +342,76 @@ fn created_archive_snapshot_survives_deleted_output() {
         b"created snapshot"
     );
 }
+
+#[test]
+fn creates_and_extracts_directory_tree_with_empty_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    let tree = temp.path().join("tree");
+    std::fs::create_dir_all(tree.join("nested")).unwrap();
+    std::fs::create_dir_all(tree.join("empty")).unwrap();
+    std::fs::write(tree.join("nested/中文.txt"), b"nested payload").unwrap();
+    std::fs::write(tree.join("top.txt"), b"top payload").unwrap();
+    let empty = temp.path().join("empty-root");
+    std::fs::create_dir(&empty).unwrap();
+    let archive = temp.path().join("directories.zip");
+    let mut app = start();
+    app.on_pick_paths(vec![tree.clone(), empty]).unwrap();
+    app.on_pick_save_path(Some(archive.clone())).unwrap();
+    app.press("role:button[Create folder ZIP…]").unwrap();
+    app.wait_for("Created ZIP: 6 entries").unwrap();
+    match &app.screen().file_requests()[0] {
+        nsh_core::file_dialog::FileRequest::OpenDialog(dialog) => {
+            assert_eq!(dialog.kind, nsh_core::file_dialog::OpenDialogKind::Folders);
+            assert!(dialog.multiple);
+        }
+        other => panic!("expected folder picker, got {other:?}"),
+    }
+    let rows =
+        peazip_core::extract_zip(&std::fs::read(&archive).unwrap(), Limits::default()).unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.path == "tree/nested/中文.txt")
+            .unwrap()
+            .data,
+        b"nested payload"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.path == "tree/empty/" && row.is_dir)
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.path == "empty-root/" && row.is_dir)
+    );
+    assert_eq!(std::fs::read(tree.join("top.txt")).unwrap(), b"top payload");
+    app.press("role:button[Select all]").unwrap();
+    let output = temp.path().join("extracted");
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("Extracted 6 entries").unwrap();
+    assert_eq!(
+        std::fs::read(output.join("tree/nested/中文.txt")).unwrap(),
+        b"nested payload"
+    );
+    assert!(output.join("tree/empty").is_dir());
+    assert!(output.join("empty-root").is_dir());
+}
+
+#[test]
+fn folder_picker_cancellation_does_not_create_an_archive() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("not-created.zip");
+    let mut app = start();
+    app.on_pick_paths(vec![]).unwrap();
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.press("role:button[Create folder ZIP…]").unwrap();
+    app.wait_for("Open a ZIP archive to view its contents.")
+        .unwrap();
+    assert_eq!(app.screen().file_requests().len(), 1);
+    assert!(!output.exists());
+    assert!(
+        app.screen()
+            .enabled("role:button[Create folder ZIP…]")
+            .unwrap()
+    );
+}
