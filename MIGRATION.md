@@ -7,7 +7,7 @@
 | 阶段 | 工作 | 完成依据 | 状态 |
 | --- | --- | --- | --- |
 | 1 | Rust workspace、内存 ZIP 核心、安全边界、上游基线与 CI | 正常归档往返、恶意路径及限额测试；基线报告可执行 | 本地验证完成；远程 CI 待运行 |
-| 2 | nsh Rust 界面：打开、列表、选择、创建、解压、错误反馈 | 用真实归档操作界面；UI 状态测试与本机启动验证 | 已有桌面/Web 归档流程和 Android 创建/SAF 保存；Android 目录解压、iOS 功能及外部 API 验收待完成 |
+| 2 | nsh Rust 界面：打开、列表、选择、创建、解压、错误反馈 | 用真实归档操作界面；UI 状态测试与本机启动验证 | 已有桌面/Web 与 Android ZIP 基本流程；更多格式、iOS 功能及剩余外部 API 验收待完成 |
 | 3 | 安全文件系统与平台文件选择、后台任务、进度、取消、覆盖冲突 | 符号链接/竞态/失败清理测试；大文件不中断界面 | 已有有界读取、后台操作、新目标原子不覆盖发布、Web 创建取消与阶段进度；桌面取消/进度、其他冲突策略/流式大文件待完成 |
 | 4 | 上游格式与功能逐项迁移 | 格式/操作能力清单；跨工具兼容样本、加密/分卷/损坏文件测试 | 待完成 |
 | 5 | 文件管理、搜索、预览、校验、转换、分割、配置、语言与无障碍 | 按上游功能回归；权限和交互验证 | 待完成 |
@@ -113,4 +113,11 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 最终 APK 在 Android 36 arm64 模拟器通过扩展 smoke：多选中文名/二进制/空文件创建，17 MiB 输入拒绝且保留旧状态，取消保存不写目标，同名目标由当前 Documents provider 自动生成 `(1)`、sentinel 未覆盖；拉回 ZIP 用 Python zipfile 独立核对名称、内容和 CRC，重新导入成功。PID 稳定、无应用 fatal；新标题宽度与列间距已在长文件名截图检查。
 - 本轮 Rust workspace 回归、主机及 Android target Clippy、格式检查、Web 32 项测试通过。专用模拟器已关闭，未部署或上传发布包。只实测本机 Documents provider，未宣称所有云 provider、保存失败和真实恶意 provider 场景都已设备验收。
 
-下一步：实现 Android 选中条目的 SAF 目录解压，并继续推进 iOS SDK 环境与文件导出；补齐 Web 外部目录实际验收、桌面/移动端主动取消与进度、冲突策略、流式大文件及更多归档格式。Web/Android 打开归档仍走 nsh picker，创建使用独立有界入口；两者限制不可混为一谈。六平台实际运行和发布验收仍是最终要求。
+- Android 目录解压：先在 Rust 后台完成所选 payload/CRC 校验，再通过 `ACTION_OPEN_DOCUMENT_TREE` 授权父目录；以 DocumentsContract 的 opaque ID 创建随机新子目录，保留所选子树、隐式父目录和空目录。Java 输出包再次校验路径、类型、重名、Unicode alias 和资源预算；创建返回的 authority/tree scope、名称、类型和 ID 均检查，普通文件 MIME 允许 provider 规范化。
+- 目录查询的 Loading/非空 EXTRA_ERROR 不得作为“不存在”的依据；单字段与累计 provider 元数据也有额度，URI 按需构造，避免长 tree ID 在每行重复放大。任何已发现冲突、重命名或 ID alias 都停止；不会合并已有目录或自动删除残留。SAF 没有跨 provider/外部并发修改的原子 no-replace 保证，这不等同于桌面原子发布。
+- 读写 helper 在关闭前记录 reliable descriptor 能力，关闭后检查缓存的远端错误；已可检测的 provider 失败不会再计入成功。仅能检测本端关闭时已报告的错误，不等同于云端事务提交确认。该修复同时覆盖 ZIP 保存与目录写入。
+- `uv run python scripts/check_android_device.py --serial emulator-5554 --apk target/android/arm64-v8a/peazip-arm64-v8a-debug.apk` 构建独立 instrumentation APK，运行后卸载测试包，生产入口没有测试后门。本机通过 7 项真实 Android reliable-pipe/普通文件检查，包括“普通 close 成功但远端已报错”场景。
+- 本轮 hostchecks：86 项导出策略、25 项 JNI、13 项资产、11 项读取及生命周期检查通过；这些使用部分 Android doubles。最终 APK 全量真实 Android 36 DocumentsUI/SAF smoke 退出码 0：树 picker 取消无输出，CRC 错误在 picker 前拒绝；嵌套二进制和 txt 内容、空目录、未选文件缺席、sentinel 不变及错误后恢复均已拉回核对。最终本机运行 token 为 `cf3a77e3610d`，截图在 `target/android-smoke/<token>/extracted.png`。
+- Rust workspace 回归、主机/Android target Clippy、格式检查和 Web 32 项测试通过；只读 nsh 保持未改动。Android 此处验证的是 API36 本机 Documents provider，不代表所有云 provider、真实外部竞态或进程被强杀后的恢复都完成。
+
+下一步：扩展 TAR/GZIP/7z 等归档后端并推进大文件流式处理，同时继续解决 iOS SDK 构建/文件导出和 Windows/Linux 实际运行验收；补齐 Web 外部目录、桌面/移动端主动取消与进度、冲突策略及文件管理功能。Web/Android 打开归档仍走 nsh picker，创建使用独立有界入口；两者限制不可混为一谈。六平台实际运行、完整功能与发布验收仍是最终要求。

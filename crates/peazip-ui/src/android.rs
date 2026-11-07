@@ -29,6 +29,7 @@ struct Binding {
 enum Kind {
     Pick,
     Save,
+    Export,
 }
 
 enum Output {
@@ -44,6 +45,7 @@ struct Pending {
     kind: Kind,
     sender: oneshot::Sender<Reply>,
     reply: Option<Reply>,
+    export_status: String,
 }
 
 fn state() -> MutexGuard<'static, State> {
@@ -100,12 +102,13 @@ fn prepare(id: jlong, reply: Reply) {
 fn cancel(pending: Option<Pending>) {
     if let Some(pending) = pending {
         let message = match pending.kind {
-            Kind::Pick => "Android activity was destroyed; input selection was cancelled.",
+            Kind::Pick => "Android activity was destroyed; input selection was cancelled.".to_owned(),
             Kind::Save => {
-                "Android activity was destroyed; saving was cancelled. A partial document may remain."
+                "Android activity was destroyed; saving was cancelled. A partial document may remain.".to_owned()
             }
+            Kind::Export => format!("Android activity was destroyed; export cancelled. {}", pending.export_status),
         };
-        let _ = pending.sender.send(Err(message.into()));
+        let _ = pending.sender.send(Err(message));
     }
 }
 
@@ -157,6 +160,7 @@ async fn request(kind: Kind, bytes: Option<Arc<Vec<u8>>>) -> Reply {
             kind,
             sender,
             reply: None,
+            export_status: "Root not yet known; completed 0 entries; unfinished path: not yet known. Documents may remain; nothing was deleted.".into(),
         });
         (id, activity, receiver)
     };
@@ -190,7 +194,11 @@ async fn request(kind: Kind, bytes: Option<Arc<Vec<u8>>>) -> Reply {
                         let array = env.byte_array_from_slice(&bytes).map_err(jni_error)?;
                         env.call_method(
                             activity.as_obj(),
-                            "saveArchive",
+                            if kind == Kind::Export {
+                                "exportEntries"
+                            } else {
+                                "saveArchive"
+                            },
                             "(J[B)Z",
                             &[JValue::Long(id), JValue::Object(array.as_ref())],
                         )
@@ -237,6 +245,52 @@ pub async fn save_zip(bytes: Arc<Vec<u8>>) -> Result<Option<String>, String> {
         None => Ok(None),
         Some(Output::Name(name)) => Ok(Some(name)),
         _ => Err("Unexpected Android save response.".into()),
+    }
+}
+
+// The caller must finish core::extract_selected_zip (including CRC checks) before exporting.
+pub async fn export_entries(entries: Vec<MemoryEntry>) -> Result<Option<String>, String> {
+    let limits = Limits::default();
+    if entries.is_empty() || entries.len() > limits.max_entries {
+        return Err("Invalid Android export entry count.".into());
+    }
+    let count = entries.len();
+    let mut size = 4usize;
+    let mut total = 0u64;
+    for entry in &entries {
+        if entry.path.is_empty()
+            || entry.path.len() > limits.max_path_bytes
+            || entry.data.len() as u64 > limits.max_entry_bytes
+            || (entry.is_dir && !entry.data.is_empty())
+        {
+            return Err("Android export exceeds path or entry limits.".into());
+        }
+        total = total
+            .checked_add(entry.data.len() as u64)
+            .ok_or("Export size overflow.")?;
+        size = size
+            .checked_add(12 + entry.path.len() + entry.data.len())
+            .ok_or("Export size overflow.")?;
+    }
+    if total > limits.max_total_bytes || size > i32::MAX as usize {
+        return Err("Android export exceeds the 64 MiB total limit.".into());
+    }
+    let mut packet = Vec::new();
+    packet
+        .try_reserve_exact(size)
+        .map_err(|_| "Cannot allocate Android export packet.")?;
+    packet.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for entry in entries {
+        packet.extend_from_slice(&u32::from(entry.is_dir).to_le_bytes());
+        packet.extend_from_slice(&(entry.path.len() as u32).to_le_bytes());
+        packet.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
+        packet.extend_from_slice(entry.path.as_bytes());
+        packet.extend_from_slice(&entry.data);
+    }
+    match request(Kind::Export, Some(Arc::new(packet))).await? {
+        None => Ok(None),
+        Some(Output::Name(name)) => Ok(Some(format!("Extracted {count} entries to {name}"))),
+        _ => Err("Unexpected Android export response.".into()),
     }
 }
 
@@ -382,6 +436,68 @@ pub extern "system" fn Java_com_longbridge_nsh_PeaZipActivity_nativeSaved(
             prepare(id, result);
         }
     }));
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_longbridge_nsh_PeaZipActivity_nativeExported(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    name: JString,
+) {
+    let result = boundary(&mut env, |env| {
+        if !accepts(id, Kind::Export) {
+            return Ok(None);
+        }
+        let name: String = env.get_string(&name).map_err(jni_error)?.into();
+        let uuid = name
+            .strip_prefix("PeaZip-")
+            .ok_or("Invalid Android export root name.")?;
+        if uuid.len() != 36
+            || !uuid.bytes().enumerate().all(|(i, c)| {
+                if [8, 13, 18, 23].contains(&i) {
+                    c == b'-'
+                } else {
+                    c.is_ascii_hexdigit()
+                }
+            })
+        {
+            return Err("Invalid Android export root name.".into());
+        }
+        Ok(Some(Output::Name(name)))
+    });
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if accepts(id, Kind::Export) {
+            prepare(id, result);
+        }
+    }));
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_longbridge_nsh_PeaZipActivity_nativeExportProgress(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    status: JString,
+) {
+    let _ = boundary(&mut env, |env| {
+        if !accepts(id, Kind::Export) {
+            return Ok(());
+        }
+        let status: String = env.get_string(&status).map_err(jni_error)?.into();
+        if status.len() > 8192 {
+            return Err("Invalid export progress length.".into());
+        }
+        let mut state = state();
+        if let Some(pending) = state
+            .pending
+            .as_mut()
+            .filter(|p| p.id == id && p.kind == Kind::Export)
+        {
+            pending.export_status = status;
+        }
+        Ok(())
+    });
 }
 
 #[unsafe(no_mangle)]

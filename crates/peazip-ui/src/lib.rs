@@ -253,7 +253,12 @@ pub fn App() -> impl IntoElement {
             .disabled_style(|s| s.opacity(0.4))
             .child(text("Create folder ZIP…")),
     );
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
     let actions = actions.child(
         button()
             .disabled(move || busy.get() || selected.with(BTreeSet::is_empty))
@@ -266,6 +271,13 @@ pub fn App() -> impl IntoElement {
                 busy.set(true);
                 activity.set("Extracting ZIP…".to_owned());
                 spawn(async move {
+                    #[cfg(target_os = "android")]
+                    match extract_android_archive(bytes, paths).await {
+                        Ok(Some(report)) => status.set(report),
+                        Ok(None) => status.set("Extraction cancelled.".into()),
+                        Err(error) => status.set(format!("Could not extract ZIP: {error}")),
+                    }
+                    #[cfg(not(target_os = "android"))]
                     match extract_archive(bytes, paths).await {
                         Ok(Some(count)) => status.set(format!("Extracted {count} entries")),
                         Ok(None) => {}
@@ -432,6 +444,20 @@ pub fn App() -> impl IntoElement {
             .border_t_1()
             .border_color(move || theme().border),
         )
+}
+
+#[cfg(target_os = "android")]
+async fn extract_android_archive(
+    bytes: Arc<Vec<u8>>,
+    selected: Vec<String>,
+) -> Result<Option<String>, String> {
+    let entries = blocking(move || {
+        peazip_core::extract_selected_zip(&bytes, &selected, peazip_core::Limits::default())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    android::export_entries(entries).await
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]

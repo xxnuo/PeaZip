@@ -42,6 +42,16 @@ extern "system" fn observed_picked(
     Java_com_longbridge_nsh_PeaZipActivity_nativePicked(env, class, id, names, data);
 }
 
+extern "system" fn observed_exported(
+    mut env: JNIEnv,
+    class: JClass,
+    id: i64,
+    name: jni::objects::JString,
+) {
+    observe(&mut env, "record", Some(false));
+    Java_com_longbridge_nsh_PeaZipActivity_nativeExported(env, class, id, name);
+}
+
 extern "system" fn observed_complete(mut env: JNIEnv, class: JClass, id: i64) {
     observe(&mut env, "record", Some(true));
     Java_com_longbridge_nsh_PeaZipActivity_nativeComplete(unsafe { env.unsafe_clone() }, class, id);
@@ -275,6 +285,205 @@ fn main() {
         assert!(matches!(poll(unavailable.as_mut()), Poll::Ready(Err(_))));
         checks += 1;
     }
+    // Export uses the same admission and two-stage callbacks, with a distinct opcode.
+    {
+        let binding = Java_com_longbridge_nsh_PeaZipActivity_nativeBind(
+            unsafe { env.unsafe_clone() },
+            env.new_local_ref(&activity).unwrap(),
+        );
+        let entry = || peazip_core::MemoryEntry {
+            path: "目录/a".into(),
+            is_dir: false,
+            data: vec![1, 2, 3],
+        };
+        for entries in [
+            vec![],
+            vec![peazip_core::MemoryEntry {
+                path: "a".repeat(1025),
+                ..entry()
+            }],
+            vec![peazip_core::MemoryEntry {
+                data: vec![0; 16 * 1024 * 1024 + 1],
+                ..entry()
+            }],
+            vec![peazip_core::MemoryEntry {
+                is_dir: true,
+                ..entry()
+            }],
+            (0..4097).map(|_| entry()).collect(),
+            (0..5)
+                .map(|_| peazip_core::MemoryEntry {
+                    data: vec![0; 16 * 1024 * 1024],
+                    ..entry()
+                })
+                .collect(),
+        ] {
+            let mut export = Box::pin(export_entries(entries));
+            assert!(matches!(poll(export.as_mut()), Poll::Ready(Err(_))));
+            checks += 1;
+        }
+        let mut export = Box::pin(export_entries(vec![entry()]));
+        assert!(poll(export.as_mut()).is_pending());
+        let export_id = id(&mut env, &activity);
+        assert_eq!(
+            env.get_field(&activity, "opcode", "I")
+                .unwrap()
+                .i()
+                .unwrap(),
+            2
+        );
+        let packet = jni::objects::JByteArray::from(
+            env.get_field(&activity, "packet", "[B")
+                .unwrap()
+                .l()
+                .unwrap(),
+        );
+        let mut expected = Vec::new();
+        for n in [1u32, 0, "目录/a".len() as u32, 3] {
+            expected.extend_from_slice(&n.to_le_bytes());
+        }
+        expected.extend_from_slice("目录/a".as_bytes());
+        expected.extend_from_slice(&[1, 2, 3]);
+        assert_eq!(env.convert_byte_array(packet).unwrap(), expected);
+        let mut pick = Box::pin(pick_files());
+        assert!(matches!(poll(pick.as_mut()), Poll::Ready(Err(_))));
+        let mut save = Box::pin(save_zip(Arc::new(vec![1])));
+        assert!(matches!(poll(save.as_mut()), Poll::Ready(Err(_))));
+        let wrong_name = env.new_string("Archive.zip").unwrap();
+        Java_com_longbridge_nsh_PeaZipActivity_nativeSaved(
+            unsafe { env.unsafe_clone() },
+            class(),
+            export_id,
+            wrong_name,
+        );
+        Java_com_longbridge_nsh_PeaZipActivity_nativeComplete(
+            unsafe { env.unsafe_clone() },
+            class(),
+            export_id,
+        );
+        assert!(
+            poll(export.as_mut()).is_pending(),
+            "Save callback must not complete Export"
+        );
+        let root = "PeaZip-12345678-1234-4234-8234-123456789abc";
+        let name = env.new_string(root).unwrap();
+        Java_com_longbridge_nsh_PeaZipActivity_nativeExported(
+            unsafe { env.unsafe_clone() },
+            class(),
+            export_id,
+            name,
+        );
+        assert!(poll(export.as_mut()).is_pending());
+        Java_com_longbridge_nsh_PeaZipActivity_nativeComplete(
+            unsafe { env.unsafe_clone() },
+            class(),
+            export_id,
+        );
+        assert!(
+            matches!(poll(export.as_mut()), Poll::Ready(Ok(Some(name))) if name == format!("Extracted 1 entries to {root}"))
+        );
+        checks += 1;
+        let mut cancelled = Box::pin(export_entries(vec![entry()]));
+        assert!(poll(cancelled.as_mut()).is_pending());
+        let current_id = id(&mut env, &activity);
+        let stale_name = env.new_string(root).unwrap();
+        Java_com_longbridge_nsh_PeaZipActivity_nativeExported(
+            unsafe { env.unsafe_clone() },
+            class(),
+            export_id,
+            stale_name,
+        );
+        Java_com_longbridge_nsh_PeaZipActivity_nativeComplete(
+            unsafe { env.unsafe_clone() },
+            class(),
+            export_id,
+        );
+        assert!(poll(cancelled.as_mut()).is_pending());
+        Java_com_longbridge_nsh_PeaZipActivity_nativeCancelled(
+            unsafe { env.unsafe_clone() },
+            class(),
+            current_id,
+        );
+        assert!(poll(cancelled.as_mut()).is_pending());
+        Java_com_longbridge_nsh_PeaZipActivity_nativeComplete(
+            unsafe { env.unsafe_clone() },
+            class(),
+            current_id,
+        );
+        assert!(matches!(poll(cancelled.as_mut()), Poll::Ready(Ok(None))));
+        checks += 1;
+        let mut invalid = Box::pin(export_entries(vec![entry()]));
+        assert!(poll(invalid.as_mut()).is_pending());
+        let name = env.new_string("renamed").unwrap();
+        Java_com_longbridge_nsh_PeaZipActivity_nativeExported(
+            unsafe { env.unsafe_clone() },
+            class(),
+            id(&mut env, &activity),
+            name,
+        );
+        Java_com_longbridge_nsh_PeaZipActivity_nativeComplete(
+            unsafe { env.unsafe_clone() },
+            class(),
+            id(&mut env, &activity),
+        );
+        assert!(matches!(poll(invalid.as_mut()), Poll::Ready(Err(_))));
+        checks += 1;
+        env.set_field(&activity, "failExport", "Z", JValue::Bool(1))
+            .unwrap();
+        let mut failed = Box::pin(export_entries(vec![entry()]));
+        assert!(matches!(poll(failed.as_mut()), Poll::Ready(Err(_))));
+        assert!(!env.exception_check().unwrap());
+        env.set_field(&activity, "failExport", "Z", JValue::Bool(0))
+            .unwrap();
+        checks += 1;
+        let mut destroyed = Box::pin(export_entries(vec![entry()]));
+        assert!(poll(destroyed.as_mut()).is_pending());
+        let destroyed_id = id(&mut env, &activity);
+        let status = env.new_string(format!("Root: {root}; completed 1 entries; unfinished path: a. Documents may remain; nothing was deleted.")).unwrap();
+        Java_com_longbridge_nsh_PeaZipActivity_nativeExportProgress(
+            unsafe { env.unsafe_clone() },
+            class(),
+            destroyed_id,
+            status,
+        );
+        let next = env.new_object("MockActivity", "()V", &[]).unwrap();
+        let next_binding = Java_com_longbridge_nsh_PeaZipActivity_nativeBind(
+            unsafe { env.unsafe_clone() },
+            env.new_local_ref(&next).unwrap(),
+        );
+        assert!(
+            matches!(poll(destroyed.as_mut()), Poll::Ready(Err(error)) if error.contains(root) && error.contains("completed 1") && error.contains("unfinished path: a") && error.contains("may remain"))
+        );
+        let mut current = Box::pin(export_entries(vec![entry()]));
+        assert!(poll(current.as_mut()).is_pending());
+        Java_com_longbridge_nsh_PeaZipActivity_nativeUnbind(
+            unsafe { env.unsafe_clone() },
+            class(),
+            binding,
+        );
+        let stale = env.new_string(root).unwrap();
+        Java_com_longbridge_nsh_PeaZipActivity_nativeExported(
+            unsafe { env.unsafe_clone() },
+            class(),
+            destroyed_id,
+            stale,
+        );
+        Java_com_longbridge_nsh_PeaZipActivity_nativeComplete(
+            unsafe { env.unsafe_clone() },
+            class(),
+            destroyed_id,
+        );
+        assert!(poll(current.as_mut()).is_pending());
+        Java_com_longbridge_nsh_PeaZipActivity_nativeUnbind(
+            unsafe { env.unsafe_clone() },
+            class(),
+            next_binding,
+        );
+        assert!(
+            matches!(poll(current.as_mut()), Poll::Ready(Err(error)) if error.contains("completed 0") && error.contains("not yet known"))
+        );
+        checks += 1;
+    }
     assert!(!env.exception_check().unwrap());
     println!("PASS: {checks} JNI bridge checks, including 4096 items with 512 JNI local capacity");
     env.register_native_methods(
@@ -289,6 +498,16 @@ fn main() {
                 name: "nativeComplete".into(),
                 sig: "(J)V".into(),
                 fn_ptr: observed_complete as *mut c_void,
+            },
+            NativeMethod {
+                name: "nativeExported".into(),
+                sig: "(JLjava/lang/String;)V".into(),
+                fn_ptr: observed_exported as *mut c_void,
+            },
+            NativeMethod {
+                name: "nativeExportProgress".into(),
+                sig: "(JLjava/lang/String;)V".into(),
+                fn_ptr: Java_com_longbridge_nsh_PeaZipActivity_nativeExportProgress as *mut c_void,
             },
             NativeMethod {
                 name: "nativeUnbind".into(),
@@ -334,6 +553,26 @@ fn main() {
         .unwrap();
     assert!(
         matches!(poll(pick.as_mut()), Poll::Ready(Ok(Some(files))) if files.len() == 4 && files.iter().all(|file| file.data.len() == 16*1024*1024))
+    );
+    assert!(!OBSERVER_FAILED.load(Ordering::SeqCst));
+    let mut export = Box::pin(export_entries(vec![peazip_core::MemoryEntry {
+        path: "empty/".into(),
+        is_dir: true,
+        data: vec![],
+    }]));
+    assert!(poll(export.as_mut()).is_pending());
+    let export_id = id(&mut env, &mock);
+    env.call_static_method(
+        "BridgeLifecycleCheck",
+        "startExportDelivery",
+        "(Lcom/longbridge/nsh/PeaZipActivity;J)V",
+        &[JValue::Object(&owner), JValue::Long(export_id)],
+    )
+    .unwrap();
+    env.call_static_method("BridgeLifecycleCheck", "awaitExportDelivery", "()V", &[])
+        .unwrap();
+    assert!(
+        matches!(poll(export.as_mut()), Poll::Ready(Ok(Some(name))) if name == "Extracted 1 entries to PeaZip-12345678-1234-4234-8234-123456789abc")
     );
     assert!(!OBSERVER_FAILED.load(Ordering::SeqCst));
     Java_com_longbridge_nsh_PeaZipActivity_nativeUnbind(

@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -47,6 +48,8 @@ public final class PeaZipActivity extends Activity {
     private static native void nativeUnbind(long generation);
     private static native void nativePicked(long id, String[] names, byte[][] bytes);
     private static native void nativeSaved(long id, String displayName);
+    private static native void nativeExported(long id, String rootName);
+    private static native void nativeExportProgress(long id, String status);
     private static native void nativeCancelled(long id);
     private static native void nativeFailed(long id, String message);
     private static native void nativeComplete(long id);
@@ -137,11 +140,20 @@ public final class PeaZipActivity extends Activity {
         return begin(id, bytes);
     }
 
+    public boolean exportEntries(long id, byte[] packet) {
+        if (packet == null || packet.length > TreeExport.MAX_PACKET) throw new IllegalArgumentException("Invalid export packet size.");
+        return begin(id, packet, true);
+    }
+
     private boolean begin(long id, byte[] bytes) {
+        return begin(id, bytes, false);
+    }
+
+    private boolean begin(long id, byte[] bytes, boolean export) {
         Task task;
         synchronized (TRANSFERS) {
             if (destroyed || active != null) return false;
-            task = new Task(id, 0, bytes);
+            task = new Task(id, 0, bytes, export);
             task.owner = new WeakReference<>(this);
             active = task;
         }
@@ -174,11 +186,14 @@ public final class PeaZipActivity extends Activity {
         task.requestCode = ++requestCode;
         pending = task;
         try {
-            Intent intent = new Intent(task.save ? Intent.ACTION_CREATE_DOCUMENT : Intent.ACTION_OPEN_DOCUMENT);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType(task.save ? "application/zip" : "*/*");
-            if (task.save) intent.putExtra(Intent.EXTRA_TITLE, "Archive.zip");
-            else intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            Intent intent = new Intent(task.export != null ? Intent.ACTION_OPEN_DOCUMENT_TREE
+                    : task.save ? Intent.ACTION_CREATE_DOCUMENT : Intent.ACTION_OPEN_DOCUMENT);
+            if (task.export == null) {
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType(task.save ? "application/zip" : "*/*");
+                if (task.save) intent.putExtra(Intent.EXTRA_TITLE, "Archive.zip");
+                else intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            }
             startActivityForResult(intent, task.requestCode);
         } catch (Exception e) {
             finish(task, null, null, null, message(e));
@@ -199,7 +214,7 @@ public final class PeaZipActivity extends Activity {
             if (result != RESULT_OK || data == null) throw new IOException("Document picker returned no document.");
             ClipData clip = data.getClipData();
             int count = clip == null ? (data.getData() == null ? 0 : 1) : clip.getItemCount();
-            if (count <= 0 || count > MAX_FILES || (task.save && count != 1)) {
+            if (count <= 0 || count > MAX_FILES || ((task.save || task.export != null) && count != 1)) {
                 throw new IOException("Invalid document count (maximum 4096 input files).");
             }
             Uri[] uris = new Uri[count];
@@ -208,6 +223,7 @@ public final class PeaZipActivity extends Activity {
                 if (uri == null || !"content".equals(uri.getScheme())) {
                     throw new IOException("Only content:// document URIs are accepted.");
                 }
+                if (task.export != null) SafTreeExport.requireTree(uri);
                 uris[i] = uri;
             }
             task.started = true;
@@ -218,10 +234,11 @@ public final class PeaZipActivity extends Activity {
         }
     }
 
-    private static final class Task {
+    static final class Task {
         final long id;
         int requestCode;
         final boolean save;
+        final TreeExport export;
         volatile boolean destroyed;
         volatile byte[] bytes;
         boolean started;
@@ -235,9 +252,14 @@ public final class PeaZipActivity extends Activity {
         boolean closeDone = true;
 
         Task(long id, int code, byte[] bytes) {
+            this(id, code, bytes, false);
+        }
+
+        Task(long id, int code, byte[] bytes, boolean exporting) {
             this.id = id;
             this.requestCode = code;
-            this.save = bytes != null;
+            this.save = bytes != null && !exporting;
+            this.export = exporting ? new TreeExport() : null;
             this.bytes = bytes;
         }
 
@@ -357,22 +379,36 @@ public final class PeaZipActivity extends Activity {
         if (length < AssetFileDescriptor.UNKNOWN_LENGTH || length > budget) {
             throw new IOException("Selected asset exceeds the entry or total byte limit.");
         }
+        ParcelFileDescriptor parcel = descriptor.getParcelFileDescriptor();
+        boolean reliable = parcel.canDetectErrors();
+        byte[] result;
         // The asset's offset/length bounds are authoritative; SIZE metadata is only a hint.
         try (InputStream input = descriptor.createInputStream()) {
             task.track(input);
-            return readBounded(input, budget, task);
+            result = readBounded(input, budget, task);
         }
+        // Logical bounded EOF bypasses PFD's check; physical EOF already checked and consumed its status.
+        if (reliable && length >= 0 && result.length == length) parcel.checkError();
+        task.check();
+        return result;
     }
 
     private static void writeAsset(AssetFileDescriptor descriptor, byte[] bytes, Task task) throws IOException {
+        writeAsset(descriptor, bytes, 0, bytes.length, task);
+    }
+
+    static void writeAsset(AssetFileDescriptor descriptor, byte[] bytes, int start, int count, Task task) throws IOException {
         if (descriptor.getDeclaredLength() != AssetFileDescriptor.UNKNOWN_LENGTH || descriptor.getStartOffset() != 0) {
-            throw new IOException("Saving ZIP requires a whole document with unknown asset length and zero offset.");
+            throw new IOException("Writing requires a whole document with unknown asset length and zero offset.");
         }
+        ParcelFileDescriptor parcel = descriptor.getParcelFileDescriptor();
+        // Capture before close: closing clears the communication FD, but retains its received status.
+        boolean reliable = parcel.canDetectErrors();
         try (OutputStream output = descriptor.createOutputStream()) {
             task.track(output);
-            for (int offset = 0; offset < bytes.length; ) {
+            for (int offset = start; offset < start + count; ) {
                 task.check();
-                int length = Math.min(8192, bytes.length - offset);
+                int length = Math.min(8192, start + count - offset);
                 output.write(bytes, offset, length);
                 offset += length;
             }
@@ -380,6 +416,9 @@ public final class PeaZipActivity extends Activity {
             output.flush();
             task.check();
         }
+        // Only errors already observable at local close can be checked; this is not remote commit acknowledgement.
+        if (reliable) parcel.checkError();
+        task.check();
     }
 
     private static void transfer(ContentResolver resolver, Task task, Uri[] uris) {
@@ -389,7 +428,12 @@ public final class PeaZipActivity extends Activity {
         String failure = null;
         try {
             task.check();
-            if (task.save) {
+            if (task.export != null) {
+                byte[] packet = task.bytes;
+                task.bytes = null;
+                saved = task.export.run(packet, new SafTreeExport(resolver, uris[0], task,
+                        status -> nativeExportProgress(task.id, status)));
+            } else if (task.save) {
                 String name = metadata(resolver, uris[0], task).name;
                 byte[] bytes = task.bytes;
                 task.bytes = null;
@@ -468,10 +512,14 @@ public final class PeaZipActivity extends Activity {
             if (Looper.myLooper() == Looper.getMainLooper()) throw new IllegalStateException("JNI transfer must run off the UI thread.");
             if (!clearActivity(task)) return;
             if (failure != null) {
+                if (task.export != null && !failure.contains("Documents may remain")) failure += " " + task.export.status();
                 if (task.save) failure += " The destination may contain a partial document; it was not deleted.";
                 nativeFailed(task.id, failure);
             } else if (names != null) nativePicked(task.id, names, contents);
-            else if (saved != null) nativeSaved(task.id, saved);
+            else if (saved != null) {
+                if (task.export != null) nativeExported(task.id, saved);
+                else nativeSaved(task.id, saved);
+            }
             else nativeCancelled(task.id);
             staged = true;
         } catch (InterruptedException e) {

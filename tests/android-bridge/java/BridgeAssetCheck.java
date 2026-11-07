@@ -46,11 +46,47 @@ public class BridgeAssetCheck {
                     || !Files.readString(file).equals("XXabcSECRET")) throw new AssertionError("Rejected output touched the document");
             write(asset(file, 0, -1), zip);
             if (!Arrays.equals(Files.readAllBytes(file), zip)) throw new AssertionError("Whole document save was incomplete");
+            byte[] packet = {9, 8, 1, 2, 3, 4, 7};
+            BridgeLifecycleCheck.call(ACTIVITY, null, "writeAsset",
+                    new Class<?>[] {AssetFileDescriptor.class, byte[].class, int.class, int.class, TASK},
+                    asset(file, 0, -1), packet, 2, 4, task());
+            if (!Arrays.equals(Files.readAllBytes(file), zip)) throw new AssertionError("Export write escaped packet slice");
             AssetFileDescriptor closeFailure = asset(file, 0, -1);
             BridgeLifecycleCheck.set(closeFailure, "failClose", true);
             rejects(() -> write(closeFailure, zip));
             if (!Files.exists(file)) throw new AssertionError("Failed save deleted the destination");
-            System.out.println("PASS: 7 asset checks: selected slice/probe, declared budget, bounded/offset save rejection, whole save and close failure");
+            AssetFileDescriptor reliableWrite = asset(file, 0, -1);
+            var writeParcel = reliableWrite.getParcelFileDescriptor();
+            writeParcel.getClass().getField("reliable").setBoolean(writeParcel, true);
+            writeParcel.getClass().getField("peerError").setBoolean(writeParcel, true);
+            rejects(() -> write(reliableWrite, zip));
+            if (writeParcel.canDetectErrors() || writeParcel.getClass().getField("checksAfterClose").getInt(writeParcel) != 1)
+                throw new AssertionError("Cached write peer error was not checked after close");
+            for (long length : new long[] {-1, zip.length}) {
+                AssetFileDescriptor reliableRead = asset(file, 0, length);
+                var readParcel = reliableRead.getParcelFileDescriptor();
+                readParcel.getClass().getField("reliable").setBoolean(readParcel, true);
+                readParcel.getClass().getField("peerError").setBoolean(readParcel, true);
+                rejects(() -> read(reliableRead, zip.length));
+                int afterClose = readParcel.getClass().getField("checksAfterClose").getInt(readParcel);
+                if (readParcel.canDetectErrors() || readParcel.getClass().getField("checks").getInt(readParcel) != 1
+                        || afterClose != (length < 0 ? 0 : 1))
+                    throw new AssertionError("Cached read peer error was not checked after close");
+            }
+            AssetFileDescriptor reliableOK = asset(file, 0, -1);
+            var okParcel = reliableOK.getParcelFileDescriptor();
+            okParcel.getClass().getField("reliable").setBoolean(okParcel, true);
+            write(reliableOK, zip);
+            if (okParcel.getClass().getField("checks").getInt(okParcel) != 1)
+                throw new AssertionError("Reliable successful write skipped status check");
+            AssetFileDescriptor reliableWholeRead = asset(file, 0, -1);
+            var wholeParcel = reliableWholeRead.getParcelFileDescriptor();
+            wholeParcel.getClass().getField("reliable").setBoolean(wholeParcel, true);
+            if (!Arrays.equals(read(reliableWholeRead, zip.length), zip)
+                    || wholeParcel.getClass().getField("checks").getInt(wholeParcel) != 1
+                    || wholeParcel.getClass().getField("checksAfterClose").getInt(wholeParcel) != 0)
+                throw new AssertionError("Physical EOF peer status was checked twice");
+            System.out.println("PASS: 13 asset checks: selected slice/probe, declared budget, bounded/offset save rejection, whole save, export packet slice, close failure and cached reliable peer errors (host model)");
         } finally { Files.deleteIfExists(file); }
     }
 }

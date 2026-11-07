@@ -41,10 +41,13 @@ public class BridgeLifecycleCheck {
         return (ThreadPoolExecutor) field(ACTIVITY, name).get(null);
     }
     static Object prepare(PeaZipActivity activity, long id, boolean save) throws Exception {
+        return prepare(activity, id, save, false);
+    }
+    static Object prepare(PeaZipActivity activity, long id, boolean save, boolean exporting) throws Exception {
         owner = activity;
-        Constructor<?> constructor = TASK.getDeclaredConstructor(long.class, int.class, byte[].class);
+        Constructor<?> constructor = TASK.getDeclaredConstructor(long.class, int.class, byte[].class, boolean.class);
         constructor.setAccessible(true);
-        Object next = constructor.newInstance(id, 1, save ? new byte[1] : null);
+        Object next = constructor.newInstance(id, 1, save || exporting ? new byte[1] : null, exporting);
         set(next, "owner", new WeakReference<>(activity));
         set(next, "started", true);
         set(activity, "destroyed", false);
@@ -70,6 +73,23 @@ public class BridgeLifecycleCheck {
                         current, new String[] {"a", "b", "c", "d"}, new byte[][] {bytes, bytes, bytes, bytes}, null, null);
             } catch (Throwable e) { failure = e.toString(); delivery.countDown(); }
         });
+    }
+    public static void startExportDelivery(PeaZipActivity activity, long id) throws Exception {
+        Object current = prepare(activity, id, false, true);
+        delivery = new CountDownLatch(1);
+        picked = completed = false;
+        failure = null;
+        executor("IO").execute(() -> {
+            try {
+                call(ACTIVITY, null, "deliver", new Class<?>[] {TASK, String[].class, byte[][].class, String.class, String.class},
+                        current, null, null, "PeaZip-12345678-1234-4234-8234-123456789abc", null);
+            } catch (Throwable e) { failure = e.toString(); delivery.countDown(); }
+        });
+    }
+    public static void awaitExportDelivery() throws Exception {
+        await(delivery);
+        if (failure != null || !picked || !completed) throw new AssertionError("Export background handoff failed: " + failure);
+        System.out.println("PASS: export JNI staging/completion off UI; shared admission released before Rust future completion");
     }
     // Called by the real JVM's registered JNI entry points, before production conversion/commit.
     public static void record(boolean commit) {
@@ -131,7 +151,10 @@ public class BridgeLifecycleCheck {
         }
     }
     static void blockedIO(PeaZipActivity activity, boolean write, boolean hold) throws Exception {
-        Object current = prepare(activity, 9000, write);
+        blockedIO(activity, write, hold, false);
+    }
+    static void blockedIO(PeaZipActivity activity, boolean write, boolean hold, boolean exporting) throws Exception {
+        Object current = prepare(activity, 9000, write, exporting);
         Blocked blocked = new Blocked(hold);
         CancellationSignal signal = (CancellationSignal) get(current, "signal");
         signal.setOnCancelListener(blocked::cancel);
@@ -163,7 +186,10 @@ public class BridgeLifecycleCheck {
         if (!signal.isCanceled() || !"PeaZip-cancel".equals(blocked.cancelThread) || !"PeaZip-close".equals(blocked.closeThread))
             throw new AssertionError("Underlying cancel/close was not dispatched off UI");
         if (hold) {
-            for (int i = 0; i < 200; i++) if (replacement.pickArchiveInputs(i)) throw new AssertionError("Old cleanup admitted another Activity transfer");
+            for (int i = 0; i < 200; i++) {
+                if (replacement.pickArchiveInputs(i) || replacement.saveArchive(i, new byte[1])
+                        || replacement.exportEntries(i, new byte[1])) throw new AssertionError("Old cleanup admitted another Activity transfer");
+            }
             blocked.allowClose.countDown();
             await(done);
             if (available()) throw new AssertionError("Blocked cancellation no longer held admission");
@@ -177,11 +203,12 @@ public class BridgeLifecycleCheck {
         blockedIO(activity, false, false);
         blockedIO(activity, true, false);
         blockedIO(activity, false, true);
+        blockedIO(activity, true, true, true);
         for (String name : new String[] {"IO", "CANCEL", "CLOSE"}) {
             ThreadPoolExecutor executor = executor(name);
             if (executor.getLargestPoolSize() > 1 || executor.getQueue().size() > 1)
                 throw new AssertionError("Unbounded transfer/cleanup executor");
         }
-        System.out.println("PASS: blocked read/write cancel and close off UI; blocked cleanup rejects 200 cross-Activity admissions; workers bounded to 1+1+1");
+        System.out.println("PASS: blocked read/save/export cancel and close off UI; blocked cleanup rejects 200 cross-Activity Pick/Save/Export admissions; workers bounded to 1+1+1");
     }
 }

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.peazip.rust.bridgechecks">
+  <application android:label="PeaZip bridge checks" />
+  <instrumentation android:name="io.peazip.rust.bridgechecks.ReliablePipeChecks"
+      android:targetPackage="io.peazip.rust" android:functionalTest="true" />
+</manifest>

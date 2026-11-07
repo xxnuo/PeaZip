@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import shutil
 import shlex
+import struct
 import subprocess
 import sys
 import time
@@ -20,19 +21,26 @@ PACKAGE = "io.peazip.rust"
 class Smoke:
     def __init__(self, args):
         self.args = args
-        self.out = ROOT / "target/android-smoke"
-        self.out.mkdir(parents=True, exist_ok=True)
         self.token = uuid.uuid4().hex[:12]
+        self.out = ROOT / "target/android-smoke" / self.token
+        self.out.mkdir(parents=True, exist_ok=True)
         self.remote_xml = f"/sdcard/peazip-smoke-{self.token}.xml"
         self.files = []
         self.xml = ""
         self.pids = set()
         self.started = None
+        self.export_parent = f"/sdcard/Documents/peazip-{self.token}-exports"
+        self.export_owned = False
 
     def adb(self, *args, check=True, binary=False):
         result = subprocess.run([self.args.adb, "-s", self.args.serial, *map(str, args)],
                                 capture_output=True, timeout=self.args.timeout,
                                 text=not binary)
+        with (self.out / f"adb-{self.token}.log").open("a") as log:
+            log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {shlex.join(list(map(str, args)))} "
+                      f"exit={result.returncode}\n")
+            if not binary and args[:2] != ("exec-out", "cat"):
+                log.write(result.stdout + result.stderr)
         if check and result.returncode:
             raise RuntimeError(f"adb {args}: {result.stderr!r} {result.stdout!r}")
         return result.stdout
@@ -255,6 +263,166 @@ class Smoke:
         (self.out / f"{name}.xml").write_text(self.xml)
         (self.out / f"{name}.png").write_bytes(self.adb("exec-out", "screencap", "-p", binary=True))
 
+    def extraction_button(self, enabled):
+        def valid(tree):
+            parents = {child: parent for parent in tree.iter() for child in parent}
+            for node in tree.iter("node"):
+                if self.match(node, "Extract selected…"):
+                    while node.get("class") != "android.widget.Button" and node in parents:
+                        node = parents[node]
+                    return node.get("enabled") == str(enabled).lower()
+            return False
+        self.wait(f"Extract selected enabled={enabled}", valid)
+
+    def extraction_state(self, filename, status=None):
+        self.label(filename)
+        self.label("1 selected")
+        if status:
+            self.label(status)
+        self.wait("only tree/ selected; archive snapshot preserved", lambda t: {
+            n.get("content-desc"): n.get("checked") for n in t.iter("node")
+            if n.get("checkable") == "true" and n.get("package") == PACKAGE
+        } == {name: str(name == "tree/").lower() for name in self.entries})
+        self.extraction_button(True)
+
+    def export_snapshot(self, name):
+        local = self.out / f"extract-{self.token}-{name}"
+        self.adb("pull", self.export_parent, local)
+        return {p.relative_to(local).as_posix(): None if p.is_dir() else p.read_bytes()
+                for p in local.rglob("*")}
+
+    def tree_picker(self):
+        self.tap("Extract selected…")
+        self.documents()
+        self.save("extract-tree-picker")
+        self.wait("tree picker folder action", lambda t: any(
+            n.get("text", "").lower() == "use this folder" for n in t.iter("node")))
+
+    def export_destination(self):
+        model = self.adb("shell", "getprop", "ro.product.model").strip()
+        tree = self.documents()
+        if any(self.match(n, "Show roots") for n in tree.iter("node")):
+            self.tap("Show roots")
+            tree = self.wait("internal storage root", lambda t: any(
+                n.get("resource-id") == "android:id/title" and
+                n.get("text") in (model, "Internal storage", "Internal shared storage")
+                for n in t.iter("node")))
+            title = next(n.get("text") for n in tree.iter("node") if
+                         n.get("resource-id") == "android:id/title" and
+                         n.get("text") in (model, "Internal storage", "Internal shared storage"))
+            self.tap(title, "android:id/title")
+        elif not any(self.match(n, "Documents") and n.get("resource-id") == "android:id/title"
+                     for n in tree.iter("node")):
+            breadcrumb = next((n for n in tree.iter("node") if self.match(n, model)
+                               and n.get("resource-id", "").endswith(":id/breadcrumb_text")), None)
+            if breadcrumb is None:
+                raise RuntimeError("Tree picker has no internal storage navigation")
+            self.tap(model, breadcrumb.get("resource-id"))
+        self.tap("Documents", "android:id/title")
+        self.tap(Path(self.export_parent).name, "android:id/title")
+        self.save("extract-parent-picker")
+        self.button(("Use this folder", "USE THIS FOLDER"))
+        self.button(("Allow", "ALLOW"))
+
+    def extract_selected(self):
+        sdk = self.adb("shell", "getprop", "ro.build.version.sdk").strip()
+        if sdk != "36":
+            raise RuntimeError(f"Extraction smoke requires Android 36, got {sdk}")
+        payload = b"PeaZip selected nested payload\x00\xff\n"
+        text_payload = b"PeaZip plain text MIME smoke\n"
+        contents = {"tree/": b"", "tree/child.bin": payload,
+                    "tree/note.txt": text_payload, "tree/empty/": b"",
+                    "other.txt": b"must not be exported\n"}
+        good = self.out / f"peazip-{self.token}-nested.zip"
+        with zipfile.ZipFile(good, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name, data in contents.items():
+                archive.writestr(name, data)
+        bad = self.out / f"peazip-{self.token}-crc.zip"
+        damaged = bytearray(good.read_bytes())
+        with zipfile.ZipFile(good) as archive:
+            offset = archive.getinfo("tree/child.bin").header_offset
+        name_len, extra_len = struct.unpack_from("<HH", damaged, offset + 26)
+        damaged[offset + 30 + name_len + extra_len] ^= 1
+        bad.write_bytes(damaged)
+        with zipfile.ZipFile(bad) as archive:
+            assert archive.namelist() == list(contents)
+            assert archive.testzip() == "tree/child.bin"
+        for local in (good, bad):
+            remote = f"/sdcard/Download/{local.name}"
+            self.files.append(remote)
+            self.adb("push", local, remote)
+            self.scan(remote)
+        # mkdir must fail on a collision, so cleanup can only own a new directory.
+        self.adb("shell", "mkdir", "-p", "/sdcard/Documents")
+        self.adb("shell", "mkdir", self.export_parent)
+        self.export_owned = True
+        sentinel = self.out / f"extract-{self.token}-sentinel.bin"
+        sentinel.write_bytes(b"PeaZip export parent sentinel\x00\xff\n")
+        self.adb("push", sentinel, f"{self.export_parent}/sentinel.bin")
+        baseline = self.export_snapshot("before")
+        assert baseline == {"sentinel.bin": sentinel.read_bytes()}
+        self.entries = list(contents)
+        self.choose(good.name)
+        self.archive(good.name)
+        self.extraction_button(False)
+        self.tap("tree/")
+        self.extraction_state(good.name)
+        self.tree_picker()
+        self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
+        self.extraction_state(good.name, "Extraction cancelled.")
+        if self.export_snapshot("cancelled") != baseline:
+            raise RuntimeError("Tree picker cancellation changed the export parent")
+        self.save("extract-cancelled")
+        print("PASS real tree picker cancellation preserves snapshot/selection; no output", flush=True)
+        self.choose(bad.name)
+        self.archive(bad.name)
+        self.tap("tree/")
+        self.tap("Extract selected…")
+        def rejected(tree):
+            if any(n.get("package", "").endswith(".documentsui") for n in tree.iter("node")):
+                raise AssertionError("CRC-invalid payload opened DocumentsUI before rejection")
+            return any(n.get("text", "").startswith("Could not extract ZIP:")
+                       for n in tree.iter("node"))
+        tree = self.wait("CRC rejection before tree picker", rejected)
+        error = next(n.get("text") for n in tree.iter("node")
+                     if n.get("text", "").startswith("Could not extract ZIP:"))
+        self.extraction_state(bad.name, error)
+        if self.export_snapshot("crc-rejected") != baseline:
+            raise RuntimeError("CRC rejection wrote output")
+        self.save("extract-crc-rejected")
+        print(f"PASS selected CRC-invalid payload rejected before picker: {error}", flush=True)
+        self.choose(good.name)
+        self.archive(good.name)
+        self.tap("tree/")
+        self.tree_picker()
+        self.export_destination()
+        tree = self.wait("extraction report", lambda t: any(
+            n.get("text", "").startswith("Extracted ") or
+            n.get("text", "").startswith("Could not extract ZIP:") for n in t.iter("node")))
+        report = next(n.get("text") for n in tree.iter("node") if
+                      n.get("text", "").startswith(("Extracted ", "Could not extract ZIP:")))
+        match = re.fullmatch(r"Extracted 4 entries to (PeaZip-([0-9a-fA-F-]{36}))", report)
+        if not match:
+            raise RuntimeError(f"Unexpected extraction report: {report}")
+        uuid.UUID(match[2])
+        folder = match[1]
+        expected = {**baseline, folder: None, f"{folder}/tree": None,
+                    f"{folder}/tree/child.bin": payload,
+                    f"{folder}/tree/note.txt": text_payload, f"{folder}/tree/empty": None}
+        if self.export_snapshot("success") != expected:
+            raise RuntimeError("Extracted files/directories/content or sentinel differ from expected")
+        self.save("extracted")
+        self.health()
+        (self.out / f"extract-{self.token}-result.log").write_text(
+            f"Android SDK: {sdk}\nSerial: {self.args.serial}\nParent: {self.export_parent}\n"
+            f"{report}\nVerified via adb pull: selected binary and .txt bytes, empty directory, "
+            "unselected file absent, sentinel unchanged.\n"
+            "Real DocumentsUI tree cancellation: snapshot/selection preserved, no output.\n"
+            f"CRC preflight rejection before picker: {error}\n"
+            "Recovery: reopened valid ZIP and extracted successfully.\n")
+        print(f"PASS Android {sdk} real SAF: {report}; nested bytes/empty directory verified; "
+              "unselected other.txt absent; sentinel unchanged; recovery after CRC rejection", flush=True)
+
     def health(self):
         pid = self.adb("shell", "pidof", PACKAGE).strip()
         if not pid:
@@ -324,6 +492,7 @@ class Smoke:
         print("PASS reopening valid ZIP recovers", flush=True)
         self.create_oversized(sample)
         self.create_save()
+        self.extract_selected()
 
 
 def main():
@@ -360,6 +529,12 @@ def main():
             except Exception as error:
                 failed = True
                 print(f"FAIL cleanup {remote}: {error}", file=sys.stderr)
+        if smoke.export_owned:
+            try:
+                smoke.adb("shell", "rm", "-rf", smoke.export_parent)
+            except Exception as error:
+                failed = True
+                print(f"FAIL cleanup {smoke.export_parent}: {error}", file=sys.stderr)
     print(f"{'FAIL' if failed else 'PASS'} artifacts: {smoke.out}")
     return int(failed)
 
