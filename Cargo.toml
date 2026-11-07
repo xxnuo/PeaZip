@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/peazip-core", "crates/peazip-native", "crates/peazip-ui", "crates/peazip-web", "crates/peazip-worker"]
+members = ["crates/peazip-core", "crates/peazip-native", "crates/peazip-ui", "crates/peazip-web", "crates/peazip-worker", "crates/peazip-android", "crates/peazip-ios"]
 resolver = "2"
 
 [profile.web]

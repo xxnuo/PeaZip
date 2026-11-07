@@ -11,7 +11,7 @@
 | 3 | 安全文件系统与平台文件选择、后台任务、进度、取消、覆盖冲突 | 符号链接/竞态/失败清理测试；大文件不中断界面 | 已有有界读取、后台操作、新目标原子不覆盖发布、Web 创建取消与阶段进度；桌面取消/进度、其他冲突策略/流式大文件待完成 |
 | 4 | 上游格式与功能逐项迁移 | 格式/操作能力清单；跨工具兼容样本、加密/分卷/损坏文件测试 | 待完成 |
 | 5 | 文件管理、搜索、预览、校验、转换、分割、配置、语言与无障碍 | 按上游功能回归；权限和交互验证 | 待完成 |
-| 6 | 六平台构建、打包与发布 | 每个平台真实构建、运行、文件导入导出和归档往返；发布物可安装 | Web 优化构建/Chromium 导入已验证；其余平台运行、完整导出及发布验收待完成 |
+| 6 | 六平台构建、打包与发布 | 每个平台真实构建、运行、文件导入导出和归档往返；发布物可安装 | Web 浏览器流程、Android arm64 调试 APK 安装/导入已验证；iOS SDK 构建、移动导出及各平台发布验收待完成 |
 | 7 | 持续跟进上游 | 定期差异报告、映射到回归测试、审查并更新基线 | 持续 |
 
 ## 工程边界
@@ -97,4 +97,13 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 本轮验证：core 16、worker 6、native 21、UI 10 个测试函数及低句柄子进程通过；native/wasm Clippy、格式检查通过。JavaScript 32 项通过：9 项 Chromium 流程（含真实 Rust Worker/OPFS）和 23 项注入文件系统故障的单元测试。
 - OPFS 实测包括真实解压字节、空目录、未选内容不导出、sentinel 保持不变、CRC 失败无输出、权限/取消恢复、能力缺失提示及加载期取消；写入期取消测试在真实 OPFS writer 外注入等待，验证 abort 和残留空文件报告。目录 picker 被测试替换为 OPFS 授权入口，**没有验证原生外部目录选择器、真实磁盘权限或外部修改竞态**，这些仍是待验收项。
 
-下一步：推进 Android/iOS 构建与文件导入导出，同时补齐 Web 外部目录实际验收、桌面主动取消/进度、冲突策略、流式大文件及更多归档格式。Web 打开归档仍走 nsh picker，创建已使用预先检查大小的独立入口；两者限制不可混为一谈。六平台实际运行和发布验收仍是最终要求。
+## 移动宿主与构建验证
+
+- Android 与 iOS 宿主复用同一 `peazip-ui`，固定 nsh revision 并关闭 JS 默认 features；移动 app ID 为 `io.peazip.rust`。根布局增加安全区域留白，避免按钮与状态栏/手势区重叠。
+- `uv run python scripts/build_android.py` 使用锁定依赖中的 Java 源码，执行 Rust、javac、d8、aapt2、zipalign 和 apksigner；无需 Gradle，也不修改本机 nsh 源码。支持 `--sdk`、`--ndk`、`--jdk`、`--abi`；默认优化 Rust 构建，产物 `target/android/arm64-v8a/peazip-arm64-v8a-debug.apk` 为 **debug 签名/可调试预览**，不是商店发布包。
+- 本机 Android 实测使用 SDK 35、build-tools 36.0.0、NDK 29.0.13113456、Android Studio 自带 JDK，进程内配置工具路径。APK 签名验证及 16 KiB zipalign 检查通过，ELF LOAD 段对齐为 0x4000。仅 arm64-v8a 已实际构建，其他 ABI 选项尚未验证。
+- `uv run python scripts/smoke_android.py --serial emulator-5554 --apk target/android/arm64-v8a/peazip-arm64-v8a-debug.apk` 在独立 Android 36 模拟器上通过：实际安装/启动、系统 DocumentsUI 导入、中文名称和空目录、全选/清空及全部 checkbox 状态、取消 picker 保留内容、损坏归档报错后恢复。PID 保持稳定、无应用 AndroidRuntime fatal；最终 PNG/XML 在 `target/android-smoke`。脚本只删除自身随机测试文件；专用模拟器已关闭。当前只验证英文 API36 系统 picker，未验证真机和其他系统版本。
+- `uv run python scripts/build_ios.py --target aarch64-apple-ios-sim` 已提供 SDK 查找、scoped Xcode、真实 Mach-O 架构/平台检查和 `.app` 打包；模拟器 ad-hoc 签名，真机输出明确未签名。**本机只有 Command Line Tools，Xcode 别名目标不存在，模拟器/真机 SDK 缺失，未生成或运行 iOS app**。5 项脚本测试验证环境边界和拒绝假平台产物，host stub 通过不能替代 iOS 编译。
+- CI 新增 Android APK 与 iOS simulator app 构建/产物作业，尚未取得远程运行结果。Rust workspace 回归、Clippy、格式检查、6 项 Python 测试和 Web 32 项测试通过；只读 nsh 工作树保持干净。Android/iOS 当前产品功能仅导入、列表和选择，创建及解压导出尚未接入。
+
+下一步：实现 Android 创建/SAF 导出并验证，继续推进 iOS SDK 环境与文件导出；补齐 Web 外部目录实际验收、桌面主动取消/进度、冲突策略、流式大文件及更多归档格式。Web 打开归档仍走 nsh picker，创建已使用预先检查大小的独立入口；两者限制不可混为一谈。六平台实际运行和发布验收仍是最终要求。

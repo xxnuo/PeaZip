@@ -65,6 +65,39 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - run: cargo test -p peazip-ui --locked
       - run: cargo clippy -p peazip-ui --all-targets --locked -- -D warnings
+  android-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: astral-sh/setup-uv@v6
+      - run: sdkmanager 'platforms;android-35' 'build-tools;36.0.0' 'ndk;29.0.13113456'
+      - run: uv run python scripts/build_android.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peazip-android-debug
+          path: target/android/arm64-v8a/peazip-arm64-v8a-debug.apk
+  ios-simulator-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run python scripts/build_ios.py --target aarch64-apple-ios-sim
+      - run: ditto -c -k --sequesterRsrc --keepParent target/ios/aarch64-apple-ios-sim/release/PeaZip.app target/ios/PeaZip-simulator.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peazip-ios-simulator
+          path: target/ios/PeaZip-simulator.zip
   upstream-report:
     runs-on: ubuntu-latest
     steps:

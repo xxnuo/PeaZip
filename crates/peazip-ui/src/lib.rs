@@ -251,6 +251,7 @@ pub fn App() -> impl IntoElement {
     );
     view()
         .flex_1()
+        .p_safe_area()
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
         .child(actions.child(text(move || path.get()).flex_1()))
