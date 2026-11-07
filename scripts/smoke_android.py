@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import subprocess
 import sys
 import time
@@ -62,7 +63,7 @@ class Smoke:
     def label(self, label):
         return self.wait(label, lambda t: any(self.match(n, label) for n in t.iter("node")))
 
-    def tap(self, label, resource=None):
+    def tap(self, label, resource=None, long=False):
         tree = self.wait(label, lambda t: any(self.match(n, label) and
                          (resource is None or n.get("resource-id") == resource)
                          for n in t.iter("node")))
@@ -79,7 +80,11 @@ class Smoke:
         x1, y1, x2, y2 = map(int, bounds.groups())
         if x2 <= x1 or y2 <= y1:
             raise RuntimeError(f"Empty bounds: {label}")
-        self.adb("shell", "input", "tap", (x1 + x2) // 2, (y1 + y2) // 2)
+        x, y = (x1 + x2) // 2, (y1 + y2) // 2
+        if long:
+            self.adb("shell", "input", "swipe", x, y, x, y, 800)
+        else:
+            self.adb("shell", "input", "tap", x, y)
 
     def picker(self):
         self.tap("Open ZIP…")
@@ -92,13 +97,13 @@ class Smoke:
         self.wait("picker search field", lambda t: any(
             n.get("class") in ("android.widget.EditText", "android.widget.AutoCompleteTextView") and n.get("focused") == "true"
             for n in t.iter("node")))
-        self.adb("shell", "input", "text", filename)
+        self.adb("shell", "input", "text", filename.split(" ", 1)[0])
         self.adb("shell", "input", "keyevent", "KEYCODE_ENTER")
         self.tap(filename, "android:id/title")
 
-    def archive(self, filename, selected=0):
+    def archive(self, filename, selected=0, status=None, directory=True):
         self.label(filename)
-        self.label(f"{len(self.entries)} entries")
+        self.label(status or f"{len(self.entries)} entries")
         self.label(f"{selected} selected")
         def valid(tree):
             rows = [n for n in tree.iter("node") if n.get("checkable") == "true"
@@ -106,8 +111,144 @@ class Smoke:
             return (set(n.get("content-desc") for n in rows) == set(self.entries)
                     and len(rows) == len(self.entries)
                     and all(n.get("checked") == str(bool(selected)).lower() for n in rows)
-                    and any(self.match(n, "—") for n in tree.iter("node")))
+                    and (not directory or any(self.match(n, "—") for n in tree.iter("node"))))
         self.wait("entry names, empty directory marker and checkbox states", valid)
+
+    def documents(self):
+        return self.wait("system DocumentsUI", lambda t: any(
+            n.get("package", "").endswith(".documentsui") for n in t.iter("node")))
+
+    def button(self, labels):
+        tree = self.wait(" / ".join(labels), lambda t: any(
+            any(self.match(n, label) for label in labels) and n.get("enabled") == "true"
+            for n in t.iter("node")))
+        self.tap(next(label for label in labels if any(
+            self.match(n, label) and n.get("enabled") == "true" for n in tree.iter("node"))))
+
+    def downloads(self):
+        self.tap("Show roots")
+        self.tap("Downloads", "android:id/title")
+
+    def scan(self, remote):
+        self.adb("shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                 "-d", shlex.quote(f"file://{remote}"))
+
+    def create_inputs(self, query, names, evidence):
+        self.tap("Create ZIP…")
+        self.documents()
+        self.tap("Search")
+        self.wait("focused search", lambda t: any(n.get("focused") == "true" and
+                  n.get("class") in ("android.widget.EditText", "android.widget.AutoCompleteTextView")
+                  for n in t.iter("node")))
+        self.adb("shell", "input", "text", query)
+        self.adb("shell", "input", "keyevent", "KEYCODE_ENTER")
+        for index, name in enumerate(names):
+            self.tap(name, "android:id/title", long=index == 0)
+        self.save(evidence)
+        self.button(("Open", "OPEN", "Select", "SELECT"))
+
+    def create_oversized(self, sample):
+        name = f"peazip-{self.token}-oversized.bin"
+        local = self.out / name
+        with local.open("wb") as stream:
+            stream.truncate(17 * 1024 * 1024)
+        remote = f"/sdcard/Download/{name}"
+        self.files.append(remote)
+        self.adb("push", local, remote)
+        self.scan(remote)
+        self.tap("Select all")
+        self.archive(sample, len(self.entries))
+        self.create_inputs(name, [name], "create-oversized-selected")
+        tree = self.wait("metadata preflight rejection", lambda t: any(
+            n.get("text", "").startswith("Could not create ZIP: Input metadata exceeds")
+            for n in t.iter("node")))
+        error = next(n.get("text") for n in tree.iter("node") if
+                     n.get("text", "").startswith("Could not create ZIP: Input metadata exceeds"))
+        self.archive(sample, len(self.entries), status=error)
+        self.save("create-oversized-rejected")
+        self.health()
+        print(f"PASS 17 MiB metadata rejection preserves archive and selection: {error}", flush=True)
+
+    def create_save(self):
+        prefix = f"peazip-{self.token}-source-"
+        contents = {f"{prefix}ascii.txt": b"PeaZip smoke\n",
+                    f"{prefix}中文.bin": bytes(range(256)),
+                    f"{prefix}empty.txt": b""}
+        for name, data in contents.items():
+            local = self.out / name
+            local.write_bytes(data)
+            remote = f"/sdcard/Download/{name}"
+            self.files.append(remote)
+            self.adb("push", local, remote)
+            self.scan(remote)
+        self.create_inputs(prefix, contents, "create-multiselected")
+        self.entries = list(contents)
+        self.archive("Archive.zip", status=f"Created ZIP: {len(contents)} entries", directory=False)
+        self.save("created")
+        self.tap("Select all")
+        before = self.adb("shell", "ls", "-1", "/sdcard/Download")
+        self.tap("Save ZIP…")
+        self.documents()
+        self.label("Archive.zip")
+        self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
+        self.archive("Archive.zip", len(contents), "Save cancelled.", directory=False)
+        after = self.adb("shell", "ls", "-1", "/sdcard/Download")
+        if before != after:
+            raise RuntimeError("Save cancellation changed Downloads contents")
+        self.save("save-cancelled")
+        print("PASS Save cancelled: entries and selection preserved; no Downloads output", flush=True)
+        output_name = f"peazip-{self.token}-saved.zip"
+        sentinel_remote = f"/sdcard/Download/{output_name}"
+        sentinel = self.out / output_name
+        sentinel.write_bytes(b"PeaZip smoke sentinel: must not overwrite\n")
+        self.files.append(sentinel_remote)
+        self.adb("push", sentinel, sentinel_remote)
+        self.scan(sentinel_remote)
+        self.tap("Save ZIP…")
+        self.documents()
+        self.downloads()
+        tree = self.wait("save filename", lambda t: any(n.get("class") == "android.widget.EditText"
+                         for n in t.iter("node")))
+        field = next(n for n in tree.iter("node") if n.get("class") == "android.widget.EditText")
+        self.tap(field.get("text", ""), field.get("resource-id"))
+        self.adb("shell", "input", "keyevent", "KEYCODE_MOVE_END")
+        self.adb("shell", "input", "keyevent", *(["KEYCODE_DEL"] * len(field.get("text", ""))))
+        self.adb("shell", "input", "text", output_name)
+        self.label(output_name)
+        self.button(("Save", "SAVE"))
+        tree = self.wait("save result (never confirm Replace)", lambda t: any(
+            n.get("text", "").startswith("Saved ZIP: ") or self.match(n, "Replace")
+            or n.get("text", "").startswith("Could not save ZIP") for n in t.iter("node")))
+        saved = next((n.get("text")[len("Saved ZIP: "):] for n in tree.iter("node")
+                      if n.get("text", "").startswith("Saved ZIP: ")), None)
+        if not saved:
+            raise RuntimeError(f"Save did not complete; no Replace confirmation: {self.xml}")
+        if not re.fullmatch(rf"peazip-{self.token}-saved(?: \(\d+\))?\.zip", saved):
+            raise RuntimeError(f"Unexpected saved display name: {saved!r}")
+        remote = f"/sdcard/Download/{saved}"
+        if remote != sentinel_remote:
+            self.files.append(remote)
+        if self.adb("exec-out", "cat", shlex.quote(sentinel_remote), binary=True) != sentinel.read_bytes():
+            raise RuntimeError("Save silently overwrote the same-name sentinel")
+        if saved == output_name:
+            raise RuntimeError("Save reused the sentinel name")
+        self.archive("Archive.zip", len(contents), f"Saved ZIP: {saved}", directory=False)
+        local = self.out / saved
+        self.adb("pull", remote, local)
+        with zipfile.ZipFile(local) as archive:
+            if len(archive.infolist()) != len(contents) or set(archive.namelist()) != set(contents):
+                raise RuntimeError(f"Saved ZIP names differ: {archive.namelist()}")
+            if archive.testzip() is not None:
+                raise RuntimeError("Saved ZIP CRC failure")
+            for name, data in contents.items():
+                if archive.read(name) != data:
+                    raise RuntimeError(f"Saved ZIP content differs: {name}")
+        self.save("saved")
+        self.scan(remote)
+        self.choose(saved)
+        self.archive(saved, directory=False)
+        self.health()
+        print(f"PASS Create / Save / reimport: {saved}; names, content and CRC verified; same-name sentinel preserved", flush=True)
 
     def save(self, name):
         self.dump()
@@ -153,7 +294,7 @@ class Smoke:
                 break
             self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
             tree = self.dump()
-        self.adb("shell", "am", "start", "-n", f"{PACKAGE}/com.longbridge.nsh.AppActivity")
+        self.adb("shell", "am", "start", "-n", f"{PACKAGE}/com.longbridge.nsh.PeaZipActivity")
         self.label("Open ZIP…")
         self.health()
         sample, invalid = [Path(p).name for p in self.files]
@@ -181,6 +322,8 @@ class Smoke:
         self.archive(sample)
         self.health()
         print("PASS reopening valid ZIP recovers", flush=True)
+        self.create_oversized(sample)
+        self.create_save()
 
 
 def main():
@@ -213,7 +356,7 @@ def main():
                 print(f"FAIL evidence/health: {error}", file=sys.stderr)
         for remote in [*smoke.files, smoke.remote_xml]:
             try:
-                smoke.adb("shell", "rm", "-f", remote)
+                smoke.adb("shell", "rm", "-f", shlex.quote(remote))
             except Exception as error:
                 failed = True
                 print(f"FAIL cleanup {remote}: {error}", file=sys.stderr)

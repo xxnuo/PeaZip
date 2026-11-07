@@ -9,6 +9,9 @@ type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>);
 #[cfg(target_arch = "wasm32")]
 mod browser;
 
+#[cfg(target_os = "android")]
+mod android;
+
 #[native_module("peazip/native")]
 fn native(registry: &mut Registry) {
     registry.register::<App>();
@@ -70,6 +73,7 @@ pub fn App() -> impl IntoElement {
         );
     #[cfg(any(
         target_arch = "wasm32",
+        target_os = "android",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -103,6 +107,7 @@ pub fn App() -> impl IntoElement {
     };
     #[cfg(any(
         target_arch = "wasm32",
+        target_os = "android",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -119,6 +124,35 @@ pub fn App() -> impl IntoElement {
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
             .child(text("Create ZIP…")),
+    );
+    #[cfg(target_os = "android")]
+    let actions = actions.child(
+        button()
+            .disabled(move || busy.get() || snapshot.with(|bytes| bytes.is_empty()))
+            .on_press(move || {
+                if busy.get_untracked() {
+                    return;
+                }
+                let bytes = snapshot.get_untracked();
+                busy.set(true);
+                activity.set("Saving ZIP…".into());
+                spawn(async move {
+                    match android::save_zip(bytes).await {
+                        Ok(Some(name)) => status.set(format!("Saved ZIP: {name}")),
+                        Ok(None) => status.set("Save cancelled.".into()),
+                        Err(error) => status.set(format!("Could not save ZIP: {error}")),
+                    }
+                    busy.set(false);
+                });
+            })
+            .px_3()
+            .py_2()
+            .border_1()
+            .border_color(move || theme().border)
+            .bg(move || theme().muted)
+            .active(|s| s.opacity(0.6))
+            .disabled_style(|s| s.opacity(0.4))
+            .child(text("Save ZIP…")),
     );
     #[cfg(target_arch = "wasm32")]
     let actions = actions.child(
@@ -254,7 +288,15 @@ pub fn App() -> impl IntoElement {
         .p_safe_area()
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
-        .child(actions.child(text(move || path.get()).flex_1()))
+        .child(
+            actions.child(text(move || path.get()).flex_1().min_w(move || {
+                px(if path.with(String::is_empty) {
+                    0.0
+                } else {
+                    200.0
+                })
+            })),
+        )
         .child(
             toolbar()
                 .flex_row()
@@ -354,7 +396,8 @@ pub fn App() -> impl IntoElement {
                                         .unwrap_or_default()
                                 })
                             })
-                            .flex_1(),
+                            .flex_1()
+                            .pr_2(),
                         )
                         .child(
                             text(move || {
@@ -443,6 +486,25 @@ async fn create_archive(
         return Ok(None);
     };
     Ok(Some(("Archive.zip".into(), load_archive(Arc::new(bytes))?)))
+}
+
+#[cfg(target_os = "android")]
+async fn create_archive(
+    _folders: bool,
+    activity: Signal<String>,
+) -> Result<Option<(String, LoadedArchive)>, String> {
+    let Some(files) = android::pick_files().await? else {
+        return Ok(None);
+    };
+    activity.set("Compressing ZIP…".into());
+    let archive = blocking(move || {
+        let bytes = peazip_core::create_zip(&files, peazip_core::Limits::default())
+            .map_err(|error| error.to_string())?;
+        load_archive(Arc::new(bytes))
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(Some(("Archive.zip".into(), archive)))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]

@@ -17,6 +17,10 @@ peazip-native = { path = "../peazip-native" }
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+futures-channel = "0.3"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
 

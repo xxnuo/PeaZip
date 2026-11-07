@@ -79,6 +79,7 @@ jobs:
       - uses: android-actions/setup-android@v3
       - uses: astral-sh/setup-uv@v6
       - run: sdkmanager 'platforms;android-35' 'build-tools;36.0.0' 'ndk;29.0.13113456'
+      - run: uv run python scripts/check_android_bridge.py
       - run: uv run python scripts/build_android.py
       - uses: actions/upload-artifact@v4
         with:

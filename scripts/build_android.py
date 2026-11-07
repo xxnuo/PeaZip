@@ -72,6 +72,10 @@ def build(args):
     sources = sorted((Path(runtime["manifest_path"]).parent / "java").rglob("*.java"))
     if not sources:
         raise ValueError("Locked nsh Android Java sources are missing")
+    app_sources = sorted((ROOT / "crates/peazip-android/java").rglob("*.java"))
+    if not app_sources:
+        raise ValueError("PeaZip Android Java sources are missing")
+    sources += app_sources
     out = ROOT / "target" / "android" / args.abi
     out.mkdir(parents=True, exist_ok=True)
     classes = out / "classes"

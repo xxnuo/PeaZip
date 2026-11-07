@@ -1,0 +1,13 @@
+[package]
+name = "peazip-android-bridge-check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# This JVM harness is opt-in, outside the desktop workspace's test suite.
+[workspace]
+
+[dependencies]
+jni = { version = "=0.21.1", features = ["invocation"] }
+futures-channel = "0.3"
+peazip-core = { path = "../../crates/peazip-core" }

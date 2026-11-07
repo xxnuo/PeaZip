@@ -2331,6 +2331,7 @@ version = "0.1.0"
 dependencies = [
  "futures-channel",
  "futures-util",
+ "jni",
  "nsh-base",
  "nsh-core",
  "nsh-engine",

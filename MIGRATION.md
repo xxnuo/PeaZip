@@ -7,7 +7,7 @@
 | 阶段 | 工作 | 完成依据 | 状态 |
 | --- | --- | --- | --- |
 | 1 | Rust workspace、内存 ZIP 核心、安全边界、上游基线与 CI | 正常归档往返、恶意路径及限额测试；基线报告可执行 | 本地验证完成；远程 CI 待运行 |
-| 2 | nsh Rust 界面：打开、列表、选择、创建、解压、错误反馈 | 用真实归档操作界面；UI 状态测试与本机启动验证 | 已有桌面创建/解压、Web 创建/ZIP 下载及目录提取接口；Web 外部目录授权/磁盘验收、移动端创建/导出待完成 |
+| 2 | nsh Rust 界面：打开、列表、选择、创建、解压、错误反馈 | 用真实归档操作界面；UI 状态测试与本机启动验证 | 已有桌面/Web 归档流程和 Android 创建/SAF 保存；Android 目录解压、iOS 功能及外部 API 验收待完成 |
 | 3 | 安全文件系统与平台文件选择、后台任务、进度、取消、覆盖冲突 | 符号链接/竞态/失败清理测试；大文件不中断界面 | 已有有界读取、后台操作、新目标原子不覆盖发布、Web 创建取消与阶段进度；桌面取消/进度、其他冲突策略/流式大文件待完成 |
 | 4 | 上游格式与功能逐项迁移 | 格式/操作能力清单；跨工具兼容样本、加密/分卷/损坏文件测试 | 待完成 |
 | 5 | 文件管理、搜索、预览、校验、转换、分割、配置、语言与无障碍 | 按上游功能回归；权限和交互验证 | 待完成 |
@@ -104,6 +104,13 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 本机 Android 实测使用 SDK 35、build-tools 36.0.0、NDK 29.0.13113456、Android Studio 自带 JDK，进程内配置工具路径。APK 签名验证及 16 KiB zipalign 检查通过，ELF LOAD 段对齐为 0x4000。仅 arm64-v8a 已实际构建，其他 ABI 选项尚未验证。
 - `uv run python scripts/smoke_android.py --serial emulator-5554 --apk target/android/arm64-v8a/peazip-arm64-v8a-debug.apk` 在独立 Android 36 模拟器上通过：实际安装/启动、系统 DocumentsUI 导入、中文名称和空目录、全选/清空及全部 checkbox 状态、取消 picker 保留内容、损坏归档报错后恢复。PID 保持稳定、无应用 AndroidRuntime fatal；最终 PNG/XML 在 `target/android-smoke`。脚本只删除自身随机测试文件；专用模拟器已关闭。当前只验证英文 API36 系统 picker，未验证真机和其他系统版本。
 - `uv run python scripts/build_ios.py --target aarch64-apple-ios-sim` 已提供 SDK 查找、scoped Xcode、真实 Mach-O 架构/平台检查和 `.app` 打包；模拟器 ad-hoc 签名，真机输出明确未签名。**本机只有 Command Line Tools，Xcode 别名目标不存在，模拟器/真机 SDK 缺失，未生成或运行 iOS app**。5 项脚本测试验证环境边界和拒绝假平台产物，host stub 通过不能替代 iOS 编译。
-- CI 新增 Android APK 与 iOS simulator app 构建/产物作业，尚未取得远程运行结果。Rust workspace 回归、Clippy、格式检查、6 项 Python 测试和 Web 32 项测试通过；只读 nsh 工作树保持干净。Android/iOS 当前产品功能仅导入、列表和选择，创建及解压导出尚未接入。
+- CI 新增 Android APK 与 iOS simulator app 构建/产物作业，尚未取得远程运行结果。Rust workspace 回归、Clippy、格式检查、6 项 Python 测试和 Web 32 项测试通过；只读 nsh 工作树保持干净。初始移动宿主仅提供导入、列表和选择；Android 后续功能见下，iOS 仍待 SDK 环境验证。
 
-下一步：实现 Android 创建/SAF 导出并验证，继续推进 iOS SDK 环境与文件导出；补齐 Web 外部目录实际验收、桌面主动取消/进度、冲突策略、流式大文件及更多归档格式。Web 打开归档仍走 nsh picker，创建已使用预先检查大小的独立入口；两者限制不可混为一谈。六平台实际运行和发布验收仍是最终要求。
+- Android 创建/保存：应用自有 `PeaZipActivity` 和 Rust JNI 适配复用 nsh 生命周期，不修改 nsh 源码。系统多选文件后先检查元数据数量/大小，再按实际字节有界读取；通过后台 Rust core 创建 ZIP，独立 Save ZIP 操作使用 `ACTION_CREATE_DOCUMENT`，关闭输出流成功才报告保存。
+- 新输入桥只接受 content URI，未知或不可信大小仍受 16 MiB 单文件/64 MiB 总量限制；保存上限 32 MiB。AssetFileDescriptor 的 offset/length 是选中资产的边界，读取使用其输入流工厂；固定长度或非零 offset 的目标资产拒绝保存，防止越界或静默截断。保存失败报告可能残留，不自动删除用户文档。
+- 大数组 JNI 转换与完成回调在后台执行，先清理 Activity 状态、释放传输名额，再完成 Rust future；generation/request ID 隔离旧回调。销毁时使用 CancellationSignal 并异步关闭跟踪资源，全局有界传输/取消/关闭执行器阻止资源累计。若 provider 的取消和关闭均不返回，唯一名额会持续占用、拒绝新创建/保存请求，需进程重启恢复；不声称能强制终止不合作的 provider。
+- `uv run python scripts/check_android_bridge.py` 已加入 Android CI：直接引用生产 Rust/Java，运行 11 项有界读、14 项真实 JVM/JNI、7 项资产边界检查，以及 64 MiB 后台转换、旧任务清理期间拒绝 200 次新请求等生命周期检查。部分 Android 类为测试 doubles，不替代设备验证；这些检查独立于桌面 cargo test，避免强制桌面开发安装 JDK。
+- 最终 APK 在 Android 36 arm64 模拟器通过扩展 smoke：多选中文名/二进制/空文件创建，17 MiB 输入拒绝且保留旧状态，取消保存不写目标，同名目标由当前 Documents provider 自动生成 `(1)`、sentinel 未覆盖；拉回 ZIP 用 Python zipfile 独立核对名称、内容和 CRC，重新导入成功。PID 稳定、无应用 fatal；新标题宽度与列间距已在长文件名截图检查。
+- 本轮 Rust workspace 回归、主机及 Android target Clippy、格式检查、Web 32 项测试通过。专用模拟器已关闭，未部署或上传发布包。只实测本机 Documents provider，未宣称所有云 provider、保存失败和真实恶意 provider 场景都已设备验收。
+
+下一步：实现 Android 选中条目的 SAF 目录解压，并继续推进 iOS SDK 环境与文件导出；补齐 Web 外部目录实际验收、桌面/移动端主动取消与进度、冲突策略、流式大文件及更多归档格式。Web/Android 打开归档仍走 nsh picker，创建使用独立有界入口；两者限制不可混为一谈。六平台实际运行和发布验收仍是最终要求。
