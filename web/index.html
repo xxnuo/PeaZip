@@ -28,11 +28,14 @@
       const { createPlayer } = await import("./nsh.js");
       const player = await createPlayer(document.querySelector("#app"), {
         wasm: new URL("./peazip.wasm", import.meta.url),
+        glue: new URL("./archive-bridge.js", import.meta.url).href,
         onError: report,
       });
       player.runRust();
       if (!failed) status.hidden = true;
-      window.addEventListener("pagehide", () => player.stop(), { once: true });
+      window.addEventListener("pagehide", (event) => {
+        if (!event.persisted) player.stop();
+      });
     } catch (error) {
       report(error);
     }

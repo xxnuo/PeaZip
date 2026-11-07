@@ -1,0 +1,12 @@
+[package]
+name = "peazip-worker"
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-3.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+peazip-core = { path = "../peazip-core" }

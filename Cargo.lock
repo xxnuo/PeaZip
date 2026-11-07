@@ -2197,6 +2197,7 @@ dependencies = [
 name = "peazip-ui"
 version = "0.1.0"
 dependencies = [
+ "futures-channel",
  "nsh-base",
  "nsh-core",
  "nsh-engine",
@@ -2217,6 +2218,13 @@ dependencies = [
  "nsh-core",
  "nsh-platform-web",
  "peazip-ui",
+]
+
+[[package]]
+name = "peazip-worker"
+version = "0.1.0"
+dependencies = [
+ "peazip-core",
 ]
 
 [[package]]

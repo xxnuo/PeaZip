@@ -6,6 +6,9 @@ use peazip_core::Entry;
 
 type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>);
 
+#[cfg(target_arch = "wasm32")]
+mod browser;
+
 #[native_module("peazip/native")]
 fn native(registry: &mut Registry) {
     registry.register::<App>();
@@ -61,7 +64,12 @@ pub fn App() -> impl IntoElement {
                 .disabled_style(|s| s.opacity(0.4))
                 .child(text("Open ZIP…")),
         );
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
     let create = move |folders: bool| {
         if busy.get_untracked() {
             return;
@@ -83,7 +91,12 @@ pub fn App() -> impl IntoElement {
             busy.set(false);
         });
     };
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
     let actions = actions.child(
         button()
             .disabled(move || busy.get())
@@ -96,6 +109,28 @@ pub fn App() -> impl IntoElement {
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
             .child(text("Create ZIP…")),
+    );
+    #[cfg(target_arch = "wasm32")]
+    let actions = actions.child(
+        button()
+            .disabled(move || busy.get() || snapshot.with(|bytes| bytes.is_empty()))
+            .on_press(move || {
+                if busy.get_untracked() {
+                    return;
+                }
+                match browser::download(&snapshot.get_untracked()) {
+                    Ok(()) => status.set("ZIP download requested.".into()),
+                    Err(error) => status.set(format!("Could not download ZIP: {error}")),
+                }
+            })
+            .px_3()
+            .py_2()
+            .border_1()
+            .border_color(move || theme().border)
+            .bg(move || theme().muted)
+            .active(|s| s.opacity(0.6))
+            .disabled_style(|s| s.opacity(0.4))
+            .child(text("Download ZIP")),
     );
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let actions = actions.child(
@@ -320,6 +355,14 @@ async fn create_archive(folders: bool) -> Result<Option<(String, LoadedArchive)>
     .await
     .map_err(|error| error.to_string())??;
     Ok(Some((name, rows)))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn create_archive(_folders: bool) -> Result<Option<(String, LoadedArchive)>, String> {
+    let Some(bytes) = browser::create_zip().await? else {
+        return Ok(None);
+    };
+    Ok(Some(("Archive.zip".into(), load_archive(Arc::new(bytes))?)))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]

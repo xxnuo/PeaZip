@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/peazip-core", "crates/peazip-native", "crates/peazip-ui", "crates/peazip-web"]
+members = ["crates/peazip-core", "crates/peazip-native", "crates/peazip-ui", "crates/peazip-web", "crates/peazip-worker"]
 resolver = "2"
 
 [profile.web]
@@ -8,3 +8,6 @@ opt-level = "z"
 lto = "thin"
 strip = true
 panic = "abort"
+
+[profile.web.package.peazip-worker]
+strip = "debuginfo"
