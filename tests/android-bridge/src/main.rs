@@ -221,6 +221,7 @@ fn main() {
         (ArchiveFormat::Zip, 0, "Archive.zip"),
         (ArchiveFormat::Tar, 1, "Archive.tar"),
         (ArchiveFormat::TarGzip, 2, "Archive.tar.gz"),
+        (ArchiveFormat::SevenZip, 3, "Archive.7z"),
     ] {
         // Opaque bytes, including SFX ZIP prefixes, must not determine the format.
         let mut save = Box::pin(save_archive(

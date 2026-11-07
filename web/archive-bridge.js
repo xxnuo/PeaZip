@@ -148,6 +148,7 @@ function download(ptr, length, format) {
     0: { name: 'Archive.zip', mime: 'application/zip' },
     1: { name: 'Archive.tar', mime: 'application/x-tar' },
     2: { name: 'Archive.tar.gz', mime: 'application/gzip' },
+    3: { name: 'Archive.7z', mime: 'application/x-7z-compressed' },
   }[format];
   if (!kind) return 0;
   let url;

@@ -7,6 +7,8 @@ from pathlib import Path
 import shutil
 import subprocess
 
+from archive_licenses import archive_licenses
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -39,6 +41,8 @@ def build(debug=False):
     subprocess.run([bindgen, str(worker), "--target", "web", "--out-dir", str(output), "--out-name", "worker-core", "--no-typescript"], check=True)
     shutil.copyfile(ROOT / "LICENSE", output / "LICENSE")
     shutil.copyfile(host.parent.parent.parent / "LICENSE-APACHE", output / "NSH-LICENSE-APACHE")
+    for name, source in archive_licenses(metadata):
+        shutil.copyfile(source, output / name)
     print(output)
 
 

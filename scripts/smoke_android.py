@@ -11,10 +11,12 @@ import struct
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "io.peazip.rust"
@@ -453,9 +455,31 @@ class Smoke:
                 contents[name] = None if member.isdir() else archive.extractfile(member).read()
         return contents
 
+    def sevenzip_contents(self, path):
+        # Only the trusted fixture or its byte-identical saved copy reaches extraction.
+        fixture = ROOT / "tests/fixtures/sample.7z"
+        if path.read_bytes() != fixture.read_bytes():
+            raise RuntimeError("Refusing CLI extraction of non-fixture 7Z bytes")
+        command = shutil.which("7z") or shutil.which("7zz")
+        if not command:
+            raise RuntimeError("Independent 7Z verification requires system 7z or 7zz")
+        with tempfile.TemporaryDirectory(prefix="7z-verify-", dir=self.out) as destination:
+            for arguments in (("t", str(path)), ("x", str(path), f"-o{destination}", "-y")):
+                result = subprocess.run([command, *arguments], capture_output=True,
+                                        text=True, timeout=self.args.timeout)
+                with (self.out / "7z-independent.log").open("a") as log:
+                    log.write(result.stdout + result.stderr)
+                if result.returncode:
+                    raise RuntimeError(f"System 7z {arguments[0]} failed: {result.stdout} {result.stderr}")
+            output = Path(destination)
+            return {p.relative_to(output).as_posix() + ("/" if p.is_dir() else ""):
+                    None if p.is_dir() else p.read_bytes() for p in output.rglob("*")}
+
     def tar_save_picker(self, evidence, kind="TAR", mime="application/x-tar"):
         self.tap(f"Save {kind}…")
         self.documents()
+        if kind == "7Z":
+            self.label("Archive.7z")
         activities = self.adb("shell", "dumpsys", "activity", "activities")
         (self.out / f"{evidence}-intent.log").write_text(activities)
         if not any("act=android.intent.action.CREATE_DOCUMENT" in line and
@@ -463,20 +487,25 @@ class Smoke:
             raise RuntimeError(f"{kind} save picker lacks ACTION_CREATE_DOCUMENT {mime}")
         self.save(evidence)
 
-    def tar_smoke(self, compressed=False):
-        kind = "TAR.GZ" if compressed else "TAR"
-        extension = "tar.gz" if compressed else "tar"
-        evidence = "tar-gz" if compressed else "tar"
-        mime = "application/gzip" if compressed else "application/x-tar"
+    def tar_smoke(self, compressed=False, sevenzip=False):
+        kind = "7Z" if sevenzip else "TAR.GZ" if compressed else "TAR"
+        extension = "7z" if sevenzip else "tar.gz" if compressed else "tar"
+        evidence = "7z" if sevenzip else "tar-gz" if compressed else "tar"
+        mime = "application/x-7z-compressed" if sevenzip else "application/gzip" if compressed else "application/x-tar"
         fixture = ROOT / f"tests/fixtures/sample.{extension}"
         if compressed:
             data = fixture.read_bytes()
             assert data[:3] == b"\x1f\x8b\x08" and struct.unpack_from("<I", data, 4)[0] == 0
             assert gzip.decompress(data) == (ROOT / "tests/fixtures/sample.tar").read_bytes()
-        contents = self.tar_contents(fixture)
-        assert contents == {"docs/": None, "docs/你好.txt": "tar 你好\n".encode(),
+        contents = self.sevenzip_contents(fixture) if sevenzip else self.tar_contents(fixture)
+        expected_contents = {"docs/": None, "docs/你好.txt": "tar 你好\n".encode(),
                             "docs/empty/": None, "docs/nested/data.bin": bytes((0, 127, 255)),
                             "other.txt": b"not selected\n"}
+        if sevenzip:
+            expected_contents["docs/nested/"] = None
+            expected_contents["docs/你好.txt"] = "7z 你好\n".encode()
+        assert contents == expected_contents
+        selected_count = 5 if sevenzip else 4
         name = f"peazip-{self.token}-sample.{extension}"
         remote = f"/sdcard/Download/{name}"
         self.files.append(remote)
@@ -487,7 +516,7 @@ class Smoke:
         self.archive(name)
         tree = self.label(f"Save {kind}…")
         if any(self.match(n, "Save ZIP…") for n in tree.iter("node")):
-            raise RuntimeError("Opened TAR exposes Save ZIP")
+            raise RuntimeError(f"Opened {kind} exposes Save ZIP")
         self.label("Create ZIP…")
         self.save(f"{evidence}-imported")
         self.tap("docs/")
@@ -497,11 +526,11 @@ class Smoke:
         self.cancel_documents()
         self.extraction_state(name, "Save cancelled.", selected_entry="docs/")
         if self.adb("shell", "ls", "-1", "/sdcard/Download") != before:
-            raise RuntimeError("TAR save cancellation changed Downloads")
+            raise RuntimeError(f"{kind} save cancellation changed Downloads")
         self.save(f"{evidence}-save-cancelled")
         self.tar_save_picker(f"{evidence}-save-picker", kind, mime)
         self.downloads()
-        tree = self.wait("TAR save filename", lambda t: any(
+        tree = self.wait(f"{kind} save filename", lambda t: any(
             n.get("class") == "android.widget.EditText" for n in t.iter("node")))
         field = next(n for n in tree.iter("node") if n.get("class") == "android.widget.EditText")
         self.tap(field.get("text", ""), field.get("resource-id"))
@@ -517,76 +546,83 @@ class Smoke:
         local = self.out / saved
         self.adb("pull", output, local)
         if local.read_bytes() != fixture.read_bytes():
-            raise RuntimeError("Saved TAR differs byte-for-byte from fixture")
-        if self.tar_contents(local) != contents:
-            raise RuntimeError("Python tarfile verification of saved TAR failed")
+            raise RuntimeError(f"Saved {kind} differs byte-for-byte from fixture")
+        verified = self.sevenzip_contents(local) if sevenzip else self.tar_contents(local)
+        if verified != contents:
+            raise RuntimeError(f"Independent verification of saved {kind} failed")
         self.save(f"{evidence}-saved")
         baseline = self.export_snapshot(f"{evidence}-before")
         self.tree_picker(f"{evidence}-extract-cancel-picker")
         self.cancel_documents()
         self.extraction_state(name, "Extraction cancelled.", selected_entry="docs/")
         if self.export_snapshot(f"{evidence}-cancelled") != baseline:
-            raise RuntimeError("TAR tree cancellation changed export parent")
+            raise RuntimeError(f"{kind} tree cancellation changed export parent")
         self.save(f"{evidence}-extract-cancelled")
         self.tree_picker(f"{evidence}-extract-tree-picker")
         self.export_destination(f"{evidence}-extract-parent-picker")
-        tree = self.wait("TAR extraction report", lambda t: any(
+        tree = self.wait(f"{kind} extraction report", lambda t: any(
             n.get("text", "").startswith(("Extracted ", "Could not extract archive:"))
             for n in t.iter("node")))
         report = next(n.get("text") for n in tree.iter("node") if
                       n.get("text", "").startswith(("Extracted ", "Could not extract archive:")))
-        match = re.fullmatch(r"Extracted 4 entries to (PeaZip-([0-9a-fA-F-]{36}))", report)
+        match = re.fullmatch(rf"Extracted {selected_count} entries to (PeaZip-([0-9a-fA-F-]{{36}}))", report)
         if not match:
-            raise RuntimeError(f"Unexpected TAR extraction report: {report}")
+            raise RuntimeError(f"Unexpected {kind} extraction report: {report}")
         uuid.UUID(match[2])
         folder = match[1]
         if folder in baseline:
-            raise RuntimeError("TAR extraction reused an existing export directory")
+            raise RuntimeError(f"{kind} extraction reused an existing export directory")
         expected = {**baseline, folder: None, f"{folder}/docs": None,
                     f"{folder}/docs/你好.txt": contents["docs/你好.txt"],
                     f"{folder}/docs/empty": None, f"{folder}/docs/nested": None,
                     f"{folder}/docs/nested/data.bin": contents["docs/nested/data.bin"]}
         if self.export_snapshot(f"{evidence}-success") != expected:
-            raise RuntimeError("TAR extraction directories/Unicode/binary/empty directory differ; "
+            raise RuntimeError(f"{kind} extraction directories/Unicode/binary/empty directory differ; "
                                "other.txt must be absent and previous exports unchanged")
         self.extraction_state(name, report, selected_entry="docs/")
         self.save(f"{evidence}-extracted")
-        if compressed:
-            bad = self.out / f"peazip-{self.token}-bad-crc.tar.gz"
+        if compressed or sevenzip:
+            bad = self.out / f"peazip-{self.token}-bad-crc.{extension}"
             damaged = bytearray(fixture.read_bytes())
-            damaged[-8] ^= 1
-            bad.write_bytes(damaged)
-            try:
-                gzip.decompress(damaged)
-            except gzip.BadGzipFile:
-                pass
+            if sevenzip:
+                assert damaged[:6] == b"7z\xbc\xaf\x27\x1c"
+                assert struct.unpack_from("<I", damaged, 8)[0] == zlib.crc32(damaged[12:32])
+                damaged[8] ^= 1
+                assert struct.unpack_from("<I", damaged, 8)[0] != zlib.crc32(damaged[12:32])
             else:
-                raise RuntimeError("Corrupted gzip CRC was accepted by Python")
+                damaged[-8] ^= 1
+                try:
+                    gzip.decompress(damaged)
+                except gzip.BadGzipFile:
+                    pass
+                else:
+                    raise RuntimeError("Corrupted gzip CRC was accepted by Python")
+            bad.write_bytes(damaged)
             bad_remote = f"/sdcard/Download/{bad.name}"
             self.files.append(bad_remote)
             self.adb("push", bad, bad_remote)
             self.scan(bad_remote)
             downloads_before = self.adb("shell", "ls", "-1", "/sdcard/Download")
             self.choose(bad.name)
-            tree = self.wait("gzip CRC rejection on open", lambda t: any(
+            tree = self.wait(f"{kind} CRC rejection on open", lambda t: any(
                 n.get("text", "").startswith("Could not open archive:")
                 for n in t.iter("node")))
             error = next(n.get("text") for n in tree.iter("node")
                          if n.get("text", "").startswith("Could not open archive:"))
             self.extraction_state(name, error, selected_entry="docs/")
-            if self.export_snapshot("tar-gz-crc-rejected") != expected:
-                raise RuntimeError("gzip CRC rejection changed previous exports")
+            if self.export_snapshot(f"{evidence}-crc-rejected") != expected:
+                raise RuntimeError(f"{kind} CRC rejection changed previous exports")
             if self.adb("shell", "ls", "-1", "/sdcard/Download") != downloads_before:
-                raise RuntimeError("gzip CRC rejection changed Downloads")
-            self.save("tar-gz-crc-rejected")
-            print(f"PASS gzip CRC rejected before output; archive/selection/exports preserved: {error}",
+                raise RuntimeError(f"{kind} CRC rejection changed Downloads")
+            self.save(f"{evidence}-crc-rejected")
+            print(f"PASS {kind} CRC rejected before output; archive/selection/exports preserved: {error}",
                   flush=True)
         self.health()
-        result = (f"PASS {kind}: five entries excluding ./ root; Save {kind} without Save ZIP; "
+        result = (f"PASS {kind}: {len(contents)} entries excluding ./ root; Save {kind} without Save ZIP; "
                   f"real ACTION_CREATE_DOCUMENT {mime} on cancel and save; "
                   "save cancellation preserves snapshot/selection and Downloads; "
-                  "saved bytes identical to fixture, independently verified with Python tarfile; "
-                  "real SAF tree cancellation and docs/ extraction of four entries; "
+                  f"saved bytes identical to fixture, independently verified with {'system 7z' if sevenzip else 'Python tarfile'}; "
+                  f"real SAF tree cancellation and docs/ extraction of {selected_count} entries; "
                   "Unicode/binary bytes and empty directory verified, other.txt absent; "
                   f"previous exports unchanged. {report}\n")
         (self.out / f"{evidence}-result.log").write_text(result)
@@ -664,6 +700,7 @@ class Smoke:
         self.extract_selected()
         self.tar_smoke()
         self.tar_smoke(compressed=True)
+        self.tar_smoke(sevenzip=True)
 
 
 def main():

@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import zipfile
 
+from archive_licenses import archive_licenses
+
 ROOT = Path(__file__).resolve().parents[1]
 ABIS = {
     "arm64-v8a": ("aarch64-linux-android", "aarch64-linux-android"),
@@ -98,6 +100,8 @@ def build(args):
         apk.write(library, f"lib/{args.abi}/libnsh.so", compress_type=zipfile.ZIP_STORED)
         apk.write(ROOT / "LICENSE", "assets/PeaZip-LICENSE", compress_type=zipfile.ZIP_DEFLATED)
         apk.write(Path(runtime["manifest_path"]).parent.parent.parent / "LICENSE-APACHE", "assets/NSH-LICENSE-APACHE", compress_type=zipfile.ZIP_DEFLATED)
+        for name, source in archive_licenses(metadata):
+            apk.write(source, f"assets/{name}", compress_type=zipfile.ZIP_DEFLATED)
     aligned = out / "aligned.apk"
     run([tool("zipalign"), "-P", "16", "-f", "4", unsigned, aligned])
     keystore = ROOT / "target/android/debug.keystore"

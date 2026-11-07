@@ -140,7 +140,7 @@ public final class PeaZipActivity extends Activity {
     }
 
     public boolean saveArchive(long id, byte[] bytes, int format) {
-        if (format != 0 && format != 1 && format != 2) throw new IllegalArgumentException("Unsupported archive format code: " + format);
+        if (format < 0 || format > 3) throw new IllegalArgumentException("Unsupported archive format code: " + format);
         if (bytes == null || bytes.length > MAX_ARCHIVE) throw new IllegalArgumentException("Invalid archive byte count.");
         return begin(id, bytes, false, format);
     }
@@ -207,8 +207,8 @@ public final class PeaZipActivity extends Activity {
                 : task.save ? Intent.ACTION_CREATE_DOCUMENT : Intent.ACTION_OPEN_DOCUMENT);
         if (task.export == null) {
             intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType(task.save ? (task.format == 2 ? "application/gzip" : task.format == 1 ? "application/x-tar" : "application/zip") : "*/*");
-            if (task.save) intent.putExtra(Intent.EXTRA_TITLE, task.format == 2 ? "Archive.tar.gz" : task.format == 1 ? "Archive.tar" : "Archive.zip");
+            intent.setType(task.save ? (task.format == 3 ? "application/x-7z-compressed" : task.format == 2 ? "application/gzip" : task.format == 1 ? "application/x-tar" : "application/zip") : "*/*");
+            if (task.save) intent.putExtra(Intent.EXTRA_TITLE, task.format == 3 ? "Archive.7z" : task.format == 2 ? "Archive.tar.gz" : task.format == 1 ? "Archive.tar" : "Archive.zip");
             else intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         }
         return intent;

@@ -6,6 +6,7 @@ use zip::unstable::read::ZipIterable;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 mod gzip;
+mod sevenzip;
 mod tar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +14,7 @@ pub enum ArchiveFormat {
     Zip,
     Tar,
     TarGzip,
+    SevenZip,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -48,6 +50,7 @@ pub enum Error {
     InvalidArchive(zip::result::ZipError),
     InvalidTar(io::Error),
     InvalidGzip(io::Error),
+    InvalidSevenZip(io::Error),
     UnsupportedFormat,
     Io(io::Error),
 }
@@ -65,6 +68,7 @@ impl std::fmt::Display for Error {
             Self::InvalidArchive(e) => write!(f, "invalid ZIP: {e}"),
             Self::InvalidTar(e) => write!(f, "invalid TAR: {e}"),
             Self::InvalidGzip(e) => write!(f, "invalid gzip: {e}"),
+            Self::InvalidSevenZip(e) => write!(f, "invalid 7z: {e}"),
             Self::UnsupportedFormat => write!(f, "unsupported archive format"),
             Self::Io(e) => write!(f, "archive I/O error: {e}"),
         }
@@ -74,7 +78,9 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidArchive(e) => Some(e),
-            Self::Io(e) | Self::InvalidTar(e) | Self::InvalidGzip(e) => Some(e),
+            Self::Io(e) | Self::InvalidTar(e) | Self::InvalidGzip(e) | Self::InvalidSevenZip(e) => {
+                Some(e)
+            }
             _ => None,
         }
     }
@@ -195,6 +201,9 @@ fn detect_candidate(bytes: &[u8]) -> Result<ArchiveFormat, Error> {
     if bytes.starts_with(&[0x1f, 0x8b]) {
         return Ok(ArchiveFormat::TarGzip);
     }
+    if bytes.starts_with(sevenzip::SIGNATURE) {
+        return Ok(ArchiveFormat::SevenZip);
+    }
     // A bad TAR checksum can be ZIP payload; a complete TAR end marker is not an SFX stub.
     if bytes.starts_with(b"PK\x03\x04")
         || bytes.starts_with(b"PK\x05\x06")
@@ -225,6 +234,7 @@ pub fn list_archive_with_format(
         ArchiveFormat::Zip => list_zip(bytes, limits),
         ArchiveFormat::Tar => tar::list(bytes, limits),
         ArchiveFormat::TarGzip => tar::list(&gzip::decode(bytes, limits)?, limits),
+        ArchiveFormat::SevenZip => sevenzip::list(bytes, limits),
     }?;
     Ok((format, entries))
 }
@@ -255,6 +265,7 @@ fn extract_matching_archive(
         ArchiveFormat::Zip => extract_matching(bytes, selected, limits),
         ArchiveFormat::Tar => tar::extract(bytes, selected, limits),
         ArchiveFormat::TarGzip => tar::extract(&gzip::decode(bytes, limits)?, selected, limits),
+        ArchiveFormat::SevenZip => sevenzip::extract(bytes, selected, limits),
     }
 }
 

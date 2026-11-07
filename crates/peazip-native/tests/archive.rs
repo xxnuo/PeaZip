@@ -69,6 +69,56 @@ fn check_tar_extraction(archive: &[u8]) {
 }
 
 #[test]
+fn solid_seven_zip_restores_selection_and_rejects_bad_header_without_output() {
+    let archive = include_bytes!("../../../tests/fixtures/sample.7z");
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("restored");
+    let count = peazip_native::extract_archive_to_directory(
+        archive,
+        &["docs/".into()],
+        &target,
+        Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(count, 5);
+    assert_eq!(
+        fs::read(target.join("docs/你好.txt")).unwrap(),
+        "7z 你好\n".as_bytes()
+    );
+    assert_eq!(
+        fs::read(target.join("docs/nested/data.bin")).unwrap(),
+        [0, 127, 255]
+    );
+    assert!(target.join("docs/empty").is_dir());
+    assert!(!target.join("other.txt").exists());
+    let mut corrupt = archive.to_vec();
+    corrupt[8] ^= 1;
+    assert!(
+        peazip_native::extract_archive_to_directory(
+            &corrupt,
+            &["docs/".into()],
+            &dir.path().join("bad"),
+            Limits::default(),
+        )
+        .is_err()
+    );
+    assert!(
+        peazip_native::extract_archive_to_directory(
+            archive,
+            &["docs/".into()],
+            &target,
+            Limits::default(),
+        )
+        .is_err()
+    );
+    assert_eq!(children(dir.path()), 1);
+    assert_eq!(
+        fs::read(target.join("docs/你好.txt")).unwrap(),
+        "7z 你好\n".as_bytes()
+    );
+}
+
+#[test]
 fn real_roundtrip_preserves_sources() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("中文.bin");

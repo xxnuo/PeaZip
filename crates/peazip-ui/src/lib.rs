@@ -169,6 +169,7 @@ pub fn App() -> impl IntoElement {
                 ArchiveFormat::Zip => "Save ZIP…",
                 ArchiveFormat::Tar => "Save TAR…",
                 ArchiveFormat::TarGzip => "Save TAR.GZ…",
+                ArchiveFormat::SevenZip => "Save 7Z…",
             })),
     );
     #[cfg(target_arch = "wasm32")]
@@ -195,6 +196,7 @@ pub fn App() -> impl IntoElement {
                 ArchiveFormat::Zip => "Download ZIP",
                 ArchiveFormat::Tar => "Download TAR",
                 ArchiveFormat::TarGzip => "Download TAR.GZ",
+                ArchiveFormat::SevenZip => "Download 7Z",
             })),
     );
     #[cfg(target_arch = "wasm32")]
@@ -563,7 +565,10 @@ async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
         OpenDialog::files()
             .title("Open archive")
             .button_label("Open")
-            .filter(FileFilter::new("Archives", ["zip", "tar", "gz", "tgz"])),
+            .filter(FileFilter::new(
+                "Archives",
+                ["zip", "tar", "gz", "tgz", "7z"],
+            )),
     )
     .await?;
     let Some(path) = paths.and_then(|paths| paths.into_iter().next()) else {
@@ -581,10 +586,10 @@ async fn choose_archive(
     #[cfg(target_arch = "wasm32")] cancellable: Signal<bool>,
 ) -> Result<Option<(String, LoadedArchive)>, String> {
     use nsh_core::{file_dialog::FileFilter, picker::FilePickRequest};
-    let files = pick_files(
-        FilePickRequest::new(false, 1)
-            .filter(FileFilter::new("Archives", ["zip", "tar", "gz", "tgz"])),
-    )
+    let files = pick_files(FilePickRequest::new(false, 1).filter(FileFilter::new(
+        "Archives",
+        ["zip", "tar", "gz", "tgz", "7z"],
+    )))
     .await;
     let Some(file) = files.into_iter().next() else {
         return Ok(None);

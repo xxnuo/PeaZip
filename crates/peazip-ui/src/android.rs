@@ -204,6 +204,7 @@ async fn request(kind: Kind, bytes: Option<Arc<Vec<u8>>>, format: ArchiveFormat)
                                 ArchiveFormat::Zip => 0,
                                 ArchiveFormat::Tar => 1,
                                 ArchiveFormat::TarGzip => 2,
+                                ArchiveFormat::SevenZip => 3,
                             };
                             env.call_method(
                                 activity.as_obj(),

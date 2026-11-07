@@ -8,6 +8,7 @@ use peazip_worker::{MAX_LIST_OUTPUT_BYTES, list_from_request};
 
 const TAR: &[u8] = include_bytes!("../../../tests/fixtures/sample.tar");
 const GZIP: &[u8] = include_bytes!("../../../tests/fixtures/sample.tar.gz");
+const SEVEN_ZIP: &[u8] = include_bytes!("../../../tests/fixtures/sample.7z");
 
 fn metadata(entries: &[(&[u8], u32, u64, u64)]) -> Vec<u8> {
     let mut bytes = vec![0];
@@ -27,7 +28,7 @@ fn decode_entries(bytes: &[u8]) -> Result<Vec<Entry>, String> {
 }
 
 #[test]
-fn lists_zip_tar_and_gzip_with_browser_decoder() {
+fn lists_zip_tar_gzip_and_7z_with_browser_decoder() {
     let zip = peazip_core::create_zip(
         &[
             MemoryEntry {
@@ -53,6 +54,7 @@ fn lists_zip_tar_and_gzip_with_browser_decoder() {
         (zip.as_slice(), peazip_core::ArchiveFormat::Zip),
         (TAR, peazip_core::ArchiveFormat::Tar),
         (GZIP, peazip_core::ArchiveFormat::TarGzip),
+        (SEVEN_ZIP, peazip_core::ArchiveFormat::SevenZip),
     ] {
         let output = list_from_request(archive).unwrap();
         assert_eq!(
@@ -76,6 +78,20 @@ fn lists_zip_tar_and_gzip_with_browser_decoder() {
     assert_eq!(
         decode_entries(&list_from_request(&[0; 1024]).unwrap()).unwrap(),
         vec![]
+    );
+    let output = list_from_request(SEVEN_ZIP).unwrap();
+    assert_eq!(output[0], 3);
+    let entries = decode_entries(&output).unwrap();
+    assert_eq!(entries.len(), 6);
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.path == "docs/你好.txt" && entry.size == 10)
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.path == "docs/empty/" && entry.is_dir && entry.size == 0)
     );
 }
 
@@ -152,7 +168,7 @@ fn decoder_rejects_truncation_counts_kinds_paths_and_trailing_bytes() {
         assert!(decode_entries(&[&[0], count.to_le_bytes().as_slice()].concat()).is_err());
     }
     assert_eq!(decode_entries(&[0; 5]).unwrap(), vec![]);
-    for format in [3, u8::MAX] {
+    for format in [4, u8::MAX] {
         let mut bytes = vec![format];
         bytes.extend(0u32.to_le_bytes());
         assert!(browser::decode_list(&bytes).unwrap_err().contains("format"));

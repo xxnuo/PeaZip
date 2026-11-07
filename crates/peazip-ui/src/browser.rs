@@ -27,6 +27,7 @@ pub(crate) fn decode_list(
         0 => peazip_core::ArchiveFormat::Zip,
         1 => peazip_core::ArchiveFormat::Tar,
         2 => peazip_core::ArchiveFormat::TarGzip,
+        3 => peazip_core::ArchiveFormat::SevenZip,
         _ => return Err("Invalid archive metadata format.".into()),
     };
     let count = number(&mut packet)? as usize;
@@ -277,6 +278,7 @@ mod host {
             peazip_core::ArchiveFormat::Zip => 0,
             peazip_core::ArchiveFormat::Tar => 1,
             peazip_core::ArchiveFormat::TarGzip => 2,
+            peazip_core::ArchiveFormat::SevenZip => 3,
         };
         if unsafe { pc_download(bytes.as_ptr(), bytes.len(), code) } == 1 {
             Ok(())

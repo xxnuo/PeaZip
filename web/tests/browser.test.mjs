@@ -597,6 +597,96 @@ async function downloadArchive(page, button) {
   return { name: artifact.suggestedFilename(), bytes: Buffer.concat(chunks) };
 }
 
+test('7Z uses real list/extract workers and preserves its snapshot after header CRC and next-header failures', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree, downloads } = await extractionPage(t);
+  const bytes = await readFile(new URL('../../tests/fixtures/sample.7z', import.meta.url));
+  async function pick(buffer, name) {
+    const pending = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await pending).setFiles({ name, mimeType: 'application/zip', buffer });
+  }
+  const wasm = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/worker-core_bg.wasm'));
+  await pick(bytes, 'misnamed.zip');
+  assert.equal((await wasm).ok(), true);
+  await expect(page.getByText('6 entries', { exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox')).toHaveCount(6);
+  const chinese = page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true });
+  await expect(chinese.getByText('10', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.listWorkers)).toEqual([{ terminated: true, codes: [1] }]);
+  assert.deepEqual(await page.evaluate(() => window.extractionWorkers), []);
+  await expect(button('Download 7Z')).toBeEnabled();
+  for (const name of ['Download ZIP', 'Download TAR', 'Download TAR.GZ']) await expect(button(name)).toHaveCount(0);
+  const selected = page.getByRole('checkbox', { name: 'docs/', exact: true });
+  await selected.click();
+  await page.evaluate(() => {
+    const create = URL.createObjectURL;
+    window.downloadTypes = [];
+    URL.createObjectURL = (blob) => { window.downloadTypes.push(blob.type); return create(blob); };
+  });
+  const snapshot = await downloadArchive(page, button('Download 7Z'));
+  assert.equal(snapshot.name, 'Archive.7z');
+  assert.deepEqual(snapshot.bytes, bytes);
+  assert.deepEqual(await page.evaluate(() => window.downloadTypes), ['application/x-7z-compressed']);
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+    return (~crc) >>> 0;
+  }
+  const next = 32 + Number(bytes.readBigUInt64LE(12));
+  assert.equal(bytes[next], 0x17, 'fixture must exercise an encoded header');
+  assert.equal(crc32(bytes.subarray(12, 32)), bytes.readUInt32LE(8));
+  assert.equal(crc32(bytes.subarray(next)), bytes.readUInt32LE(28));
+  const badStartCRC = Buffer.from(bytes);
+  badStartCRC[8] ^= 1;
+  const badNextCRC = Buffer.from(bytes);
+  badNextCRC[next] ^= 1;
+  const malformed = Buffer.from(bytes);
+  malformed[next] = 0xff;
+  malformed.writeUInt32LE(crc32(malformed.subarray(next)), 28);
+  malformed.writeUInt32LE(crc32(malformed.subarray(12, 32)), 8);
+  const badOffset = Buffer.from(bytes);
+  badOffset.writeBigUInt64LE(0xffffffffffffffffn, 12);
+  badOffset.writeUInt32LE(crc32(badOffset.subarray(12, 32)), 8);
+  const codes = [1];
+  for (const [name, corrupt] of [
+    ['bad-start-crc.7z', badStartCRC], ['bad-next-crc.7z', badNextCRC],
+    ['malformed-next-header.7z', malformed], ['bad-next-offset.7z', badOffset],
+  ]) {
+    await pick(corrupt, name);
+    await expect(page.getByText(/^Could not open archive:/)).toBeVisible();
+    await expect(button('Open archive…')).toBeEnabled();
+    await expect(selected).toBeChecked();
+    await expect(page.getByText('misnamed.zip', { exact: true })).toBeVisible();
+    await expect(page.getByRole('checkbox')).toHaveCount(6);
+    codes.push(0);
+    await expect.poll(() => page.evaluate(() => window.listWorkers)).toEqual(codes.map((code) => ({ terminated: true, codes: [code] })));
+    await expect.poll(() => page.workers().length).toBe(0);
+    assert.deepEqual(await tree(), sentinelTree);
+    assert.deepEqual(await downloadArchive(page, button('Download 7Z')), snapshot, `${name} must preserve archive bytes, format and selection`);
+  }
+  await pick(bytes, 'retry.7z');
+  await expect(page.getByText('6 entries', { exact: true })).toBeVisible();
+  await expect(page.getByText('retry.7z', { exact: true })).toBeVisible();
+  await expect(selected).not.toBeChecked();
+  await selected.click();
+  await button('Extract selected…').click();
+  const report = page.getByText(/^Extracted 5 entries to PeaZip-/);
+  await expect(report).toBeVisible();
+  const folder = (await report.innerText()).split(' to ')[1];
+  assert.deepEqual(await tree(), { ...sentinelTree, [folder]: {
+    docs: { '你好.txt': Array.from(Buffer.from('7z 你好\n')), empty: {}, nested: { 'data.bin': [0, 127, 255] } },
+  } });
+  await expect.poll(() => page.evaluate(() => window.extractionWorkers)).toEqual([{ terminated: true, codes: [1] }]);
+  codes.push(1);
+  await expect.poll(() => page.evaluate(() => window.listWorkers)).toEqual(codes.map((code) => ({ terminated: true, codes: [code] })));
+  await expect.poll(() => page.workers().length).toBe(0);
+  assert.equal(downloads.length, 5, 'opening and extraction must not download automatically');
+});
+
 test('TAR gzip uses a real listing worker, preserves snapshots on bad CRC, downloads unchanged and extracts', { timeout: 120_000 }, async (t) => {
   const { page, button, tree, downloads } = await extractionPage(t);
   const bytes = await readFile(new URL('../../tests/fixtures/sample.tar.gz', import.meta.url));

@@ -62,7 +62,7 @@ public class BridgeLifecycleCheck {
         return next;
     }
     public static void checkSaveFormats(PeaZipActivity picker) throws Exception {
-        for (int invalid : new int[] {-1, 3, Integer.MIN_VALUE, Integer.MAX_VALUE}) {
+        for (int invalid : new int[] {-1, 4, Integer.MIN_VALUE, Integer.MAX_VALUE}) {
             try {
                 picker.saveArchive(1, new byte[1], invalid);
                 throw new AssertionError("Invalid format accepted: " + invalid);
@@ -72,17 +72,17 @@ public class BridgeLifecycleCheck {
         }
         Constructor<?> constructor = TASK.getDeclaredConstructor(long.class, int.class, byte[].class, boolean.class, int.class);
         constructor.setAccessible(true);
-        for (int format : new int[] {0, 1, 2}) {
+        for (int format : new int[] {0, 1, 2, 3}) {
             byte[] bytes = new byte[] {'M', 'Z'};
             Object current = constructor.newInstance(10L + format, 1, bytes, false, format);
             Intent intent = (Intent) call(ACTIVITY, null, "pickerIntent", new Class<?>[] {TASK}, current);
             if (!Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction())
-                    || !(format == 2 ? "application/gzip" : format == 0 ? "application/zip" : "application/x-tar").equals(intent.getType())
-                    || !(format == 2 ? "Archive.tar.gz" : format == 0 ? "Archive.zip" : "Archive.tar").equals(intent.getStringExtra(Intent.EXTRA_TITLE)))
+                    || !(format == 3 ? "application/x-7z-compressed" : format == 2 ? "application/gzip" : format == 0 ? "application/zip" : "application/x-tar").equals(intent.getType())
+                    || !(format == 3 ? "Archive.7z" : format == 2 ? "Archive.tar.gz" : format == 0 ? "Archive.zip" : "Archive.tar").equals(intent.getStringExtra(Intent.EXTRA_TITLE)))
                 throw new AssertionError("Wrong archive action/MIME/title for format " + format);
             if (get(current, "bytes") != bytes) throw new AssertionError("Archive bytes changed");
         }
-        System.out.println("PASS: ZIP/TAR/TAR.GZ ACTION_CREATE_DOCUMENT MIME/title from explicit format, SFX bytes preserved; invalid codes rejected before admission");
+        System.out.println("PASS: ZIP/TAR/TAR.GZ/7Z ACTION_CREATE_DOCUMENT MIME/title from explicit format, SFX bytes preserved; invalid codes rejected before admission");
     }
     public static boolean available() { return owner == null || owner.archiveTransferAvailable(); }
     public static void startDelivery(PeaZipActivity activity, long id) throws Exception {

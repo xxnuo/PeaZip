@@ -74,6 +74,37 @@ fn opens_gzip_tar_and_preserves_snapshot_after_crc_failure() {
 }
 
 #[test]
+fn opens_seven_zip_and_preserves_snapshot_after_header_crc_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("misnamed.zip");
+    std::fs::write(&source, include_bytes!("../../../tests/fixtures/sample.7z")).unwrap();
+    let mut app = start();
+    app.on_pick_paths(vec![source.clone()]).unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("6 entries").unwrap();
+    app.wait_for("docs/你好.txt").unwrap();
+    app.press("role:checkbox[docs/]").unwrap();
+    let mut corrupt = std::fs::read(&source).unwrap();
+    let footer = 8;
+    corrupt[footer] ^= 1;
+    std::fs::write(&source, corrupt).unwrap();
+    app.on_pick_paths(vec![source]).unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("text:/^Could not open archive:/").unwrap();
+    assert!(app.screen().shows("docs/你好.txt"));
+    let destination = temp.path().join("output");
+    app.on_pick_save_path(Some(destination.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("Extracted 5 entries").unwrap();
+    assert_eq!(
+        std::fs::read(destination.join("docs/你好.txt")).unwrap(),
+        "7z 你好\n".as_bytes()
+    );
+    assert!(destination.join("docs/empty").is_dir());
+    assert!(!destination.join("other.txt").exists());
+}
+
+#[test]
 fn cancel_keeps_the_initial_state_and_open_available() {
     let mut app = start();
     app.on_pick_paths(vec![]).unwrap();

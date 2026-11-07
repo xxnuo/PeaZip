@@ -9,9 +9,9 @@
 | 1 | Rust workspace、内存 ZIP 核心、安全边界、上游基线与 CI | 正常归档往返、恶意路径及限额测试；基线报告可执行 | 本地验证完成；远程 CI 待运行 |
 | 2 | nsh Rust 界面：打开、列表、选择、创建、解压、错误反馈 | 用真实归档操作界面；UI 状态测试与本机启动验证 | 已有桌面/Web 与 Android ZIP 基本流程；更多格式、iOS 功能及剩余外部 API 验收待完成 |
 | 3 | 安全文件系统与平台文件选择、后台任务、进度、取消、覆盖冲突 | 符号链接/竞态/失败清理测试；大文件不中断界面 | 已有有界读取、后台操作、新目标原子不覆盖发布、Web 创建取消与阶段进度；桌面取消/进度、其他冲突策略/流式大文件待完成 |
-| 4 | 上游格式与功能逐项迁移 | 格式/操作能力清单；跨工具兼容样本、加密/分卷/损坏文件测试 | 已有 ZIP 和未压缩 TAR 读取/选中解压；其余格式、加密/分卷等待完成 |
+| 4 | 上游格式与功能逐项迁移 | 格式/操作能力清单；跨工具兼容样本、加密/分卷/损坏文件测试 | 已有 ZIP、TAR、TAR.GZ、7z 读取/选中解压；其余格式、加密/分卷等待完成 |
 | 5 | 文件管理、搜索、预览、校验、转换、分割、配置、语言与无障碍 | 按上游功能回归；权限和交互验证 | 待完成 |
-| 6 | 六平台构建、打包与发布 | 每个平台真实构建、运行、文件导入导出和归档往返；发布物可安装 | Web 浏览器流程、Android arm64 调试 APK 安装/导入已验证；iOS SDK 构建、移动导出及各平台发布验收待完成 |
+| 6 | 六平台构建、打包与发布 | 每个平台真实构建、运行、文件导入导出和归档往返；发布物可安装 | Web 浏览器流程、Android arm64 调试 APK 的导入/创建/保存/目录解压已验证；Linux GTK/X11 实际导入/解压已验证；iOS 构建与导出、Windows 实际运行及各平台发布验收待完成 |
 | 7 | 持续跟进上游 | 定期差异报告、映射到回归测试、审查并更新基线 | 持续 |
 
 ## 工程边界
@@ -138,5 +138,19 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 本轮 Rust workspace 103 次测试执行通过（含低句柄子进程重复），core 55 项；主机/wasm/Android target Clippy 与格式检查通过。浏览器 36 项通过，覆盖真实列表 Worker、TAR.GZ MIME/原字节下载、CRC 失败保留快照、OPFS 子树提取和 Cancel/pagehide 后重试及旧回调隔离。pagehide 仍为合成事件，OPFS 仍不替代外部目录权限验收。主机 Android 检查包括 27 项 JNI、86 项导出策略、13 项资产、11 项有界读取及生命周期，覆盖三种保存格式。
 
 - Android 36 全量 ZIP/TAR/TAR.GZ smoke 通过，记录 `target/android-smoke/016b44ede8fc`；最终 APK 重建后 TAR.GZ 定向复验通过，记录 `target/android-smoke/e4a54df9cfd4`。真实 `application/gzip` 保存/取消、原字节和独立 gzip/tarfile 核对、SAF 子树提取、空目录和未选内容缺席、CRC 拒绝前后快照/选择/既有输出均已检查，PID 稳定且无应用 fatal。专用模拟器测试文件已清理；仍仅覆盖本机 Documents provider，未新增 iOS 或 Windows/Linux 实际运行证据。
+
+- 7z 后端采用固定 `sevenz-turbo = 0.29.5`，关闭默认 features，锁定纯 Rust LZMA/CRC 依赖；最低 Rust 版本提升为 1.97.1。使用其 [ArchiveLimits](https://docs.rs/sevenz-turbo/0.29.5/sevenz_turbo/struct.ArchiveLimits.html) 在头部/名称/对象分配和 decoder 构造前限制资源，不使用默认无限预算构造；字典和模型的估算预算不等于整个应用的 heap 上限。后续升级必须重跑恶意头部、计数、solid 和实际浏览器测试。
+- 本阶段读取普通及 solid 7z，支持 COPY/LZMA/LZMA2 与已启用过滤器；复用路径冲突、特殊文件拒绝、选择子目录和原子/授权目录输出。元数据先整体校验，再完整消费选中内容所属 block（包括其中未选成员），等待 block 校验成功后交付结果；未涉及 block 的内容 CRC 不在局部提取时验证，列表不宣称验证 payload。数据块禁用后端会提前返回 EOF 的 CRC 包装，由 core 对实际读取逐成员/逐块计算 CRC，同时保留后端流末尾检查；防止声明前缀 CRC 掩盖 LZMA2 多余输出。
+- 只接受完整、头部和 packed ranges 连续的非 SFX 单文件容器；拒绝恢复猜测、附加尾部、加密、anti-item、链接/reparse/特殊类型及未启用 codec。创建仍仅 ZIP，不宣称已完成 7z 加密、分卷、更新或写入。Web/Android 保存使用 `.7z` 和 `application/x-7z-compressed`，保留输入字节；新依赖的许可证和贡献者声明随 Web/Android/iOS 打包脚本复制。
+
+- 7z 完整性边界：校验外层 start/next header、被读取成员和块的已声明内容 CRC；CRC 可缺省，不能作为真实性证明。锁定后端尚不核验 packed-stream CRC，也不对压缩头声明长度之后追加 EOF 探测；不据此宣称覆盖所有畸形编码的完整性。特殊零长度 stream block 在入口拒绝，普通无 stream 空文件/目录继续支持。
+
+- 本轮新增 18 项 7z 核心测试，core 合计 73 项，工作区 125 次执行通过。样本由系统 7z 独立生成，覆盖 COPY/LZMA/LZMA2、solid/non-solid、压缩头、BCJ/BCJ2/Delta、中文/空目录、链接/特殊属性拒绝、头部 CRC/范围/计数/名称/字典限制和选择子树；构造 LZMA2 前缀 CRC 样本确认多余输出不再被 CRC 包装掩盖，未选 solid 内容损坏不会交付部分结果。主机、WASM、Android target Clippy 与格式检查通过。iOS 真机/模拟器、Windows、Linux 的核心交叉编译通过；这些仅为编译证据。
+
+- 最终 Web 优化产物的 37 项浏览器/文件导出测试通过：真实 7z 列表与提取 Worker、内容识别、原字节及 MIME 下载、头 CRC/next-header 失败保留快照，OPFS 输出按系统 7z 样本核对。Android 主机桥接检查覆盖 28 项 JNI 与 ZIP/TAR/TAR.GZ/7Z 保存类型，所有原生命周期/有界 I/O 检查通过。
+
+- Linux 实际运行：启动本机 OrbStack，使用独立 Ubuntu 24.04 arm64 容器、GTK 4.14.5、GStreamer 1.24.2、Rust 1.99.1，源码只读挂载。最终 core/native/worker/UI 共 125 次测试执行通过；真实 GTK 应用在 Xvfb+DBus 下连续两次经文件选择器导入 7z、选择 docs/ 并提取，系统 7z 字节对照、空目录、未选内容缺席和哨兵不变均通过；中文字体和界面截图已检查。证据位于 `target/linux-runtime-20261108-a/final-test.log`、`final-smoke1.log`、`final-smoke2.log`。新增 `bash scripts/smoke_linux.sh target/debug/peazip-ui target/linux-smoke` 和 Linux CI 步骤；远程 CI 尚未运行。该脚本针对 GTK 4.14 英文 X11 固定布局，不代表 Wayland、门户或所有桌面环境；容器已停止，保留可复用缓存。
+
+- Android 最终 APK 7z 真实 DocumentsUI/SAF smoke 通过，记录 `target/android-smoke/a5f82157f576`：打开 6 项、`application/x-7z-compressed` 保存/取消、保存字节与独立系统 7z 校验一致，选中 docs/ 提取 5 项、中文/二进制/空目录正确、未选文件缺席、既有哨兵未改；损坏头 CRC 在写出前拒绝并保留旧快照/选择。PID 稳定无应用 fatal，测试文件已清理，专用模拟器已关闭。
 
 下一步：补充更多归档格式与大文件流式处理，同时继续推进 iOS SDK/文件导出和 Windows/Linux 实际运行；补齐 Web 外部目录、桌面/移动端主动取消与进度、冲突策略及文件管理功能。Web/Android 打开归档仍走 nsh picker，创建使用独立有界入口；两者限制不可混为一谈。六平台实际运行、完整功能与发布验收仍是最终要求。

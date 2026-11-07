@@ -267,3 +267,80 @@ fn extract_rejects_bad_archive_paths_and_crc_without_partial_results() {
     );
     assert!(extract_from_request(&extract_packet(&[b"good", b"bad"], &zip)).is_err());
 }
+
+const SEVEN_ZIP: &[u8] = include_bytes!("../../../tests/fixtures/sample.7z");
+
+#[test]
+fn extracts_solid_lzma2_7z_subtree_with_encoded_header() {
+    let output =
+        peazip_worker::extract_from_request(&extract_packet(&[b"docs/"], SEVEN_ZIP)).unwrap();
+    let entries = decode_extract(&output);
+    assert_eq!(entries.len(), 5);
+    let actual: std::collections::BTreeMap<_, _> = entries
+        .into_iter()
+        .map(|entry| (entry.path, (entry.is_dir, entry.data)))
+        .collect();
+    let expected: std::collections::BTreeMap<_, _> = [
+        ("docs/", (true, vec![])),
+        ("docs/empty/", (true, vec![])),
+        ("docs/nested/", (true, vec![])),
+        ("docs/nested/data.bin", (false, vec![0, 127, 255])),
+        ("docs/你好.txt", (false, "7z 你好\n".as_bytes().to_vec())),
+    ]
+    .into_iter()
+    .map(|(path, data)| (path.to_owned(), data))
+    .collect();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn rejects_truncated_7z_bad_header_crc_and_malformed_next_headers_without_partial_output() {
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = u32::MAX;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb88320 & 0u32.wrapping_sub(crc & 1));
+            }
+        }
+        !crc
+    }
+    fn fix_start_crc(bytes: &mut [u8]) {
+        let crc = crc32(&bytes[12..32]);
+        bytes[8..12].copy_from_slice(&crc.to_le_bytes());
+    }
+    let next = 32 + u64::from_le_bytes(SEVEN_ZIP[12..20].try_into().unwrap()) as usize;
+    assert_eq!(SEVEN_ZIP[next], 0x17, "fixture must use an encoded header");
+    assert_eq!(crc32(&SEVEN_ZIP[12..32]).to_le_bytes(), SEVEN_ZIP[8..12]);
+    assert_eq!(crc32(&SEVEN_ZIP[next..]).to_le_bytes(), SEVEN_ZIP[28..32]);
+    let mut corruptions = Vec::new();
+    let mut bad_start_crc = SEVEN_ZIP.to_vec();
+    bad_start_crc[8] ^= 1;
+    corruptions.push(bad_start_crc);
+    let mut bad_next_crc = SEVEN_ZIP.to_vec();
+    bad_next_crc[next] ^= 1;
+    corruptions.push(bad_next_crc);
+    let mut malformed = SEVEN_ZIP.to_vec();
+    malformed[next] = 0xff;
+    let crc = crc32(&malformed[next..]);
+    malformed[28..32].copy_from_slice(&crc.to_le_bytes());
+    fix_start_crc(&mut malformed);
+    corruptions.push(malformed);
+    for field in [12..20, 20..28] {
+        let mut oversized = SEVEN_ZIP.to_vec();
+        oversized[field].copy_from_slice(&u64::MAX.to_le_bytes());
+        fix_start_crc(&mut oversized);
+        corruptions.push(oversized);
+    }
+    for archive in (0..SEVEN_ZIP.len())
+        .map(|end| &SEVEN_ZIP[..end])
+        .chain(corruptions.iter().map(Vec::as_slice))
+    {
+        assert!(peazip_worker::list_from_request(archive).is_err());
+        assert!(
+            peazip_worker::extract_from_request(&extract_packet(&[b"docs/"], archive)).is_err()
+        );
+    }
+    assert!(peazip_worker::list_from_request(SEVEN_ZIP).is_ok());
+    assert!(peazip_worker::extract_from_request(&extract_packet(&[b"docs/"], SEVEN_ZIP)).is_ok());
+}

@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import tempfile
 
+from archive_licenses import archive_licenses
+
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = "io.peazip.rust"
 MINIMUM_OS = "15.0"
@@ -132,6 +134,8 @@ def build(target, debug=False, developer_dir=None):
         shutil.copyfile(ROOT / "LICENSE", staged / "PeaZip-LICENSE")
         runtime = next(package for package in metadata["packages"] if package["name"] == "nsh-ios-app")
         shutil.copyfile(Path(runtime["manifest_path"]).parent.parent.parent / "LICENSE-APACHE", staged / "NSH-LICENSE-APACHE")
+        for name, source in archive_licenses(metadata):
+            shutil.copyfile(source, staged / name)
         with (staged / "Info.plist").open("wb") as stream:
             plistlib.dump(info_plist(sdk), stream, sort_keys=True)
         (staged / "PkgInfo").write_bytes(b"APPL????")

@@ -30,6 +30,7 @@ pub fn list_from_request(archive: &[u8]) -> Result<Vec<u8>, String> {
         peazip_core::ArchiveFormat::Zip => 0,
         peazip_core::ArchiveFormat::Tar => 1,
         peazip_core::ArchiveFormat::TarGzip => 2,
+        peazip_core::ArchiveFormat::SevenZip => 3,
     });
     output.extend_from_slice(&(entries.len() as u32).to_le_bytes());
     for entry in entries {
