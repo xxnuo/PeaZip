@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use zip::read::Config;
 use zip::unstable::read::ZipIterable;
@@ -33,6 +33,7 @@ pub enum Error {
     UnsafePath(String),
     DuplicatePath(String),
     UnsupportedEntry(String),
+    UnknownEntry(String),
     InvalidArchive(zip::result::ZipError),
     Io(io::Error),
 }
@@ -44,6 +45,7 @@ impl std::fmt::Display for Error {
             Self::UnsafePath(path) => write!(f, "unsafe ZIP path: {path:?}"),
             Self::DuplicatePath(path) => write!(f, "duplicate or conflicting ZIP path: {path:?}"),
             Self::UnsupportedEntry(path) => write!(f, "unsupported ZIP entry: {path:?}"),
+            Self::UnknownEntry(path) => write!(f, "ZIP entry not found: {path:?}"),
             Self::InvalidArchive(e) => write!(f, "invalid ZIP: {e}"),
             Self::Io(e) => write!(f, "ZIP I/O error: {e}"),
         }
@@ -197,10 +199,44 @@ pub fn list_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
 }
 
 pub fn extract_zip(bytes: &[u8], limits: Limits) -> Result<Vec<MemoryEntry>, Error> {
+    extract_matching(bytes, None, limits)
+}
+
+pub fn extract_selected_zip(
+    bytes: &[u8],
+    selected: &[String],
+    limits: Limits,
+) -> Result<Vec<MemoryEntry>, Error> {
+    extract_matching(bytes, Some(selected), limits)
+}
+
+fn extract_matching(
+    bytes: &[u8],
+    selected: Option<&[String]>,
+    limits: Limits,
+) -> Result<Vec<MemoryEntry>, Error> {
     let entries = list_zip(bytes, limits)?;
+    let selected = selected.map(|paths| paths.iter().map(String::as_str).collect::<BTreeSet<_>>());
+    if let Some(selected) = &selected {
+        let names: BTreeSet<_> = entries.iter().map(|entry| entry.path.as_str()).collect();
+        for path in selected {
+            if !names.contains(path) {
+                return Err(Error::UnknownEntry((*path).into()));
+            }
+        }
+    }
     let mut archive = ZipArchive::new(Cursor::new(bytes))?;
     let mut output = Vec::new();
     for (i, entry) in entries.into_iter().enumerate() {
+        if let Some(selected) = &selected
+            && !selected.contains(entry.path.as_str())
+            && !entry
+                .path
+                .match_indices('/')
+                .any(|(at, _)| selected.contains(&entry.path[..=at]))
+        {
+            continue;
+        }
         let mut file = archive.by_index(i)?;
         let mut data = Vec::new();
         // One extra byte detects false size declarations without unbounded decompression.

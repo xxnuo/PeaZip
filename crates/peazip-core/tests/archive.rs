@@ -1,4 +1,6 @@
-use peazip_core::{Error, Limits, MemoryEntry, create_zip, extract_zip, list_zip};
+use peazip_core::{
+    Error, Limits, MemoryEntry, create_zip, extract_selected_zip, extract_zip, list_zip,
+};
 use std::io::{Cursor, Write};
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
@@ -340,4 +342,89 @@ fn rejects_declared_sizes_above_and_below_actual_size() {
         bytes[central + 24..central + 28].copy_from_slice(&size.to_le_bytes());
         assert!(extract_zip(&bytes, Limits::default()).is_err(), "{size}");
     }
+}
+
+#[test]
+fn extracts_selected_files_and_directory_subtrees_without_duplicates() {
+    let input = vec![
+        entry("folder/", b""),
+        entry("folder/中文.txt", b"inside"),
+        entry("folder/nested/file", b"nested"),
+        entry("folder-other/file", b"outside"),
+        entry("other", b"last"),
+    ];
+    let zip = create_zip(&input, Limits::default()).unwrap();
+    assert_eq!(
+        extract_selected_zip(
+            &zip,
+            &["folder/".into(), "folder/中文.txt".into(), "folder/".into()],
+            Limits::default()
+        )
+        .unwrap(),
+        input[..3]
+    );
+    assert_eq!(
+        extract_selected_zip(
+            &zip,
+            &["other".into(), "folder/nested/file".into()],
+            Limits::default()
+        )
+        .unwrap(),
+        vec![input[2].clone(), input[4].clone()]
+    );
+    assert!(
+        extract_selected_zip(&zip, &[], Limits::default())
+            .unwrap()
+            .is_empty()
+    );
+    for path in ["missing", "folder", "FOLDER/", "../outside"] {
+        assert!(matches!(
+            extract_selected_zip(&zip, &[path.into()], Limits::default()),
+            Err(Error::UnknownEntry(_))
+        ));
+    }
+}
+
+#[test]
+fn selection_does_not_bypass_archive_safety_checks() {
+    let zip = raw_zip("../escape", b"evil", false);
+    assert!(matches!(
+        extract_selected_zip(&zip, &[], Limits::default()),
+        Err(Error::UnsafePath(_))
+    ));
+    let zip = create_zip(&[entry("file", b"hello")], Limits::default()).unwrap();
+    assert!(matches!(
+        extract_selected_zip(
+            &zip,
+            &["file".into()],
+            Limits {
+                max_total_bytes: 4,
+                ..Limits::default()
+            }
+        ),
+        Err(Error::Limit(_))
+    ));
+}
+
+#[test]
+fn only_selected_payloads_are_decoded_and_crc_checked() {
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, data) in [("good", b"good"), ("bad", b"bad!")] {
+        writer
+            .start_file(
+                name,
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(data).unwrap();
+    }
+    let mut zip = writer.finish().unwrap().into_inner();
+    let offset = zip.windows(4).position(|bytes| bytes == b"bad!").unwrap();
+    zip[offset] ^= 1;
+    assert_eq!(
+        extract_selected_zip(&zip, &["good".into()], Limits::default()).unwrap(),
+        vec![entry("good", b"good")]
+    );
+    assert!(extract_selected_zip(&zip, &["bad".into()], Limits::default()).is_err());
+    assert!(extract_zip(&zip, Limits::default()).is_err());
 }
