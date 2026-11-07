@@ -1,4 +1,6 @@
-use nsh_base::{button, theme, toolbar};
+use std::collections::BTreeSet;
+
+use nsh_base::{button, checkbox, theme, toolbar};
 use nsh_core::{element::Position, prelude::*};
 use peazip_core::Entry;
 
@@ -13,6 +15,7 @@ pub fn App() -> impl IntoElement {
     let path = signal(String::new());
     let status = signal("Open a ZIP archive to view its contents.".to_owned());
     let busy = signal(false);
+    let selected = signal(BTreeSet::<String>::new());
     let open = move || {
         if busy.get_untracked() {
             return;
@@ -24,6 +27,7 @@ pub fn App() -> impl IntoElement {
                     status.set(format!("{} entries", rows.len()));
                     path.set(name);
                     entries.set(rows);
+                    selected.set(BTreeSet::new());
                 }
                 Ok(None) => {}
                 Err(error) => status.set(format!("Could not open ZIP: {error}")),
@@ -58,6 +62,33 @@ pub fn App() -> impl IntoElement {
                 .child(text(move || path.get()).flex_1()),
         )
         .child(
+            toolbar()
+                .flex_row()
+                .gap_3()
+                .px_3()
+                .py_2()
+                .child(
+                    button()
+                        .disabled(move || busy.get() || entries.with(Vec::is_empty))
+                        .on_press(move || {
+                            selected
+                                .set(entries.with(|rows| {
+                                    rows.iter().map(|row| row.path.clone()).collect()
+                                }));
+                        })
+                        .child(text("Select all")),
+                )
+                .child(
+                    button()
+                        .disabled(move || busy.get() || selected.with(BTreeSet::is_empty))
+                        .on_press(move || selected.set(BTreeSet::new()))
+                        .child(text("Clear selection")),
+                )
+                .child(text(move || {
+                    format!("{} selected", selected.with(BTreeSet::len))
+                })),
+        )
+        .child(
             view()
                 .flex_row()
                 .px_3()
@@ -70,10 +101,47 @@ pub fn App() -> impl IntoElement {
             virtual_list(
                 move || entries.with(Vec::len),
                 move |at: Position| {
-                    view()
+                    checkbox()
+                        .accessibility_label(move || {
+                            entries.with(|rows| {
+                                rows.get(at.index()).map(|row| row.path.clone().into())
+                            })
+                        })
+                        .checked(move || {
+                            entries.with(|rows| {
+                                rows.get(at.index()).is_some_and(|row| {
+                                    selected.with(|paths| paths.contains(&row.path))
+                                })
+                            })
+                        })
+                        .disabled(move || busy.get())
+                        .on_change(move |checked: &bool| {
+                            if let Some(name) = entries
+                                .with(|rows| rows.get(at.index()).map(|row| row.path.clone()))
+                            {
+                                selected.update(|paths| {
+                                    if *checked {
+                                        paths.insert(name);
+                                    } else {
+                                        paths.remove(&name);
+                                    }
+                                });
+                            }
+                        })
                         .flex_row()
                         .px_3()
                         .py_2()
+                        .child(
+                            text(move || {
+                                let checked = entries.with(|rows| {
+                                    rows.get(at.index()).is_some_and(|row| {
+                                        selected.with(|paths| paths.contains(&row.path))
+                                    })
+                                });
+                                if checked { "[x]" } else { "[ ]" }
+                            })
+                            .w(px(32.0)),
+                        )
                         .child(
                             text(move || {
                                 entries.with(|rows| {

@@ -20,5 +20,6 @@ nsh-platform-linux = { git = "https://github.com/longbridge/nsh.git", rev = "701
 nsh-platform-windows = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
 
 [dev-dependencies]
+tempfile = "3"
 nsh-engine = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
 nsh-testing = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }

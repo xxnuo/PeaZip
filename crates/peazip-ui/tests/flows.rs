@@ -72,3 +72,75 @@ fn rejects_an_oversized_archive_and_allows_another_open() {
     assert!(app.screen().enabled("role:button[Open ZIP…]").unwrap());
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn selects_individual_entries_all_and_none_and_resets_on_new_archive() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("selection.zip");
+    let bytes = peazip_core::create_zip(
+        &["first.txt", "second.txt"].map(|name| MemoryEntry {
+            path: name.into(),
+            is_dir: false,
+            data: b"sample".to_vec(),
+        }),
+        Limits::default(),
+    )
+    .unwrap();
+    std::fs::write(&path, bytes).unwrap();
+    let mut app = start();
+    assert!(!app.screen().enabled("role:button[Select all]").unwrap());
+    assert!(
+        !app.screen()
+            .enabled("role:button[Clear selection]")
+            .unwrap()
+    );
+    app.on_pick_paths(vec![path.clone()]).unwrap();
+    app.press("role:button[Open ZIP…]").unwrap();
+    app.wait_for("first.txt").unwrap();
+    app.press("role:checkbox[first.txt]").unwrap();
+    app.wait_for("1 selected").unwrap();
+    assert_eq!(
+        app.screen()
+            .accessibility_state("role:checkbox[first.txt]")
+            .unwrap()
+            .checked,
+        Some(nsh_core::Checked::True)
+    );
+    app.press("role:button[Select all]").unwrap();
+    app.wait_for("2 selected").unwrap();
+    app.press("role:checkbox[first.txt]").unwrap();
+    app.wait_for("1 selected").unwrap();
+    assert_eq!(
+        app.screen()
+            .accessibility_state("role:checkbox[first.txt]")
+            .unwrap()
+            .checked,
+        Some(nsh_core::Checked::False)
+    );
+    app.press("role:button[Clear selection]").unwrap();
+    app.wait_for("0 selected").unwrap();
+
+    app.press("role:checkbox[first.txt]").unwrap();
+    app.wait_for("1 selected").unwrap();
+    app.on_pick_paths(vec![]).unwrap();
+    app.press("role:button[Open ZIP…]").unwrap();
+    app.wait_for("2 entries").unwrap();
+    assert!(app.screen().shows("1 selected"));
+    app.on_pick_paths(vec![temp.path().join("missing.zip")])
+        .unwrap();
+    app.press("role:button[Open ZIP…]").unwrap();
+    app.wait_for("text:/^Could not open ZIP:/").unwrap();
+    assert!(app.screen().shows("1 selected"));
+
+    app.on_pick_paths(vec![path]).unwrap();
+    app.press("role:button[Open ZIP…]").unwrap();
+    app.wait_for("2 entries").unwrap();
+    app.wait_for("0 selected").unwrap();
+    assert_eq!(
+        app.screen()
+            .accessibility_state("role:checkbox[first.txt]")
+            .unwrap()
+            .checked,
+        Some(nsh_core::Checked::False)
+    );
+}
