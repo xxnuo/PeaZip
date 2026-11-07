@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -6,6 +7,9 @@ use std::sync::Arc;
 
 pub use peazip_core::{Entry, Error, Limits};
 use peazip_core::{MemoryEntry, create_zip, list_zip};
+
+mod browse;
+pub use browse::{DirectoryEntry, DirectoryError, DirectoryLimits, DirectorySnapshot, EntryKind};
 
 // Reject final-component symlinks (including Windows reparse points). Parent
 // directories are resolved normally; callers must trust their selected parents.
@@ -41,8 +45,15 @@ fn open_regular(path: &Path) -> Result<File, Error> {
 }
 
 pub fn read_archive_bytes(path: &Path, limits: Limits) -> Result<Vec<u8>, Error> {
-    let mut file = open_regular(path)?;
-    if file.metadata()?.len() > limits.max_archive_bytes {
+    read_archive_file(open_regular(path)?, limits)
+}
+
+fn read_archive_file(mut file: File, limits: Limits) -> Result<Vec<u8>, Error> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(Error::UnsupportedEntry("not a regular file".into()));
+    }
+    if metadata.len() > limits.max_archive_bytes {
         return Err(Error::Limit("archive bytes"));
     }
     let mut bytes = Vec::new();
@@ -56,13 +67,28 @@ pub fn read_archive_bytes(path: &Path, limits: Limits) -> Result<Vec<u8>, Error>
     Ok(bytes)
 }
 
-fn open_source(parent: &cap_std::fs::Dir, name: &str) -> Result<File, Error> {
+fn is_link(metadata: &cap_std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use cap_std::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    metadata.is_symlink()
+}
+
+fn open_source(parent: &cap_std::fs::Dir, name: impl AsRef<Path>) -> Result<File, Error> {
     use cap_fs_ext::{
         FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt, OpenOptionsSyncExt,
     };
+    let name = name.as_ref();
+    if name.file_name() != Some(name.as_os_str()) {
+        return Err(Error::UnsafePath("expected one filename component".into()));
+    }
     let metadata = parent.symlink_metadata(name)?;
-    if !metadata.is_file() && !metadata.is_dir() {
-        return Err(Error::UnsupportedEntry(name.into()));
+    if is_link(&metadata) || (!metadata.is_file() && !metadata.is_dir()) {
+        return Err(Error::UnsupportedEntry(name.display().to_string()));
     }
     let mut options = cap_std::fs::OpenOptions::new();
     options
@@ -76,11 +102,11 @@ fn open_source(parent: &cap_std::fs::Dir, name: &str) -> Result<File, Error> {
     {
         use std::os::windows::fs::MetadataExt;
         if metadata.file_attributes() & 0x400 != 0 {
-            return Err(Error::UnsupportedEntry(name.into()));
+            return Err(Error::UnsupportedEntry(name.display().to_string()));
         }
     }
     if !metadata.is_file() && !metadata.is_dir() {
-        return Err(Error::UnsupportedEntry(name.into()));
+        return Err(Error::UnsupportedEntry(name.display().to_string()));
     }
     Ok(file)
 }
@@ -90,10 +116,35 @@ pub fn create_zip_from_paths(
     destination: &Path,
     limits: Limits,
 ) -> Result<Vec<Entry>, Error> {
-    if paths.is_empty() {
+    let sources = paths.iter().map(|path| {
+        if path.to_str().is_none() {
+            return Err(Error::UnsafePath(path.to_string_lossy().into_owned()));
+        }
+        let name = path
+            .file_name()
+            .ok_or_else(|| Error::UnsafePath(path.display().to_string()))?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let parent = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
+        Ok((Arc::new(parent), name.to_owned()))
+    });
+    create_zip_from_sources(paths.len(), sources, destination, limits)
+}
+
+type Source = (Arc<cap_std::fs::Dir>, OsString);
+
+fn create_zip_from_sources(
+    count: usize,
+    sources: impl IntoIterator<Item = Result<Source, Error>>,
+    destination: &Path,
+    limits: Limits,
+) -> Result<Vec<Entry>, Error> {
+    if count == 0 {
         return Err(Error::UnsupportedEntry("empty selection".into()));
     }
-    if paths.len() > limits.max_entries {
+    if count > limits.max_entries {
         return Err(Error::Limit("entry count"));
     }
     match fs::symlink_metadata(destination) {
@@ -105,15 +156,12 @@ pub fn create_zip_from_paths(
     let mut entries = Vec::new();
     let mut total = 0u64;
     let mut pending = Vec::new();
-    let mut discovered = paths.len();
-    for path in paths {
-        if path.to_str().is_none() {
-            return Err(Error::UnsafePath(path.to_string_lossy().into_owned()));
-        }
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| Error::UnsafePath(path.display().to_string()))?;
+    let mut discovered = count;
+    for source in sources {
+        let (parent, component) = source?;
+        let name = component
+            .to_str()
+            .ok_or_else(|| Error::UnsafePath(format!("{component:?}")))?;
         if name.len() > limits.max_path_bytes {
             return Err(Error::Limit("path bytes"));
         }
@@ -122,12 +170,7 @@ pub fn create_zip_from_paths(
         }
         // Only the selected root's parent is ambient/trusted. Every subsequent
         // open uses one component relative to an already opened directory.
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let parent = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
-        pending.push((Arc::new(parent), name.to_owned(), name.to_owned()));
+        pending.push((parent, component.clone(), name.to_owned()));
         while let Some((parent, component, mut name)) = pending.pop() {
             let mut file = open_source(&parent, &component)?;
             drop(parent);
@@ -139,11 +182,11 @@ pub fn create_zip_from_paths(
                 }
                 let dir = Arc::new(cap_std::fs::Dir::from_std_file(file));
                 for child in dir.entries()? {
-                    let child = child?;
                     if discovered >= limits.max_entries {
                         return Err(Error::Limit("entry count"));
                     }
                     discovered += 1;
+                    let child = child?;
                     let component = child.file_name();
                     let component = component.to_str().ok_or_else(|| {
                         Error::UnsafePath(component.to_string_lossy().into_owned())
@@ -153,7 +196,7 @@ pub fn create_zip_from_paths(
                     }
                     pending.push((
                         Arc::clone(&dir),
-                        component.to_owned(),
+                        OsString::from(component),
                         format!("{name}{component}"),
                     ));
                 }

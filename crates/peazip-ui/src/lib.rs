@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use commands::{Command, CommandId, Commands};
 use nsh_base::{theme, toolbar};
@@ -12,6 +12,53 @@ mod menus;
 mod navigation;
 
 type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>, ArchiveFormat);
+
+struct OpenedArchive {
+    name: String,
+    data: LoadedArchive,
+    source_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy)]
+struct ArchiveState {
+    snapshot: Signal<Arc<Vec<u8>>>,
+    source: Signal<Option<PathBuf>>,
+    format: Signal<ArchiveFormat>,
+    entries: Signal<Vec<Entry>>,
+    navigation: Signal<navigation::BrowserState>,
+    version: Signal<u64>,
+    path: Signal<String>,
+    selected: Signal<BTreeSet<String>>,
+}
+
+impl ArchiveState {
+    fn show(self, opened: OpenedArchive) {
+        let (bytes, rows, kind) = opened.data;
+        batch(|| {
+            self.format.set(kind);
+            self.snapshot.set(bytes);
+            self.path.set(opened.name);
+            self.source.set(opened.source_path);
+            self.entries.set(rows);
+            self.navigation.set(navigation::BrowserState::default());
+            self.version
+                .update(|version| *version = version.wrapping_add(1));
+            self.selected.set(BTreeSet::new());
+        });
+    }
+    fn clear(self) {
+        self.show(OpenedArchive {
+            name: String::new(),
+            data: (Arc::new(Vec::new()), Vec::new(), ArchiveFormat::Zip),
+            source_path: None,
+        });
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+mod desktop_browsing;
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+mod filesystem;
 
 #[cfg(target_arch = "wasm32")]
 mod browser;
@@ -28,6 +75,7 @@ fn native(registry: &mut Registry) {
 pub fn App() -> impl IntoElement {
     let snapshot = signal(Arc::new(Vec::<u8>::new()));
     let format = signal(ArchiveFormat::Zip);
+    let source = signal(None::<PathBuf>);
     let entries = signal(Vec::<Entry>::new());
     let navigation = signal(navigation::BrowserState::default());
     let archive_version = signal(0u64);
@@ -41,6 +89,58 @@ pub fn App() -> impl IntoElement {
     let activity = signal("Opening archive…".to_owned());
     let selected = signal(BTreeSet::<String>::new());
     let controls = explorer::Controls::new(entries, navigation);
+    let owner = Owner::current();
+    let archive = ArchiveState {
+        snapshot,
+        source,
+        format,
+        entries,
+        navigation,
+        version: archive_version,
+        path,
+        selected,
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let files = filesystem::Files::new();
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let disk = desktop_browsing::Browser {
+        files,
+        archive,
+        busy,
+        status,
+        activity,
+        owner,
+        archive_content: controls.content,
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    disk.track_navigation();
+    let file_view = move || {
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        {
+            files.active.get()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            false
+        }
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let focus_contents = move || {
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        if files.active.get_untracked() {
+            files.content.focus();
+            return;
+        }
+        controls.content.focus();
+    };
+    let show_archive = move |opened: OpenedArchive| {
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        if files.context.get_untracked() {
+            disk.show_archive(opened, String::new(), filesystem::HistoryChange::Visit);
+            return;
+        }
+        archive.show(opened);
+    };
     let active_menu = signal(None::<&'static str>);
     let open = move || {
         if busy.get_untracked() {
@@ -59,15 +159,10 @@ pub fn App() -> impl IntoElement {
             #[cfg(target_arch = "wasm32")]
             cancellable.set(false);
             match opened {
-                Ok(Some((name, (bytes, rows, kind)))) => {
-                    format.set(kind);
-                    snapshot.set(bytes);
-                    status.set(format!("{} entries", rows.len()));
-                    path.set(name);
-                    entries.set(rows);
-                    navigation.set(navigation::BrowserState::default());
-                    archive_version.update(|version| *version = version.wrapping_add(1));
-                    selected.set(BTreeSet::new());
+                Ok(Some(opened)) => {
+                    let count = opened.data.1.len();
+                    show_archive(opened);
+                    status.set(format!("{} entries", count));
                 }
                 Ok(None) => {}
                 Err(error) => status.set(format!("Could not open archive: {error}")),
@@ -93,16 +188,22 @@ pub fn App() -> impl IntoElement {
         cancel_message.set("Creation cancelled.".into());
         activity.set("Creating ZIP…".to_owned());
         spawn(async move {
-            match create_archive(folders, activity).await {
-                Ok(Some((name, (bytes, rows, kind)))) => {
-                    format.set(kind);
-                    snapshot.set(bytes);
-                    status.set(format!("Created ZIP: {} entries", rows.len()));
-                    path.set(name);
-                    entries.set(rows);
-                    navigation.set(navigation::BrowserState::default());
-                    archive_version.update(|version| *version = version.wrapping_add(1));
-                    selected.set(BTreeSet::new());
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            let result = if !folders
+                && files.active.get_untracked()
+                && !files.selected.with(BTreeSet::is_empty)
+            {
+                disk.create_selection().await
+            } else {
+                create_archive(folders, activity).await
+            };
+            #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+            let result = create_archive(folders, activity).await;
+            match result {
+                Ok(Some(opened)) => {
+                    let count = opened.data.1.len();
+                    show_archive(opened);
+                    status.set(format!("Created ZIP: {} entries", count));
                 }
                 Ok(None) => {}
                 Err(error) => status.set(format!("Could not create ZIP: {error}")),
@@ -122,16 +223,21 @@ pub fn App() -> impl IntoElement {
             Command::new(
                 CommandId::CloseArchive,
                 "Close archive",
-                move || !busy.get() && !snapshot.with(|bytes| bytes.is_empty()),
+                move || !busy.get() && !file_view() && !snapshot.with(|bytes| bytes.is_empty()),
                 move || {
-                    snapshot.set(Arc::new(Vec::new()));
-                    entries.set(Vec::new());
-                    selected.set(BTreeSet::new());
-                    path.set(String::new());
-                    format.set(ArchiveFormat::Zip);
-                    navigation.set(navigation::BrowserState::default());
-                    archive_version.update(|version| *version = version.wrapping_add(1));
-                    status.set("Open an archive to view its contents.".into());
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    {
+                        disk.close_archive();
+                    }
+                    #[cfg(not(any(
+                        target_os = "macos",
+                        target_os = "linux",
+                        target_os = "windows"
+                    )))]
+                    {
+                        archive.clear();
+                        status.set("Open an archive to view its contents.".into());
+                    }
                 },
             ),
             "mod+w",
@@ -139,7 +245,7 @@ pub fn App() -> impl IntoElement {
         Command::new(
             CommandId::Test,
             "Test archive",
-            move || !busy.get() && !snapshot.with(|bytes| bytes.is_empty()),
+            move || !busy.get() && !file_view() && !snapshot.with(|bytes| bytes.is_empty()),
             move || {
                 if busy.get_untracked() || snapshot.with(|bytes| bytes.is_empty()) {
                     return;
@@ -179,16 +285,38 @@ pub fn App() -> impl IntoElement {
             Command::new(
                 CommandId::SelectAll,
                 "Select all",
-                move || !busy.get() && !controls.visible.with(Vec::is_empty),
                 move || {
-                    let paths = entries.with(|items| {
+                    if busy.get() {
+                        return false;
+                    }
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    if files.active.get() {
+                        return files.current.with(|current| {
+                            current
+                                .as_ref()
+                                .is_some_and(|view| !view.0.entries().is_empty())
+                        });
+                    }
+                    !controls.visible.with(Vec::is_empty)
+                },
+                move || {
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    if files.active.get_untracked() {
+                        files.selected.set(files.current.with(|current| {
+                            current
+                                .as_ref()
+                                .map(|view| view.0.entries().iter().map(|entry| entry.id).collect())
+                                .unwrap_or_default()
+                        }));
+                        return;
+                    }
+                    selected.set(entries.with(|items| {
                         controls.visible.with(|rows| {
                             rows.iter()
                                 .flat_map(|row| navigation::selection_paths(row, items))
                                 .collect()
                         })
-                    });
-                    selected.set(paths);
+                    }));
                 },
             ),
             "mod+a",
@@ -197,8 +325,24 @@ pub fn App() -> impl IntoElement {
             Command::new(
                 CommandId::ClearSelection,
                 "Clear selection",
-                move || !busy.get() && !selected.with(BTreeSet::is_empty),
-                move || selected.set(BTreeSet::new()),
+                move || {
+                    if busy.get() {
+                        return false;
+                    }
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    if files.active.get() {
+                        return !files.selected.with(BTreeSet::is_empty);
+                    }
+                    !selected.with(BTreeSet::is_empty)
+                },
+                move || {
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    if files.active.get_untracked() {
+                        files.selected.set(BTreeSet::new());
+                        return;
+                    }
+                    selected.set(BTreeSet::new());
+                },
             ),
             "mod+shift+a",
         ),
@@ -206,11 +350,25 @@ pub fn App() -> impl IntoElement {
             Command::new(
                 CommandId::Back,
                 "Back",
-                move || !busy.get() && navigation.with(navigation::BrowserState::can_back),
                 move || {
+                    if busy.get() {
+                        return false;
+                    }
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    if files.context.get() {
+                        return disk.can_back();
+                    }
+                    navigation.with(navigation::BrowserState::can_back)
+                },
+                move || {
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    if files.context.get_untracked() {
+                        disk.back();
+                        return;
+                    }
                     navigation.update(|state| {
                         state.back();
-                    })
+                    });
                 },
             )
             .icon("back"),
@@ -220,11 +378,25 @@ pub fn App() -> impl IntoElement {
             Command::new(
                 CommandId::Forward,
                 "Forward",
-                move || !busy.get() && navigation.with(navigation::BrowserState::can_forward),
                 move || {
+                    if busy.get() {
+                        return false;
+                    }
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    if files.context.get() {
+                        return disk.can_forward();
+                    }
+                    navigation.with(navigation::BrowserState::can_forward)
+                },
+                move || {
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    if files.context.get_untracked() {
+                        disk.forward();
+                        return;
+                    }
                     navigation.update(|state| {
                         state.forward();
-                    })
+                    });
                 },
             )
             .icon("forward"),
@@ -234,11 +406,38 @@ pub fn App() -> impl IntoElement {
             Command::new(
                 CommandId::Up,
                 "Up",
-                move || !busy.get() && !navigation.with(|state| state.current().is_empty()),
                 move || {
-                    navigation.update(|state| {
-                        state.up();
-                    })
+                    if busy.get() {
+                        return false;
+                    }
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    {
+                        disk.can_up()
+                    }
+                    #[cfg(not(any(
+                        target_os = "macos",
+                        target_os = "linux",
+                        target_os = "windows"
+                    )))]
+                    {
+                        !navigation.with(|state| state.current().is_empty())
+                    }
+                },
+                move || {
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    {
+                        disk.up();
+                    }
+                    #[cfg(not(any(
+                        target_os = "macos",
+                        target_os = "linux",
+                        target_os = "windows"
+                    )))]
+                    {
+                        navigation.update(|state| {
+                            state.up();
+                        });
+                    }
                 },
             )
             .icon("up"),
@@ -247,7 +446,9 @@ pub fn App() -> impl IntoElement {
         Command::new(
             CommandId::Root,
             "Archive root",
-            move || !busy.get() && !navigation.with(|state| state.current().is_empty()),
+            move || {
+                !busy.get() && !file_view() && !navigation.with(|state| state.current().is_empty())
+            },
             move || {
                 navigation.update(|state| {
                     state.root();
@@ -260,6 +461,15 @@ pub fn App() -> impl IntoElement {
                 "Go to path",
                 move || !busy.get(),
                 move || {
+                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                    if files.active.get_untracked() {
+                        files.input.focus();
+                        files.input.set_selection(
+                            0,
+                            files.draft.with(|text| text.encode_utf16().count() as u32),
+                        );
+                        return;
+                    }
                     controls.input.focus();
                     controls.input.set_selection(
                         0,
@@ -274,7 +484,7 @@ pub fn App() -> impl IntoElement {
         Command::new(
             CommandId::ToggleFlat,
             "All entries",
-            move || !busy.get(),
+            move || !busy.get() && !file_view(),
             move || controls.flat.update(|value| *value = !*value),
         )
         .checked(move || controls.flat.get()),
@@ -336,7 +546,7 @@ pub fn App() -> impl IntoElement {
             spawn(async move {
                 let _ = answer.await;
                 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-                controls.content.focus();
+                focus_contents();
             });
         },
     ));
@@ -372,7 +582,7 @@ pub fn App() -> impl IntoElement {
         Command::new(
             CommandId::SaveArchive,
             "Save archive…",
-            move || !busy.get() && !snapshot.with(|bytes| bytes.is_empty()),
+            move || !busy.get() && !file_view() && !snapshot.with(|bytes| bytes.is_empty()),
             move || {
                 if busy.get_untracked() {
                     return;
@@ -399,7 +609,7 @@ pub fn App() -> impl IntoElement {
             Command::new(
                 CommandId::SaveArchive,
                 "Download archive",
-                move || !busy.get() && !snapshot.with(|bytes| bytes.is_empty()),
+                move || !busy.get() && !file_view() && !snapshot.with(|bytes| bytes.is_empty()),
                 move || {
                     if busy.get_untracked() {
                         return;
@@ -470,7 +680,7 @@ pub fn App() -> impl IntoElement {
         Command::new(
             CommandId::Extract,
             "Extract selected…",
-            move || !busy.get() && !selected.with(BTreeSet::is_empty),
+            move || !busy.get() && !file_view() && !selected.with(BTreeSet::is_empty),
             move || {
                 if busy.get_untracked() || selected.with(BTreeSet::is_empty) {
                     return;
@@ -499,11 +709,56 @@ pub fn App() -> impl IntoElement {
         .icon("extract"),
         "mod+enter",
     ));
-    let commands = Commands::new(all);
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    {
+        all.push(desktop_shortcut(
+            Command::new(
+                CommandId::OpenFolder,
+                "Open folder…",
+                move || !busy.get(),
+                move || disk.open_folder(),
+            )
+            .icon("folder"),
+            "mod+shift+o",
+        ));
+        all.push(desktop_shortcut(
+            Command::new(
+                CommandId::OpenSelected,
+                "Open selected",
+                move || !busy.get() && disk.can_open_selected(),
+                move || disk.open_selected(),
+            )
+            .icon("open"),
+            "mod+shift+enter",
+        ));
+        all.push(desktop_shortcut(
+            Command::new(
+                CommandId::RefreshFolder,
+                "Refresh folder",
+                move || !busy.get() && files.active.get(),
+                move || disk.refresh(),
+            ),
+            "f5",
+        ));
+        all.push(Command::new(
+            CommandId::FilesystemRoot,
+            "Filesystem root",
+            move || !busy.get() && (!files.active.get() || disk.can_up()),
+            move || disk.filesystem_root(),
+        ));
+    }
+    let commands = Commands::new(
+        all.into_iter()
+            .map(|command| command.in_owner(owner))
+            .collect(),
+    );
     for command in commands.iter() {
         if let Some(key) = command.shortcut {
             let command = command.clone();
-            let when = if matches!(command.id, CommandId::Open | CommandId::FocusPath) {
+            let when = if matches!(
+                command.id,
+                CommandId::Open | CommandId::OpenFolder | CommandId::FocusPath
+            ) {
                 nsh_core::keymap::When::Always
             } else {
                 nsh_core::keymap::When::NotEditing
@@ -523,26 +778,142 @@ pub fn App() -> impl IntoElement {
         }
     }
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    menus::install_native(commands.clone(), controls.content);
-    let mut actions = toolbar()
+    menus::install_native(commands.clone(), focus_contents);
+    let root = view()
+        .flex_1()
+        .p_safe_area()
+        .bg(move || theme().background)
+        .text_color(move || theme().foreground);
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let root = root.child(menus::menu_bar(commands.clone(), active_menu));
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let root = {
+        let file_commands = commands.clone();
+        let archive_commands = commands.clone();
+        let pane_commands = commands.clone();
+        let browser_commands = commands.clone();
+        root.child(when(
+            move || files.active.get(),
+            move || {
+                render_toolbar(
+                    file_commands.clone(),
+                    format,
+                    &[
+                        CommandId::OpenFolder,
+                        CommandId::OpenSelected,
+                        CommandId::CreateZip,
+                        CommandId::CreateFolderZip,
+                        CommandId::RefreshFolder,
+                    ],
+                )
+            },
+        ))
+        .child(when(
+            move || !files.active.get(),
+            move || {
+                render_toolbar(
+                    archive_commands.clone(),
+                    format,
+                    &[
+                        CommandId::Open,
+                        CommandId::OpenFolder,
+                        CommandId::CreateZip,
+                        CommandId::CreateFolderZip,
+                        CommandId::Extract,
+                        CommandId::Test,
+                    ],
+                )
+            },
+        ))
+        .child(when(
+            move || files.active.get(),
+            move || {
+                filesystem::browser(
+                    files,
+                    busy,
+                    controls.sort,
+                    pane_commands.clone(),
+                    move |id| disk.open_entry(id),
+                    move |path| disk.go(path),
+                )
+            },
+        ))
+        .child(when(
+            move || !files.active.get(),
+            move || {
+                explorer::explorer(explorer::Explorer {
+                    entries,
+                    selected,
+                    busy,
+                    name: path,
+                    navigation,
+                    archive_version,
+                    controls,
+                    commands: browser_commands.clone(),
+                })
+            },
+        ))
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let root = root
+        .child(render_toolbar(
+            commands.clone(),
+            format,
+            &[
+                CommandId::Open,
+                CommandId::CreateZip,
+                CommandId::SaveArchive,
+                CommandId::Cancel,
+                CommandId::Extract,
+                CommandId::Test,
+            ],
+        ))
+        .child(explorer::explorer(explorer::Explorer {
+            entries,
+            selected,
+            busy,
+            name: path,
+            navigation,
+            archive_version,
+            controls,
+            commands: commands.clone(),
+        }));
+    #[cfg(target_arch = "wasm32")]
+    let root = if can_extract {
+        root
+    } else {
+        root.child(text("Directory export is unavailable in this browser."))
+    };
+    root.child(
+        text(move || {
+            if busy.get() {
+                activity.get()
+            } else {
+                status.get()
+            }
+        })
+        .p_2()
+        .border_t_1()
+        .border_color(move || theme().border),
+    )
+}
+
+fn render_toolbar(
+    commands: Commands,
+    format: Signal<ArchiveFormat>,
+    ids: &'static [CommandId],
+) -> impl IntoElement {
+    let mut bar = toolbar()
         .flex_wrap()
         .items_center()
         .gap_3()
         .p_2()
         .border_b_1()
         .border_color(move || theme().border);
-    for id in [
-        CommandId::Open,
-        CommandId::CreateZip,
-        CommandId::SaveArchive,
-        CommandId::Cancel,
-        CommandId::CreateFolderZip,
-        CommandId::Extract,
-        CommandId::Test,
-    ] {
+    for &id in ids {
         if let Some(command) = commands.get(id) {
             let label = command.label;
-            actions = actions.child(action_button(&command).child(text(move || {
+            bar = bar.child(action_button(&command).child(text(move || {
                 if id == CommandId::SaveArchive {
                     let kind = match format.get() {
                         ArchiveFormat::Zip => "ZIP",
@@ -561,40 +932,7 @@ pub fn App() -> impl IntoElement {
             })));
         }
     }
-    #[cfg(target_arch = "wasm32")]
-    if !can_extract {
-        actions = actions.child(text("Directory export is unavailable in this browser."));
-    }
-    let root = view()
-        .flex_1()
-        .p_safe_area()
-        .bg(move || theme().background)
-        .text_color(move || theme().foreground);
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let root = root.child(menus::menu_bar(commands.clone(), active_menu));
-    root.child(actions)
-        .child(explorer::explorer(explorer::Explorer {
-            entries,
-            selected,
-            busy,
-            name: path,
-            navigation,
-            archive_version,
-            controls,
-            commands,
-        }))
-        .child(
-            text(move || {
-                if busy.get() {
-                    activity.get()
-                } else {
-                    status.get()
-                }
-            })
-            .p_2()
-            .border_t_1()
-            .border_color(move || theme().border),
-        )
+    bar
 }
 
 fn action_button(command: &Command) -> nsh_base::ButtonElement {
@@ -658,7 +996,7 @@ async fn extract_android_archive(
 async fn create_archive(
     folders: bool,
     _activity: Signal<String>,
-) -> Result<Option<(String, LoadedArchive)>, String> {
+) -> Result<Option<OpenedArchive>, String> {
     use nsh_core::file_dialog::{FileFilter, OpenDialog, SaveDialog};
     let dialog = if folders {
         OpenDialog::folders()
@@ -686,7 +1024,9 @@ async fn create_archive(
     else {
         return Ok(None);
     };
+    let destination = std::path::absolute(destination).map_err(|error| error.to_string())?;
     let name = destination.display().to_string();
+    let source_path = Some(destination.clone());
     let rows = blocking(move || {
         peazip_native::create_zip_from_paths(&paths, &destination, peazip_core::Limits::default())
             .map_err(|error| error.to_string())?;
@@ -694,25 +1034,33 @@ async fn create_archive(
     })
     .await
     .map_err(|error| error.to_string())??;
-    Ok(Some((name, rows)))
+    Ok(Some(OpenedArchive {
+        name,
+        data: rows,
+        source_path,
+    }))
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn create_archive(
     _folders: bool,
     activity: Signal<String>,
-) -> Result<Option<(String, LoadedArchive)>, String> {
+) -> Result<Option<OpenedArchive>, String> {
     let Some(bytes) = browser::create_zip(move |message| activity.set(message)).await? else {
         return Ok(None);
     };
-    Ok(Some(("Archive.zip".into(), load_archive(Arc::new(bytes))?)))
+    Ok(Some(OpenedArchive {
+        name: "Archive.zip".into(),
+        data: load_archive(Arc::new(bytes))?,
+        source_path: None,
+    }))
 }
 
 #[cfg(target_os = "android")]
 async fn create_archive(
     _folders: bool,
     activity: Signal<String>,
-) -> Result<Option<(String, LoadedArchive)>, String> {
+) -> Result<Option<OpenedArchive>, String> {
     let Some(files) = android::pick_files().await? else {
         return Ok(None);
     };
@@ -724,11 +1072,15 @@ async fn create_archive(
     })
     .await
     .map_err(|error| error.to_string())??;
-    Ok(Some(("Archive.zip".into(), archive)))
+    Ok(Some(OpenedArchive {
+        name: "Archive.zip".into(),
+        data: archive,
+        source_path: None,
+    }))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
+async fn choose_archive() -> Result<Option<OpenedArchive>, String> {
     use nsh_core::file_dialog::{FileFilter, OpenDialog};
     let paths = pick_paths(
         OpenDialog::files()
@@ -743,17 +1095,23 @@ async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
     let Some(path) = paths.and_then(|paths| paths.into_iter().next()) else {
         return Ok(None);
     };
+    let path = std::path::absolute(path).map_err(|error| error.to_string())?;
     let name = path.display().to_string();
+    let source_path = Some(path.clone());
     let entries = blocking(move || read_archive(&path))
         .await
         .map_err(|error| error.to_string())??;
-    Ok(Some((name, entries)))
+    Ok(Some(OpenedArchive {
+        name,
+        data: entries,
+        source_path,
+    }))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn choose_archive(
     #[cfg(target_arch = "wasm32")] cancellable: Signal<bool>,
-) -> Result<Option<(String, LoadedArchive)>, String> {
+) -> Result<Option<OpenedArchive>, String> {
     use nsh_core::{file_dialog::FileFilter, picker::FilePickRequest};
     let files = pick_files(FilePickRequest::new(false, 1).filter(FileFilter::new(
         "Archives",
@@ -781,7 +1139,11 @@ async fn choose_archive(
         };
         (bytes, rows, format)
     };
-    Ok(Some((file.name, entries)))
+    Ok(Some(OpenedArchive {
+        name: file.name,
+        data: entries,
+        source_path: None,
+    }))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]

@@ -117,6 +117,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                 });
                 navigation.set(next);
                 path_input.blur();
+                content.focus();
                 error.set(String::new());
             }
             Err(message) => error.set(message),

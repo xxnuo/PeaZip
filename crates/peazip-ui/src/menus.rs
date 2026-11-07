@@ -6,6 +6,8 @@ const GROUPS: &[(&str, &[CommandId])] = &[
         "File",
         &[
             CommandId::Open,
+            CommandId::OpenFolder,
+            CommandId::OpenSelected,
             CommandId::CreateZip,
             CommandId::CreateFolderZip,
             CommandId::SaveArchive,
@@ -20,7 +22,9 @@ const GROUPS: &[(&str, &[CommandId])] = &[
             CommandId::Forward,
             CommandId::Up,
             CommandId::Root,
+            CommandId::FilesystemRoot,
             CommandId::FocusPath,
+            CommandId::RefreshFolder,
         ],
     ),
     (
@@ -49,7 +53,7 @@ mod native {
         element::desktop::{MenuItem, set_application_menu},
     };
 
-    fn item(command: Command, owner: Owner, content: ElementRef) -> MenuItem {
+    fn item(command: Command, owner: Owner, focus_content: impl Fn() + Copy + 'static) -> MenuItem {
         let mut item = MenuItem::new(command.label).disabled(!command.enabled());
         if let Some(checked) = command.is_checked() {
             item = item.checked(checked);
@@ -77,21 +81,24 @@ mod native {
                         | CommandId::Forward
                         | CommandId::Up
                         | CommandId::Root
+                        | CommandId::OpenSelected
+                        | CommandId::RefreshFolder
+                        | CommandId::FilesystemRoot
                 ) {
-                    after_answer(move || content.focus());
+                    after_answer(focus_content);
                 }
             })
         })
     }
 
-    pub fn install_native(commands: Commands, content: ElementRef) {
+    pub fn install_native(commands: Commands, focus_content: impl Fn() + Copy + 'static) {
         let owner = Owner::current();
         effect(move || {
             let mut menus = Vec::new();
             if cfg!(target_os = "macos") {
                 let mut app = Vec::new();
                 if let Some(about) = commands.get(CommandId::About) {
-                    app.push(item(about, owner, content));
+                    app.push(item(about, owner, focus_content));
                     app.push(MenuItem::separator());
                 }
                 app.extend([
@@ -107,7 +114,7 @@ mod native {
                 let mut items: Vec<_> = ids
                     .iter()
                     .filter_map(|&id| commands.get(id))
-                    .map(|command| item(command, owner, content))
+                    .map(|command| item(command, owner, focus_content))
                     .collect();
                 if label == "File" && !cfg!(target_os = "macos") {
                     if !items.is_empty() {
@@ -127,7 +134,7 @@ mod native {
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn native_shortcut(command: &Command) -> Option<&'static str> {
     match command.id {
-        CommandId::Open | CommandId::FocusPath => command.shortcut,
+        CommandId::Open | CommandId::OpenFolder | CommandId::FocusPath => command.shortcut,
         _ => None,
     }
 }
@@ -307,8 +314,11 @@ mod tests {
         for &(_, ids) in GROUPS {
             for &id in ids {
                 let command = Command::new(id, "Command", || true, || {}).shortcut("mod+a");
-                let expected =
-                    matches!(id, CommandId::Open | CommandId::FocusPath).then_some("mod+a");
+                let expected = matches!(
+                    id,
+                    CommandId::Open | CommandId::OpenFolder | CommandId::FocusPath
+                )
+                .then_some("mod+a");
                 assert_eq!(native_shortcut(&command), expected, "{id:?}");
             }
         }

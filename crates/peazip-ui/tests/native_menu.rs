@@ -140,7 +140,11 @@ fn real_app_mounts_native_menus_and_dispatches_live_archive_and_layout_actions()
         }
     }
     MenuItem::each_action(&app.menu, &mut |action| {
-        if action.role.is_none() && !matches!(action.label.as_str(), "Open archive…" | "Go to path")
+        if action.role.is_none()
+            && !matches!(
+                action.label.as_str(),
+                "Open archive…" | "Open folder…" | "Go to path"
+            )
         {
             assert!(
                 action.shortcut.is_none(),

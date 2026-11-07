@@ -192,3 +192,13 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 
 - 新增 `uv run python scripts/build_windows_gnu.py`，默认 locked release；要求显式提供官方 x64 WebView2 loader DLL 及许可证/NOTICE，校验固定 SHA256 后生成 GNU import archive，隔离目标 flags，不修改 nsh 或全局 Cargo 配置。产物附 loader、许可证、工具版本、命令、依赖清单和 SHA256SUMS；WebView2 Runtime 仍须由运行环境提供。
 - Ubuntu 24.04 arm64 + MinGW GCC/G++ 13-posix + Rust 1.99.1 已完成当前 UI 的 Windows GNU check 与 release build。`target/windows-build/release/peazip-ui.exe` 为 56,953,497 字节 x86-64 Windows GUI PE；PE 解析结果与独立 objdump 对照一致，错误 loader 在 Cargo/输出目录创建前拒绝。最新文件浏览焦点修复已包含，源哈希与验证记录在同目录。仅为构建/静态检查证据，未验证 Windows 实际运行，未生成安装器。
+
+## 桌面文件系统浏览
+
+- macOS/Linux/Windows 新增原生文件夹选择、即时目录列表、名称/类型/大小列、排序、稳定条目选择、路径输入、上级/根目录、刷新，以及统一的文件夹/归档内部前进后退历史（最多 256 项）。从列表打开支持的归档；当前选择创建 ZIP 只请求保存位置，复用安全递归和原子不覆盖发布。关闭归档返回并刷新父目录，普通加载失败保留旧视图和选择。
+- 原始 OsString 名称与显示转义分离，所有行操作基于持有的目录 capability 和快照 ID；链接/reparse/特殊文件只列出、不跟随或打包。默认单目录最多 16384 项、单名称 1024 字节、累计名称 16 MiB，超限整体拒绝，扫描失败/消失条目也计数；不为每行持有文件句柄。显式路径导航先打开再规范化并比对目录句柄身份，修复含 `..` 路径的上级导航；显式路径的父组件仍是可信环境路径，不宣称全路径沙箱。
+- 文件夹与归档选择/命令资格分离，切回文件夹清空归档快照。Open folder 使用 mod+Shift+O，Open selected 使用 mod+Shift+Enter，刷新 F5；文本编辑敏感快捷键继续受 NotEditing 门禁。共享命令和异步操作归属 App owner；文件列表挂载后再恢复焦点，修复 GTK 关闭归档后 F5/Ctrl+A 不生效。成功输入当前归档路径也明确退出编辑焦点。
+- 验证：主机工作区 191 次测试执行通过，新增 10 项实际 App 文件浏览集成测试；最终焦点变更重跑 UI/文件浏览及 Clippy 通过。主机/WASM/Android target Clippy 和格式检查通过；Web 优化构建及 63 项浏览器回归通过，Android APK 构建和 28 项 JNI 桥接检查通过。Linux 原生 browse 13 项及低句柄子进程通过，实际非 UTF-8 文件名分支已执行，记录 `target/linux-filesystem/native-browse-final.log`。
+- 真实 GTK/X11 流程通过：文件夹选择、路径/根目录/历史、Unicode 文件及空目录选择创建 ZIP（系统 7z 独立提取逐字节对照）、7z/TAR 打开与关闭、外部新增文件后直接 F5 刷新并清除选择、非法路径/归档/外部链接拒绝，以及整个目录被替换后仍通过原 capability 读取。最终应用源哈希、截图与流程记录在 `target/linux-filesystem/focus-fixed-source.json`、`focus-fixed/run-29HUwD`、`focus-fixed.log`；1024×600 与 1440×900 截图已目视核查。新增 `scripts/smoke_linux_filesystem.sh` 并接入 Linux CI；最终脚本完整复验通过，记录 `target/linux-filesystem/ci-final.log`，`ci-source.json` 中脚本和应用源哈希与待提交内容一致。远程 CI 尚未运行。
+- 当前 APK Android 菜单回归通过，证据 `target/android-smoke/78157b7fb499`、`menus-owner-0bb5d9c6c107.log`；安装 APK 哈希与本地一致，PID 稳定无应用 fatal。Android/Web 只回归原归档流程，本轮没有开放桌面文件系统浏览能力；iOS SDK/运行验证和 Windows 实际运行仍未完成。
+- 阶段 2a 继续未完成：完整文件管理、书签、原版列/布局/双击行为及选项对话框、所有平台视觉和运行验收仍需推进。本轮是文件浏览功能单元，不等同于 PeaZip 完整界面迁移。汇总证据位于 `target/filesystem-evidence.json`。

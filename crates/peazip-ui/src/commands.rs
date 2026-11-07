@@ -3,6 +3,10 @@ use std::rc::Rc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandId {
     Open,
+    OpenFolder,
+    OpenSelected,
+    RefreshFolder,
+    FilesystemRoot,
     CreateZip,
     CreateFolderZip,
     SaveArchive,
@@ -32,6 +36,7 @@ pub struct Command {
     enabled: Rc<dyn Fn() -> bool>,
     run: Rc<dyn Fn()>,
     checked: Option<Rc<dyn Fn() -> bool>>,
+    owner: Option<nsh_core::prelude::Owner>,
 }
 
 impl Command {
@@ -49,6 +54,7 @@ impl Command {
             enabled: Rc::new(enabled),
             run: Rc::new(run),
             checked: None,
+            owner: None,
         }
     }
     pub fn icon(mut self, icon: &'static str) -> Self {
@@ -69,9 +75,20 @@ impl Command {
     pub fn is_checked(&self) -> Option<bool> {
         self.checked.as_ref().map(|checked| checked())
     }
+    pub fn in_owner(mut self, owner: nsh_core::prelude::Owner) -> Self {
+        self.owner = Some(owner);
+        self
+    }
     pub fn invoke(&self) {
-        if self.enabled() {
-            (self.run)();
+        let run = || {
+            if self.enabled() {
+                (self.run)();
+            }
+        };
+        if let Some(owner) = self.owner {
+            owner.run(run);
+        } else {
+            run();
         }
     }
 }
