@@ -187,3 +187,8 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - Linux 当前源码的原生 GTK 菜单两轮完整流程与后续焦点补充流程通过，包含 File/Open、Edit/Select/Clear、Browser/Layout、Tools/Test/Extract、File/Close、About，以及不额外点击内容区的 Ctrl+A 和排序后的 Alt 导航。16 项焦点探针通过；源码哈希和截图在 `target/linux-menu-native/verification.json`、`images.json`。保留 Xvfb DRI3 与 GTK Separator 尺寸 warning，不宣称日志完全无警告；没有 panic/critical。环境仍限定为已记录的 GTK/X11。
 - Android 最终 APK 菜单 smoke 退出码 0，记录 `target/android-smoke/00d122abec9c`：菜单 disabled/checked、File 打开/保存取消/关闭、Browser 历史与路径聚焦/Enter 失焦、Edit 选择、Layout 视图排序、Tools 只读 Test、Back/外部点击关闭、About 均通过；源文件/选择及取消状态按场景核对，PID 稳定无应用 fatal。可复现命令为 `uv run python scripts/smoke_android_menus.py --serial emulator-5554 --apk target/android/arm64-v8a/peazip-arm64-v8a-debug.apk`。测试文件已清理，专用模拟器已关闭。
 - 本轮重新尝试 iOS UI 检查仍因缺少 iphonesimulator SDK 在 ring 构建阶段失败；Windows UI 交叉检查缺少 x86_64-w64-mingw32-gcc。两者不计作 UI 构建或运行完成；既有 CI 配置尚未获得远程执行证据。完整菜单迁移、原版操作对话框、本地文件管理及其余阶段 2a 验收继续保留为未完成。
+
+## Windows GNU 可重复构建
+
+- 新增 `uv run python scripts/build_windows_gnu.py`，默认 locked release；要求显式提供官方 x64 WebView2 loader DLL 及许可证/NOTICE，校验固定 SHA256 后生成 GNU import archive，隔离目标 flags，不修改 nsh 或全局 Cargo 配置。产物附 loader、许可证、工具版本、命令、依赖清单和 SHA256SUMS；WebView2 Runtime 仍须由运行环境提供。
+- Ubuntu 24.04 arm64 + MinGW GCC/G++ 13-posix + Rust 1.99.1 已完成当前 UI 的 Windows GNU check 与 release build。`target/windows-build/release/peazip-ui.exe` 为 56,953,497 字节 x86-64 Windows GUI PE；PE 解析结果与独立 objdump 对照一致，错误 loader 在 Cargo/输出目录创建前拒绝。最新文件浏览焦点修复已包含，源哈希与验证记录在同目录。仅为构建/静态检查证据，未验证 Windows 实际运行，未生成安装器。
