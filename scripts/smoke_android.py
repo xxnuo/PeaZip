@@ -98,6 +98,13 @@ class Smoke:
         else:
             self.adb("shell", "input", "tap", x, y)
 
+    def flat_view(self):
+        tree = self.wait("archive view toggle", lambda t: any(
+            self.match(n, "All entries") or self.match(n, "Folder view") for n in t.iter("node")))
+        if any(self.match(n, "All entries") for n in tree.iter("node")):
+            self.tap("All entries")
+        self.label("Folder view")
+
     def picker(self):
         self.tap("Open archive…")
         self.wait("system DocumentsUI picker", lambda t: any(
@@ -176,8 +183,11 @@ class Smoke:
             return [(n.get("content-desc"), n.get("checked"), n.get("text"))
                     for n in tree.iter("node")
                     if n.get("checkable") == "true" and n.get("package") == PACKAGE]
-        before = snapshot(self.dump())
-        selected = sum(checked == "true" for _, checked, _ in before)
+        tree = self.dump()
+        before = snapshot(tree)
+        selected_label = next(n.get("text") for n in tree.iter("node")
+                              if n.get("package") == PACKAGE and
+                              re.fullmatch(r"\d+ selected", n.get("text", "")))
         downloads = self.adb("shell", "ls", "-laR", "/sdcard/Download")
         documents = self.adb("shell", "ls", "-laR", "/sdcard/Documents", check=False)
         exports = self.export_snapshot(f"{evidence}-before") if self.export_owned else None
@@ -198,7 +208,7 @@ class Smoke:
         if (reject and not report.startswith("Could not test archive:")) or (not reject and report != expected):
             raise RuntimeError(f"Unexpected archive test result: {report}; expected {expected}")
         self.label(filename)
-        self.label(f"{selected} selected")
+        self.label(selected_label)
         if snapshot(tree) != before:
             raise RuntimeError("Test archive changed archive rows or selection")
         if self.adb("shell", "ls", "-laR", "/sdcard/Download") != downloads:
@@ -335,10 +345,12 @@ class Smoke:
         self.label("1 selected")
         if status:
             self.label(status)
-        self.wait(f"only {selected_entry} selected; archive snapshot preserved", lambda t: {
+        self.wait(f"{selected_entry} and descendants effectively checked; snapshot preserved", lambda t: {
             n.get("content-desc"): n.get("checked") for n in t.iter("node")
             if n.get("checkable") == "true" and n.get("package") == PACKAGE
-        } == {name: str(name == selected_entry).lower() for name in self.entries})
+        } == {name: str(name == selected_entry or
+                       (selected_entry.endswith("/") and name.startswith(selected_entry))).lower()
+              for name in self.entries})
         self.extraction_button(True)
 
     def export_snapshot(self, name):
@@ -357,25 +369,29 @@ class Smoke:
     def export_destination(self, evidence="extract-parent-picker"):
         model = self.adb("shell", "getprop", "ro.product.model").strip()
         tree = self.documents()
-        if any(self.match(n, "Show roots") for n in tree.iter("node")):
-            self.tap("Show roots")
-            tree = self.wait("internal storage root", lambda t: any(
-                n.get("resource-id") == "android:id/title" and
-                n.get("text") in (model, "Internal storage", "Internal shared storage")
-                for n in t.iter("node")))
-            title = next(n.get("text") for n in tree.iter("node") if
-                         n.get("resource-id") == "android:id/title" and
-                         n.get("text") in (model, "Internal storage", "Internal shared storage"))
-            self.tap(title, "android:id/title")
-        elif not any(self.match(n, "Documents") and n.get("resource-id") == "android:id/title"
-                     for n in tree.iter("node")):
-            breadcrumb = next((n for n in tree.iter("node") if self.match(n, model)
-                               and n.get("resource-id", "").endswith(":id/breadcrumb_text")), None)
-            if breadcrumb is None:
-                raise RuntimeError("Tree picker has no internal storage navigation")
-            self.tap(model, breadcrumb.get("resource-id"))
-        self.tap("Documents", "android:id/title")
-        self.tap(Path(self.export_parent).name, "android:id/title")
+        # DocumentsUI can restore the exact authorized parent with disabled ancestor breadcrumbs.
+        breadcrumbs = [n.get("text") for n in tree.iter("node")
+                       if n.get("resource-id", "").endswith(":id/breadcrumb_text")]
+        if not breadcrumbs or breadcrumbs[-1] != Path(self.export_parent).name:
+            if any(self.match(n, "Show roots") for n in tree.iter("node")):
+                self.tap("Show roots")
+                tree = self.wait("internal storage root", lambda t: any(
+                    n.get("resource-id") == "android:id/title" and
+                    n.get("text") in (model, "Internal storage", "Internal shared storage")
+                    for n in t.iter("node")))
+                title = next(n.get("text") for n in tree.iter("node") if
+                             n.get("resource-id") == "android:id/title" and
+                             n.get("text") in (model, "Internal storage", "Internal shared storage"))
+                self.tap(title, "android:id/title")
+            elif not any(self.match(n, "Documents") and n.get("resource-id") == "android:id/title"
+                         for n in tree.iter("node")):
+                breadcrumb = next((n for n in tree.iter("node") if self.match(n, model)
+                                   and n.get("resource-id", "").endswith(":id/breadcrumb_text")), None)
+                if breadcrumb is None:
+                    raise RuntimeError("Tree picker has no internal storage navigation")
+                self.tap(model, breadcrumb.get("resource-id"))
+            self.tap("Documents", "android:id/title")
+            self.tap(Path(self.export_parent).name, "android:id/title")
         self.save(evidence)
         self.button(("Use this folder", "USE THIS FOLDER"))
         self.button(("Allow", "ALLOW"))
@@ -714,6 +730,7 @@ class Smoke:
             tree = self.dump()
         self.adb("shell", "am", "start", "-n", f"{PACKAGE}/com.longbridge.nsh.PeaZipActivity")
         self.label("Open archive…")
+        self.flat_view()
         self.health()
         sample, invalid = [Path(p).name for p in self.files]
         self.choose(sample)

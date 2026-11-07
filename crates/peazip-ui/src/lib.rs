@@ -1,8 +1,12 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use nsh_base::{button, checkbox, theme, toolbar};
-use nsh_core::{element::Position, prelude::*};
+use nsh_base::{button, theme, toolbar};
+use nsh_core::prelude::*;
 use peazip_core::{ArchiveFormat, Entry};
+
+mod explorer;
+mod icons;
+mod navigation;
 
 type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>, ArchiveFormat);
 
@@ -22,6 +26,8 @@ pub fn App() -> impl IntoElement {
     let snapshot = signal(Arc::new(Vec::<u8>::new()));
     let format = signal(ArchiveFormat::Zip);
     let entries = signal(Vec::<Entry>::new());
+    let navigation = signal(navigation::BrowserState::default());
+    let archive_version = signal(0u64);
     let path = signal(String::new());
     let status = signal("Open an archive to view its contents.".to_owned());
     let busy = signal(false);
@@ -54,6 +60,8 @@ pub fn App() -> impl IntoElement {
                     status.set(format!("{} entries", rows.len()));
                     path.set(name);
                     entries.set(rows);
+                    navigation.set(navigation::BrowserState::default());
+                    archive_version.update(|version| *version = version.wrapping_add(1));
                     selected.set(BTreeSet::new());
                 }
                 Ok(None) => {}
@@ -80,6 +88,10 @@ pub fn App() -> impl IntoElement {
                 .bg(move || theme().muted)
                 .active(|s| s.opacity(0.6))
                 .disabled_style(|s| s.opacity(0.4))
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(icons::icon("open"))
                 .child(text("Open archive…")),
         );
     #[cfg(any(
@@ -107,6 +119,8 @@ pub fn App() -> impl IntoElement {
                     status.set(format!("Created ZIP: {} entries", rows.len()));
                     path.set(name);
                     entries.set(rows);
+                    navigation.set(navigation::BrowserState::default());
+                    archive_version.update(|version| *version = version.wrapping_add(1));
                     selected.set(BTreeSet::new());
                 }
                 Ok(None) => {}
@@ -135,6 +149,10 @@ pub fn App() -> impl IntoElement {
             .bg(move || theme().muted)
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(icons::icon("add"))
             .child(text("Create ZIP…")),
     );
     #[cfg(target_os = "android")]
@@ -165,6 +183,10 @@ pub fn App() -> impl IntoElement {
             .bg(move || theme().muted)
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(icons::icon("save"))
             .child(text(move || match format.get() {
                 ArchiveFormat::Zip => "Save ZIP…",
                 ArchiveFormat::Tar => "Save TAR…",
@@ -192,6 +214,10 @@ pub fn App() -> impl IntoElement {
             .bg(move || theme().muted)
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(icons::icon("save"))
             .child(text(move || match format.get() {
                 ArchiveFormat::Zip => "Download ZIP",
                 ArchiveFormat::Tar => "Download TAR",
@@ -256,6 +282,10 @@ pub fn App() -> impl IntoElement {
             .bg(move || theme().muted)
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(icons::icon("extract"))
             .child(text("Extract selected…")),
     );
     #[cfg(target_arch = "wasm32")]
@@ -276,6 +306,10 @@ pub fn App() -> impl IntoElement {
             .bg(move || theme().muted)
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(icons::icon("add"))
             .child(text("Create folder ZIP…")),
     );
     #[cfg(any(
@@ -318,6 +352,10 @@ pub fn App() -> impl IntoElement {
             .bg(move || theme().muted)
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(icons::icon("extract"))
             .child(text("Extract selected…")),
     );
     let actions = actions.child(
@@ -363,6 +401,10 @@ pub fn App() -> impl IntoElement {
             .bg(move || theme().muted)
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(icons::icon("test"))
             .child(text("Test archive")),
     );
     view()
@@ -370,138 +412,15 @@ pub fn App() -> impl IntoElement {
         .p_safe_area()
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
-        .child(
-            actions.child(text(move || path.get()).flex_1().min_w(move || {
-                px(if path.with(String::is_empty) {
-                    0.0
-                } else {
-                    200.0
-                })
-            })),
-        )
-        .child(
-            toolbar()
-                .flex_row()
-                .gap_3()
-                .px_3()
-                .py_2()
-                .child(
-                    button()
-                        .disabled(move || busy.get() || entries.with(Vec::is_empty))
-                        .on_press(move || {
-                            if busy.get_untracked() {
-                                return;
-                            }
-                            selected
-                                .set(entries.with(|rows| {
-                                    rows.iter().map(|row| row.path.clone()).collect()
-                                }));
-                        })
-                        .child(text("Select all")),
-                )
-                .child(
-                    button()
-                        .disabled(move || busy.get() || selected.with(BTreeSet::is_empty))
-                        .on_press(move || {
-                            if !busy.get_untracked() {
-                                selected.set(BTreeSet::new());
-                            }
-                        })
-                        .child(text("Clear selection")),
-                )
-                .child(text(move || {
-                    format!("{} selected", selected.with(BTreeSet::len))
-                })),
-        )
-        .child(
-            view()
-                .flex_row()
-                .px_3()
-                .py_2()
-                .bg(move || theme().muted)
-                .child(text("Name").flex_1())
-                .child(text("Size (bytes)").w(px(140.0))),
-        )
-        .child(
-            virtual_list(
-                move || entries.with(Vec::len),
-                move |at: Position| {
-                    checkbox()
-                        .accessibility_label(move || {
-                            entries.with(|rows| {
-                                rows.get(at.index()).map(|row| row.path.clone().into())
-                            })
-                        })
-                        .checked(move || {
-                            entries.with(|rows| {
-                                rows.get(at.index()).is_some_and(|row| {
-                                    selected.with(|paths| paths.contains(&row.path))
-                                })
-                            })
-                        })
-                        .disabled(move || busy.get())
-                        .on_change(move |checked: &bool| {
-                            if busy.get_untracked() {
-                                return;
-                            }
-                            if let Some(name) = entries
-                                .with(|rows| rows.get(at.index()).map(|row| row.path.clone()))
-                            {
-                                selected.update(|paths| {
-                                    if *checked {
-                                        paths.insert(name);
-                                    } else {
-                                        paths.remove(&name);
-                                    }
-                                });
-                            }
-                        })
-                        .flex_row()
-                        .px_3()
-                        .py_2()
-                        .child(
-                            text(move || {
-                                let checked = entries.with(|rows| {
-                                    rows.get(at.index()).is_some_and(|row| {
-                                        selected.with(|paths| paths.contains(&row.path))
-                                    })
-                                });
-                                if checked { "[x]" } else { "[ ]" }
-                            })
-                            .w(px(32.0)),
-                        )
-                        .child(
-                            text(move || {
-                                entries.with(|rows| {
-                                    rows.get(at.index())
-                                        .map(|row| row.path.clone())
-                                        .unwrap_or_default()
-                                })
-                            })
-                            .flex_1()
-                            .pr_2(),
-                        )
-                        .child(
-                            text(move || {
-                                entries.with(|rows| {
-                                    rows.get(at.index())
-                                        .map(|row| {
-                                            if row.is_dir {
-                                                "—".to_owned()
-                                            } else {
-                                                row.size.to_string()
-                                            }
-                                        })
-                                        .unwrap_or_default()
-                                })
-                            })
-                            .w(px(140.0)),
-                        )
-                },
-            )
-            .estimated_item_size(px(36.0))
-            .flex_1(),
-        )
+        .child(actions)
+        .child(explorer::explorer(
+            entries,
+            selected,
+            busy,
+            path,
+            navigation,
+            archive_version,
+        ))
         .child(
             text(move || {
                 if busy.get() {

@@ -46,6 +46,264 @@ async function serve(t) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
+async function bootPage(page, url) {
+  await page.goto(url);
+  await page.getByRole('button', { name: 'All entries', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Folder view', exact: true })).toBeEnabled();
+}
+
+async function navigationPage(t, viewport, colorScheme = 'light') {
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport, colorScheme, acceptDownloads: true });
+  const errors = [], downloads = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  page.on('download', (download) => downloads.push(download));
+  t.after(() => assert.deepEqual(errors, []));
+  await bootPage(page, await serve(t));
+  const button = (name) => page.getByRole('button', { name, exact: true });
+  await button('Folder view').click();
+  await expect(button('All entries')).toBeEnabled();
+  async function choose(name = 'sample.tar') {
+    const pending = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await pending).setFiles(fileURLToPath(new URL(`../../tests/fixtures/${name}`, import.meta.url)));
+    await expect(page.getByText(`${name === 'sample.7z' ? 6 : 5} entries`, { exact: true })).toBeVisible();
+    await expect(button('Open archive…')).toBeEnabled();
+  }
+  const paths = () => page.getByRole('checkbox').evaluateAll((rows) => rows.map((row) => row.getAttribute('aria-label')));
+  async function rows(expected) {
+    await expect(page.getByRole('checkbox')).toHaveCount(expected.length);
+    for (const name of expected) await expect(page.getByRole('checkbox', { name, exact: true })).toBeVisible();
+    assert.deepEqual((await paths()).sort(), [...expected].sort());
+  }
+  return { page, button, choose, paths, rows, downloads };
+}
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 360, height: 800 }]) {
+  test(`Folder navigation preserves canonical selections, history and snapshots at ${viewport.width}px`, { timeout: 120_000 }, async (t) => {
+    const { page, button, choose, rows, downloads } = await navigationPage(t, viewport);
+    const path = page.getByRole('textbox', { name: 'Archive path', exact: true });
+    await choose();
+    await rows(['docs/', 'other.txt']);
+    await expect(path).toHaveValue('/');
+    for (const name of ['Up', 'Back', 'Forward']) await expect(button(name)).toBeDisabled();
+    const snapshot = await downloadArchive(page, button('Download TAR'));
+    await page.getByRole('checkbox', { name: 'other.txt', exact: true }).click();
+    const openDocs = button('Open folder docs/');
+    await expect(openDocs).toBeVisible();
+    assert.equal(await openDocs.evaluate((node) => node.closest('[role="checkbox"]') === null), true);
+    await openDocs.click();
+    await expect(path).toHaveValue('docs/');
+    await rows(['docs/empty/', 'docs/nested/', 'docs/你好.txt']);
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+    await button('Select all').click();
+    await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+    await button('Clear selection').click();
+    await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+    await page.getByRole('checkbox', { name: 'docs/nested/', exact: true }).click();
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+    await button('Open folder docs/nested/').click();
+    await expect(path).toHaveValue('docs/nested/');
+    await rows(['docs/nested/data.bin']);
+    await expect(page.getByRole('checkbox', { name: 'docs/nested/data.bin', exact: true })).toBeChecked();
+    await button('Clear selection').click();
+    await button('Select all').click();
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+    await button('Up').click();
+    await expect(path).toHaveValue('docs/');
+    await button('Back').click();
+    await expect(path).toHaveValue('docs/nested/');
+    await button('Forward').click();
+    await expect(path).toHaveValue('docs/');
+    await button('Archive root').click();
+    await expect(path).toHaveValue('/');
+    await rows(['docs/', 'other.txt']);
+    await expect(page.getByRole('checkbox', { name: 'other.txt', exact: true })).not.toBeChecked();
+    await button('Back').click();
+    await expect(path).toHaveValue('docs/');
+    await button('Forward').click();
+    await expect(path).toHaveValue('/');
+    await path.fill('docs/nested/');
+    await expect(path).toBeFocused();
+    await path.press('Enter');
+    await expect(path).toHaveValue('docs/nested/');
+    await expect(path).not.toBeFocused();
+    await rows(['docs/nested/data.bin']);
+    await path.fill('missing/');
+    await path.press('Enter');
+    await expect(page.getByText('Archive directory not found', { exact: true })).toBeVisible();
+    await expect(path).toBeFocused();
+    await button('Go').click();
+    await expect(page.getByText('Archive directory not found', { exact: true })).toBeVisible();
+    await rows(['docs/nested/data.bin']);
+    await expect(page.getByRole('checkbox', { name: 'docs/nested/data.bin', exact: true })).toBeChecked();
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+    assert.equal(downloads.length, 1, 'navigation must not start an archive download');
+    assert.deepEqual(await downloadArchive(page, button('Download TAR')), snapshot);
+    await path.fill('../');
+    await button('Go').click();
+    await expect(page.getByText('Invalid archive directory', { exact: true })).toBeVisible();
+    await rows(['docs/nested/data.bin']);
+    await expect(page.getByRole('checkbox', { name: 'docs/nested/data.bin', exact: true })).toBeChecked();
+    await button('Back').click();
+    await expect(path).toHaveValue('/');
+    await button('Forward').click();
+    await expect(path).toHaveValue('docs/nested/');
+    await button('Archive root').click();
+    await path.fill('docs');
+    await path.press('Enter');
+    await expect(path).toHaveValue('docs/');
+    await expect(path).not.toBeFocused();
+    await rows(['docs/empty/', 'docs/nested/', 'docs/你好.txt']);
+    await button('Back').click();
+    await expect(path).toHaveValue('/');
+    await expect(button('Forward')).toBeEnabled();
+    await path.fill('docs/empty/');
+    await button('Go').click();
+    await expect(path).toHaveValue('docs/empty/');
+    await expect(path).not.toBeFocused();
+    await rows([]);
+    await expect(button('Select all')).toBeDisabled();
+    await expect(button('Forward')).toBeDisabled();
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+    await button('Archive root').click();
+    await button('All entries').click();
+    await rows(['docs/', 'docs/empty/', 'docs/nested/data.bin', 'docs/你好.txt', 'other.txt']);
+    await button('Clear selection').click();
+    await button('Select all').click();
+    await expect(page.getByText('5 selected', { exact: true })).toBeVisible();
+    await choose('sample.7z');
+    await expect(button('Folder view')).toBeEnabled();
+    await rows(['docs/', 'docs/empty/', 'docs/nested/', 'docs/nested/data.bin', 'docs/你好.txt', 'other.txt']);
+    await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+    await button('Folder view').click();
+    await rows(['docs/', 'other.txt']);
+    await expect(path).toHaveValue('/');
+  });
+}
+
+test('Reopening the identical archive at root resets an invalid path and clears its error', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, rows } = await navigationPage(t, { width: 1024, height: 600 });
+  const path = page.getByRole('textbox', { name: 'Archive path', exact: true });
+  const error = page.getByText('Archive directory not found', { exact: true });
+  await choose();
+  await expect(path).toHaveValue('/');
+  await rows(['docs/', 'other.txt']);
+  await path.fill('missing/');
+  await button('Go').click();
+  await expect(error).toBeVisible();
+  await expect(path).toHaveValue('missing/');
+  await rows(['docs/', 'other.txt']);
+  await choose();
+  await expect(path).toHaveValue('/');
+  await expect(error).toHaveCount(0);
+  await rows(['docs/', 'other.txt']);
+  for (const name of ['Up', 'Back', 'Forward']) await expect(button(name)).toBeDisabled();
+});
+
+test('Implicit directory selection includes multiple actual descendants and omits synthetic paths', { timeout: 120_000 }, async (t) => {
+  const { page, button, rows } = await navigationPage(t, { width: 1024, height: 600 });
+  const { stdout } = await promisify(execFile)('uv', ['run', 'python', '-c', `
+import base64, io, zipfile
+output = io.BytesIO()
+with zipfile.ZipFile(output, 'w') as archive:
+    for name in ['docs/deep/a.txt', 'docs/deep/b.txt', 'docs/c.txt', 'other.txt']:
+        archive.writestr(name, name.encode())
+print(base64.b64encode(output.getvalue()).decode())
+`]);
+  const pending = page.waitForEvent('filechooser');
+  await button('Open archive…').click();
+  await (await pending).setFiles({ name: 'implicit.zip', mimeType: 'application/zip', buffer: Buffer.from(stdout.trim(), 'base64') });
+  await expect(page.getByText('4 entries', { exact: true })).toBeVisible();
+  await rows(['docs/', 'other.txt']);
+  await page.getByRole('checkbox', { name: 'docs/', exact: true }).click();
+  await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+  await button('Open folder docs/').click();
+  await rows(['docs/deep/', 'docs/c.txt']);
+  await expect(page.getByRole('checkbox', { name: 'docs/deep/', exact: true })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'docs/c.txt', exact: true })).toBeChecked();
+  await page.getByRole('checkbox', { name: 'docs/deep/', exact: true }).click();
+  await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+  await button('Open folder docs/deep/').click();
+  await rows(['docs/deep/a.txt', 'docs/deep/b.txt']);
+  for (const row of await page.getByRole('checkbox').all()) await expect(row).not.toBeChecked();
+  await button('Select all').click();
+  await expect(page.getByText('2 selected', { exact: true })).toBeVisible();
+  await button('All entries').click();
+  await rows(['docs/deep/a.txt', 'docs/deep/b.txt', 'docs/c.txt', 'other.txt']);
+  await expect(page.getByRole('checkbox', { name: 'docs/c.txt', exact: true })).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'other.txt', exact: true })).not.toBeChecked();
+  for (const name of ['docs/deep/a.txt', 'docs/deep/b.txt']) await expect(page.getByRole('checkbox', { name, exact: true })).toBeChecked();
+});
+
+test('The desktop directory sidebar shows immediate folders and keeps an archive-root action', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, rows } = await navigationPage(t, { width: 1440, height: 900 });
+  await choose();
+  await expect(button('Browse folder /')).toBeVisible();
+  await expect(button('Browse folder /docs/')).toBeVisible();
+  await expect(button('Browse folder /docs/nested/')).toHaveCount(0);
+  await expect(button('Browse folder /docs/empty/')).toHaveCount(0);
+  await button('Browse folder /docs/').click();
+  await rows(['docs/empty/', 'docs/nested/', 'docs/你好.txt']);
+  await expect(button('Browse folder /')).toBeVisible();
+  await expect(button('Browse folder /docs/empty/')).toBeVisible();
+  await button('Browse folder /docs/nested/').click();
+  await rows(['docs/nested/data.bin']);
+  await expect(page.getByRole('button', { name: /^Browse folder \// })).toHaveCount(1);
+  await button('Browse folder /').click();
+  await rows(['docs/', 'other.txt']);
+});
+
+test('Name and size buttons sort both directions while preserving selection', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, paths, rows } = await navigationPage(t, { width: 1024, height: 600 });
+  await choose();
+  await button('All entries').click();
+  const selected = page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true });
+  await selected.click();
+  const files = () => paths().then((names) => names.filter((name) => !name.endsWith('/')));
+  await button('Size (bytes)').click();
+  assert.deepEqual(await files(), ['docs/nested/data.bin', 'docs/你好.txt', 'other.txt']);
+  await button('Size (bytes)').click();
+  assert.deepEqual(await files(), ['other.txt', 'docs/你好.txt', 'docs/nested/data.bin']);
+  await expect(selected).toBeChecked();
+  await button('Folder view').click();
+  await button('Open folder docs/').click();
+  await rows(['docs/empty/', 'docs/nested/', 'docs/你好.txt']);
+  await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+  await button('Archive root').click();
+  const pending = page.waitForEvent('filechooser');
+  await button('Open archive…').click();
+  await (await pending).setFiles(fixture('sample.zip'));
+  await expect(page.getByText('3 entries', { exact: true })).toBeVisible();
+  const zipSelection = page.getByRole('checkbox', { name: '你好.txt', exact: true });
+  await zipSelection.click();
+  await button('Name').click();
+  assert.deepEqual(await files(), ['notes.txt', '你好.txt']);
+  await button('Name').click();
+  assert.deepEqual(await files(), ['你好.txt', 'notes.txt']);
+  await expect(zipSelection).toBeChecked();
+});
+
+for (const viewport of [{ width: 1024, height: 600 }, { width: 1440, height: 900 }, { width: 360, height: 800 }]) {
+  for (const colorScheme of ['light', 'dark']) {
+    test(`Folder view stays usable at ${viewport.width}x${viewport.height} in ${colorScheme} mode`, { timeout: 120_000 }, async (t) => {
+      const { page, button, choose, rows } = await navigationPage(t, viewport, colorScheme);
+      await choose();
+      await rows(['docs/', 'other.txt']);
+      await button('Open folder docs/').click();
+      await rows(['docs/empty/', 'docs/nested/', 'docs/你好.txt']);
+      await expect(page.getByRole('textbox', { name: 'Archive path', exact: true })).toHaveValue('docs/');
+      for (const name of ['Up', 'Back', 'Archive root', 'Go', 'Name', 'Size (bytes)']) await expect(button(name)).toBeVisible();
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'folder view must fit the viewport without horizontal page scrolling');
+      const screenshot = resolve(root, '..', `web-folder-${viewport.width}x${viewport.height}-${colorScheme}.png`);
+      await page.screenshot({ path: screenshot, fullPage: true, animations: 'disabled' });
+      t.diagnostic(`Screenshot: ${screenshot}`);
+    });
+  }
+}
+
 test('Chromium runs WASM: open ZIP, select entries, recover from invalid ZIP', { timeout: 120_000 }, async (t) => {
   const baseURL = await serve(t);
   const browser = await chromium.launch();
@@ -60,7 +318,7 @@ test('Chromium runs WASM: open ZIP, select entries, recover from invalid ZIP', {
   });
   t.after(() => assert.deepEqual(errors, [], 'browser console/pageerror must be clean'));
   const wasm = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/peazip.wasm'));
-  await page.goto(baseURL);
+  await bootPage(page, baseURL);
   assert.equal((await wasm).ok(), true, 'WASM must load successfully');
   await expect(page).toHaveTitle('PeaZip');
   const open = page.getByRole('button', { name: 'Open archive…', exact: true });
@@ -152,7 +410,7 @@ test('Chromium creates, downloads and reopens ZIP using a real Rust worker', { t
     if (!['list', 'test'].includes(new URL(worker.url()).searchParams.get('operation'))) workers.push({ worker, closed: once(worker, 'close') });
   });
   t.after(() => assert.deepEqual(errors, []));
-  await page.goto(await serve(t));
+  await bootPage(page, await serve(t));
   const create = page.getByRole('button', { name: 'Create ZIP…', exact: true });
   const open = page.getByRole('button', { name: 'Open archive…', exact: true });
   const download = page.getByRole('button', { name: 'Download ZIP', exact: true });
@@ -349,7 +607,7 @@ async function creationPage(t) {
       }
     }).observe(document, { subtree: true, childList: true, characterData: true });
   });
-  await page.goto(await serve(t));
+  await bootPage(page, await serve(t));
   const button = (name) => page.getByRole('button', { name, exact: true });
   async function choose(name, files) {
     const pending = page.waitForEvent('filechooser');
@@ -359,6 +617,70 @@ async function creationPage(t) {
   await expect(button('Create ZIP…')).toBeEnabled();
   return { page, button, choose, downloads };
 }
+
+test('Long names remain accessible and render on one line without breaking navigation at 360px', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, downloads } = await creationPage(t);
+  await page.setViewportSize({ width: 360, height: 800 });
+  const name = '长'.repeat(70) + '.verylongextension'.repeat(3);
+  const archiveName = '归档'.repeat(70) + '.misnamed.tar';
+  assert.ok(Buffer.byteLength(name) < 1024);
+  async function singleLine(locator, fullText) {
+    await expect(locator).toHaveCount(1);
+    await expect(locator).toBeVisible();
+    const layout = await locator.evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const rects = Array.from(range.getClientRects()).filter((rect) => rect.width && rect.height);
+      const bounds = element.getBoundingClientRect();
+      return { text: element.textContent, lines: [...new Set(rects.map((rect) => Math.round(rect.top)))], left: bounds.left, right: bounds.right };
+    });
+    assert.ok(layout.text.length > 0 && layout.text.length < fullText.length, 'the visible title must be truncated');
+    assert.equal(layout.lines.length, 1, 'the title must occupy one rendered line');
+    assert.ok(layout.left >= 0 && layout.right <= 361, 'the title must fit inside the narrow viewport');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'long names must not cause horizontal page scrolling');
+  }
+  await choose('Create ZIP…', [{ name, mimeType: 'text/plain', buffer: Buffer.from('long filename payload') }]);
+  await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.archiveWorkers.map(({ terminated, messages }) => ({ terminated, code: messages.at(-1)?.code })))).toEqual([{ terminated: true, code: 1 }]);
+  const row = page.getByRole('checkbox', { name, exact: true });
+  await expect(row).toHaveAttribute('aria-label', name);
+  await singleLine(row.getByText(/^长/u), name);
+  await row.click();
+  await expect(row).toBeChecked();
+  assert.equal(downloads.length, 0);
+  const zip = await downloadArchive(page, button('Download ZIP'));
+  await choose('Open archive…', { name: archiveName, mimeType: 'application/x-tar', buffer: zip.bytes });
+  await expect(page.getByText('1 entries', { exact: true })).toBeVisible();
+  await expect(row).toHaveAttribute('aria-label', name);
+  await expect(row).not.toBeChecked();
+  await singleLine(row.getByText(/^长/u), name);
+  await singleLine(page.getByText(/^归档/u), archiveName);
+  await expect(button('Download ZIP')).toBeEnabled();
+  await button('Name').click();
+  await button('Size (bytes)').click();
+  await button('Folder view').click();
+  const path = page.getByRole('textbox', { name: 'Archive path', exact: true });
+  await path.fill('/');
+  await button('Go').click();
+  await expect(path).toHaveValue('/');
+  await expect(path).not.toBeFocused();
+  await singleLine(row.getByText(/^长/u), name);
+  await choose('Open archive…', {
+    name: archiveName, mimeType: 'application/zip',
+    buffer: await readFile(new URL('../../tests/fixtures/sample.tar', import.meta.url)),
+  });
+  await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+  await button('Open folder docs/').click();
+  await expect(path).toHaveValue('docs/');
+  await button('Up').click();
+  await expect(path).toHaveValue('/');
+  await button('Back').click();
+  await expect(path).toHaveValue('docs/');
+  await button('Forward').click();
+  await expect(path).toHaveValue('/');
+  await singleLine(page.getByText(/^归档/u), archiveName);
+  assert.equal(downloads.length, 1, 'only the explicit archive download may run');
+});
 
 test('Cancel during real worker WASM loading preserves snapshot; retry ignores stale callbacks', { timeout: 120_000 }, async (t) => {
   const { page, button, choose, downloads } = await creationPage(t);
@@ -549,7 +871,7 @@ async function extractionPage(t, available = true) {
       return (await navigator.storage.getDirectory()).getDirectoryHandle(window.testDirectoryName, { create: true });
     } : undefined;
   }, { available });
-  await page.goto(await serve(t));
+  await bootPage(page, await serve(t));
   const button = (name) => page.getByRole('button', { name, exact: true });
   await expect(button('Open archive…')).toBeEnabled();
   await expect(button('Extract selected…')).toBeDisabled();
@@ -598,6 +920,44 @@ async function downloadArchive(page, button) {
   const chunks = [];
   for await (const chunk of await artifact.createReadStream()) chunks.push(chunk);
   return { name: artifact.suggestedFilename(), bytes: Buffer.concat(chunks) };
+}
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 360, height: 800 }]) {
+  test(`Deselecting a child of a selected parent excludes it from real extraction at ${viewport.width}px`, { timeout: 120_000 }, async (t) => {
+    const { page, button, tree, downloads } = await extractionPage(t);
+    await page.setViewportSize(viewport);
+    await button('Folder view').click();
+    const pending = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await pending).setFiles(fileURLToPath(new URL('../../tests/fixtures/sample.tar', import.meta.url)));
+    await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+    await expect(page.getByRole('checkbox')).toHaveCount(2);
+    await page.getByRole('checkbox', { name: 'docs/', exact: true }).click();
+    await button('Open folder docs/').click();
+    for (const name of ['docs/empty/', 'docs/nested/', 'docs/你好.txt']) await expect(page.getByRole('checkbox', { name, exact: true })).toBeChecked();
+    const chinese = page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true });
+    await chinese.click();
+    await expect(chinese).not.toBeChecked();
+    await expect(page.getByText('2 selected', { exact: true })).toBeVisible();
+    await expect(page.getByRole('checkbox', { name: 'docs/empty/', exact: true })).toBeChecked();
+    await expect(page.getByRole('checkbox', { name: 'docs/nested/', exact: true })).toBeChecked();
+    await button('Archive root').click();
+    await expect(page.getByRole('checkbox', { name: 'docs/', exact: true })).toHaveAttribute('aria-checked', 'mixed');
+    await button('Open folder docs/').click();
+    await expect(chinese).not.toBeChecked();
+    await button('Extract selected…').click();
+    const report = page.getByText(/^Extracted 2 entries to PeaZip-/);
+    await expect(report).toBeVisible();
+    const output = await tree();
+    const folder = Object.keys(output).find((name) => name.startsWith('PeaZip-'));
+    assert.match(folder, /^PeaZip-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.deepEqual(output, { ...sentinelTree, [folder]: {
+      docs: { empty: {}, nested: { 'data.bin': [0, 127, 255] } },
+    } }, 'parent selection must not reinclude the unchecked child during extraction');
+    await expect(chinese).not.toBeChecked();
+    await expect.poll(() => page.evaluate(() => window.extractionWorkers)).toEqual([{ terminated: true, codes: [1] }]);
+    assert.equal(downloads.length, 0);
+  });
 }
 
 test('Test archive validates ZIP, TAR, TGZ and 7Z in real workers without exports or downloads', { timeout: 120_000 }, async (t) => {

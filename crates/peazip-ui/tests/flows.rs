@@ -8,7 +8,102 @@ fn start() -> Headless {
     let mut app = Headless::start(EngineConfig::new(Root::of::<peazip_ui::App>())).unwrap();
     app.wait_for("Open an archive to view its contents.")
         .unwrap();
+    app.press("role:button[All entries]").unwrap();
     app
+}
+
+#[test]
+fn browses_implicit_directories_and_extracts_only_their_real_descendants() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("sample.tar");
+    std::fs::write(
+        &source,
+        include_bytes!("../../../tests/fixtures/sample.tar"),
+    )
+    .unwrap();
+    let mut app = start();
+    app.press("role:button[Folder view]").unwrap();
+    app.on_pick_paths(vec![source.clone()]).unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("5 entries").unwrap();
+    assert!(
+        !app.screen()
+            .matches("role:checkbox[docs/你好.txt]")
+            .unwrap()
+    );
+    app.press("role:button[Open folder docs/]").unwrap();
+    app.wait_for("role:checkbox[docs/nested/]").unwrap();
+    app.press("role:checkbox[docs/nested/]").unwrap();
+    app.wait_for("1 selected").unwrap();
+    app.press("role:button[Open folder docs/nested/]").unwrap();
+    app.wait_for("role:checkbox[docs/nested/data.bin]").unwrap();
+    app.press("role:button[Up]").unwrap();
+    app.wait_for("role:checkbox[docs/empty/]").unwrap();
+    app.press("role:button[Back]").unwrap();
+    app.wait_for("role:checkbox[docs/nested/data.bin]").unwrap();
+    app.press("role:button[Forward]").unwrap();
+    app.wait_for("role:checkbox[docs/empty/]").unwrap();
+    app.clear("Archive path").unwrap();
+    app.type_text("Archive path", "../escape").unwrap();
+    app.press("role:button[Go]").unwrap();
+    app.wait_for("Invalid archive directory").unwrap();
+    assert!(app.screen().matches("role:checkbox[docs/empty/]").unwrap());
+    assert!(app.screen().shows("1 selected"));
+    let output = temp.path().join("output");
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("Extracted 1 entries").unwrap();
+    assert_eq!(
+        std::fs::read(output.join("docs/nested/data.bin")).unwrap(),
+        [0, 127, 255]
+    );
+    assert!(!output.join("docs/你好.txt").exists());
+    app.on_pick_paths(vec![source]).unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("5 entries").unwrap();
+    assert!(!app.screen().enabled("role:button[Back]").unwrap());
+    assert!(app.screen().matches("role:checkbox[other.txt]").unwrap());
+    assert!(app.screen().shows("0 selected"));
+    app.clear("Archive path").unwrap();
+    app.type_text("Archive path", "missing").unwrap();
+    app.press("role:button[Go]").unwrap();
+    app.wait_for("Archive directory not found").unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("5 entries").unwrap();
+    assert_eq!(app.screen().input_text("Archive path").unwrap(), Some("/"));
+    assert!(!app.screen().shows("Archive directory not found"));
+}
+
+#[test]
+fn unchecking_a_child_of_a_selected_directory_excludes_it_from_extraction() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("sample.tar");
+    std::fs::write(
+        &source,
+        include_bytes!("../../../tests/fixtures/sample.tar"),
+    )
+    .unwrap();
+    let mut app = start();
+    app.press("role:button[Folder view]").unwrap();
+    app.on_pick_paths(vec![source]).unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("5 entries").unwrap();
+    app.press("role:checkbox[docs/]").unwrap();
+    app.press("role:button[Open folder docs/]").unwrap();
+    app.wait_for("role:checkbox[docs/你好.txt]").unwrap();
+    // This press clears the effective ancestor selection for this child.
+    app.press("role:checkbox[docs/你好.txt]").unwrap();
+    let output = temp.path().join("output");
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("Extracted 2 entries").unwrap();
+    assert!(!output.join("docs/你好.txt").exists());
+    assert!(output.join("docs/empty").is_dir());
+    assert_eq!(
+        std::fs::read(output.join("docs/nested/data.bin")).unwrap(),
+        [0, 127, 255]
+    );
+    assert!(!output.join("other.txt").exists());
 }
 
 #[test]

@@ -163,3 +163,15 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 验证：core 82 项、macOS 工作区 139 次测试执行通过，主机/WASM/Android Clippy 与格式检查通过；16 MiB ZIP/7z 样本的最大单次分配小于 4 MiB，确认未保留整份文件输出。浏览器 41 项通过，包括四格式校验覆盖、未选文件损坏、只读操作和实际 Worker 取消/旧回调。Python 6 项回归通过。
 - Android 36 最终 APK 定向 smoke 通过，记录 `target/android-smoke/8204e9cb53b6`：ZIP/TAR/TAR.GZ/7z 报告精确，未选 ZIP 文件 CRC 损坏被拒绝，快照/选择/Downloads/Documents/既有输出保持不变，无系统保存对话框，PID 稳定且无应用 fatal；测试文件已清理，专用模拟器已关闭。
 - Linux GTK/X11 测试脚本新增实际点击 Test archive、OCR 核对报告与选择、无输出及哨兵检查，然后继续提取并比较真实字节；连续两轮通过，证据位于 `target/linux-runtime-20261108-a/test-archive-final1.log`、`test-archive-final2.log` 与 `test-archive-final-tests.log`。CI 加入 tesseract-ocr 依赖，仍未运行远程 CI；GTK 固定布局与 X11 验证范围不变。
+
+## 原版视觉基线与归档导航
+
+- 原版基线已采集：官方 PeaZip 11.4.0 Linux ARM64 GTK2 portable，与固定源码版本号一致；下载资产 SHA256 与官方发布值一致。`tests/ui-baseline/peazip-11.4.0-linux-gtk2/` 保留 1024×600、1440×900 的空文件夹、sample.7z 根目录与 docs 子目录共六张真实截图，以及版本、来源、采集步骤和哈希。版本一致不等于证明发布二进制由精确固定 commit 构建；GTK2 原版与 GTK4 新版的平台差异单独记录。
+- 归档视图默认按目录层级浏览，支持隐式父目录、Back/Forward/Up/Archive root、路径输入和 Go、目录优先的名称/大小双向排序；All entries 可切回全部真实条目的平铺视图。历史最多 256 项，成功打开/创建重置历史与选择，重新打开相同归档也清除旧的无效路径草稿和错误。
+- 宽屏侧栏和主列表均按当前层级生成并虚拟化；窄屏隐藏侧栏与 Type 列，保留导航和操作。复用原版 main/main-dark 的操作与导航 PNG 图标（未改像素，嵌入 data URI），普通文件使用简单纸张轮廓占位；原 `[ ]` 文本选择标记替换为方框、部分选择指示及行高亮。名称、类型和归档路径限制单行，完整路径仍作为控件可访问名称；长中文文件名及扩展名的窄屏实际渲染测试通过，无页面横向溢出。
+- 选择语义反映实际提取范围：选中父目录时后代显示已选，取消子项会展开祖先选择为剩余真实文件/空目录，避免 core 再次包含被取消内容。隐式目录只映射到真实后代条目，不能向 core 传递不存在的路径。新增资源回归确认深层路径不会一次生成数万个目录节点。
+- 本轮 macOS 工作区 152 次测试执行通过，UI 包含 11 项模型测试和 17 项 headless 流程；父目录选中后取消子文件已验证实际落盘排除。浏览器 56 项通过，覆盖导航、排序、非法路径、重开状态、实际 OPFS 排除输出，以及 1024×600、1440×900、360×800 下亮暗主题。截图为 `target/web-folder-*.png`；生产源码摘要和构建命令记录在 `target/ui-navigation-evidence.json`。
+- Linux 最终源码哈希核对一致，152 次测试执行与两轮真实 GTK 导航/Test/解压通过；六张新版对照截图、验证元数据在 `target/linux-ui-rewrite/`。原版与新版同尺寸/同 sample.7z 场景已人工对照；像素差异只记录现状，不充当自动通过阈值。空状态原版是空文件夹，新版是未打开归档，不能据此宣称本地文件系统视图已迁移。脚本改用 OCR 定位主要控件，保留真实文件选择与字节对照；只覆盖已记录的 GTK/X11 环境。
+- 路径编辑使用字面输入（不自动大写或纠正）；合法 Enter/Go、历史导航与重开归档后显式结束编辑，避免 Android 首次目录点击只失焦而未选择。非法 Enter 保留编辑焦点，便于修正。
+- Android 最终 APK 的完整导航 smoke 退出码 0，记录 `target/android-smoke/a724445945d9`；真实 DocumentsUI/SAF 验证隐式目录仅导出实际后代、父目录选中后取消子文件确实不输出该文件、空目录/其他输出/哨兵正确，第一次点击生效，路径 Enter 成功失焦、非法输入保留焦点，重开与视图偏好正确。独立输入复验记录 `target/android-smoke/fd0c358f069f`。新增可重复运行的 `uv run python scripts/smoke_android_navigation.py --serial emulator-5554 --apk target/android/arm64-v8a/peazip-arm64-v8a-debug.apk`；测试文件清理、PID 稳定无应用 fatal，专用模拟器已关闭。
+- 阶段 2a 仍未完成：原版完整菜单、文件系统/书签/历史导航、双击与快捷键、列宽调整及完整属性列、创建/解压选项对话框、跨平台窗口/主题和 iOS/Windows 实际运行均需继续验收。此提交是可用的归档导航单元，不将它或六张截图等同于完整 PeaZip 界面迁移。

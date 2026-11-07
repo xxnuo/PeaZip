@@ -1,0 +1,64 @@
+{
+  "version": "11.4.0",
+  "version_matches_local_pascal_source": true,
+  "source_evidence": "peazip-sources/dev/peach.pas:6074",
+  "actual_about_text": "PeaZip release: 11.4.0 - Linux Build, AARCH64, GTK2",
+  "release_url": "https://github.com/peazip/PeaZip/releases/tag/11.4.0",
+  "asset_url": "https://github.com/peazip/PeaZip/releases/download/11.4.0/peazip_portable-11.4.0.LINUX.GTK2.aarch64.tar.gz",
+  "official_sha256": "sha256:0dd4fad20fae3d191bb6fad57e2decf77a22530c55da5f5fc715bc9c4145bb15",
+  "download_sha256": "0dd4fad20fae3d191bb6fad57e2decf77a22530c55da5f5fc715bc9c4145bb15",
+  "fixture": "tests/fixtures/sample.7z",
+  "fixture_sha256": "05a4cd9a8e1f96141e786122181fc49f40e8dd8a216cc1ab08e902e8c153dc60",
+  "environment": "Ubuntu 24.04 arm64; GTK2 2.24.33; Xvfb X11; no window manager; root user; Noto CJK fonts",
+  "capture_method": "ImageMagick import -window WINDOW_ID; actual client size 1024x600 and 1440x900; client-only screenshots without window manager decorations",
+  "states": [
+    "empty filesystem directory /work/original/empty",
+    "sample.7z archive root (docs folder and other.txt)",
+    "double-click docs folder (empty, nested, 你好.txt)"
+  ],
+  "reproduce": "Use the verified asset_url and the recorded capture_steps. The automated replay under target/linux-ui-baseline/reproduced had occlusion and is not the canonical capture.",
+  "limitations": [
+    "GTK2 portable upstream baseline, not Rust GTK4 rewrite",
+    "No desktop window manager decorations or desktop-native picker coverage",
+    "Known upstream TControl.ChangeBounds diagnostics retained in logs; no observed launch or archive listing failure",
+    "The released binary matches version 11.4.0; binary build provenance does not prove it was built from the exact pinned source commit."
+  ],
+  "binary_sha256": "a20276b4f8bc40faff3f1958f3d4c94c0071ca1f1997d6d49e53ff01f167cafb",
+  "canonical_screenshots": [
+    "1024x600-empty.png",
+    "1024x600-archive.png",
+    "1024x600-docs.png",
+    "1440x900-empty.png",
+    "1440x900-archive.png",
+    "1440x900-docs.png"
+  ],
+  "capture_note": "Canonical six images manually inspected without tooltips. Automated reproduced/ run had an occlusion artifact in docs and is diagnostic only.",
+  "source_revision": "367c68278a7b0e7741fd8fe3106f34d6cfcb656f",
+  "capture_steps": [
+    "Original upstream PeaZip 11.4.0 Linux ARM64 GTK2 portable baseline.",
+    "Downloaded official asset URL and matched SHA256 recorded in provenance.json.",
+    "Container: peazip-linux-runtime-20261108-a; /src read-only.",
+    "Extracted upstream archive to /work/original; installed GTK2 runtime inside container only.",
+    "Started Xvfb 1440x900x24 using xvfb-run -a and dbus-run-session.",
+    "Started original executable with /work/original/empty (PID 199, window 2097246).",
+    "xdotool windowmove WINDOW 0 0 windowsize --sync WINDOW 1024 600",
+    "import -window WINDOW 1024x600-empty.png",
+    "Resized to 1440 900 and captured 1440x900-empty.png.",
+    "Started same upstream executable /src/tests/fixtures/sample.7z (PID 288, window 4194398).",
+    "Captured archive root at both sizes using the same windowsize/import commands.",
+    "At window origin 0,0 double-clicked docs row: xdotool mousemove 300 155 click --repeat 2 --delay 150 1.",
+    "Opened Help > About (menu 425,13, item 460,320) and captured about.png, visibly confirming release 11.4.0 AARCH64 GTK2.",
+    "Closed About with Cancel (1380,875 at 1440x900), clicked blank list area (800,500) to dismiss stale hint.",
+    "Captured docs at 1440x900, resized to 1024x600, clicked blank area and captured again.",
+    "Canonical six root PNGs were each visually inspected; reproduced/ diagnostic attempt had occlusion and is NOT canonical.",
+    "Screenshots contain actual upstream client area, without window-manager decorations. No image repaint/compositing."
+  ],
+  "screenshots": {
+    "1024x600-empty.png": "bb3ebe299cd9f27dbe3064a12886b8d77902e1e13b9b05f7e274b956f2ffaa88",
+    "1024x600-archive.png": "ca62fd4502c39e203a01db8d48cdad642849f71bf77a582a7e21511e337c31b5",
+    "1024x600-docs.png": "6539e0716f8fb656a90f7f8bf9a82f57e3cff9b3b67aa687761871cb130c86da",
+    "1440x900-empty.png": "abe8bf4779b3e9457855a27c28064badcabc462bea5f7f676e7cd1c1d78686fe",
+    "1440x900-archive.png": "3e31ed695991b864482821fcc05303b7e24e19a76d4e7a0e855db4b032e7ae6d",
+    "1440x900-docs.png": "46eafcfe25810f52d315be2ef45d4929f0269cefaa1c7851b4761c6a5a5819ff"
+  }
+}
