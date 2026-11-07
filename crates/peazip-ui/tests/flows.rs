@@ -210,3 +210,135 @@ fn cancelling_creation_at_either_dialog_writes_nothing() {
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     assert_eq!(std::fs::read(input).unwrap(), b"unchanged");
 }
+
+#[test]
+fn extracts_selection_from_snapshot_and_retries_without_overwriting() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source.zip");
+    let bytes = peazip_core::create_zip(
+        &[
+            MemoryEntry {
+                path: "keep.txt".into(),
+                is_dir: false,
+                data: b"original".to_vec(),
+            },
+            MemoryEntry {
+                path: "skip.txt".into(),
+                is_dir: false,
+                data: b"skip".to_vec(),
+            },
+            MemoryEntry {
+                path: "folder/".into(),
+                is_dir: true,
+                data: vec![],
+            },
+            MemoryEntry {
+                path: "folder/child.txt".into(),
+                is_dir: false,
+                data: b"child".to_vec(),
+            },
+        ],
+        Limits::default(),
+    )
+    .unwrap();
+    std::fs::write(&source, bytes).unwrap();
+    let mut app = start();
+    assert!(
+        !app.screen()
+            .enabled("role:button[Extract selected…]")
+            .unwrap()
+    );
+    app.on_pick_paths(vec![source.clone()]).unwrap();
+    app.press("role:button[Open ZIP…]").unwrap();
+    app.wait_for("4 entries").unwrap();
+    app.press("role:checkbox[keep.txt]").unwrap();
+    app.wait_for("1 selected").unwrap();
+
+    // A different, valid archive at the same path must never replace the loaded bytes.
+    let replacement = peazip_core::create_zip(
+        &[MemoryEntry {
+            path: "keep.txt".into(),
+            is_dir: false,
+            data: b"replacement".to_vec(),
+        }],
+        Limits::default(),
+    )
+    .unwrap();
+    std::fs::write(&source, replacement).unwrap();
+    app.on_pick_save_path(None).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("4 entries").unwrap();
+    assert!(app.screen().shows("1 selected"));
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    match app.screen().file_requests().last().unwrap() {
+        nsh_core::file_dialog::FileRequest::SaveDialog(dialog) => {
+            assert!(dialog.filters.is_empty());
+            assert!(
+                dialog
+                    .title
+                    .as_ref()
+                    .unwrap()
+                    .contains("choose new folder name")
+            );
+        }
+        other => panic!("unexpected request: {other:?}"),
+    }
+    let existing = temp.path().join("existing");
+    std::fs::create_dir(&existing).unwrap();
+    std::fs::write(existing.join("sentinel"), b"untouched").unwrap();
+    app.on_pick_save_path(Some(existing.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("text:/^Could not extract ZIP:/").unwrap();
+    assert_eq!(
+        std::fs::read(existing.join("sentinel")).unwrap(),
+        b"untouched"
+    );
+    assert_eq!(std::fs::read_dir(&existing).unwrap().count(), 1);
+    assert!(app.screen().shows("1 selected"));
+    let output = temp.path().join("partial");
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("Extracted 1 entries").unwrap();
+    assert_eq!(std::fs::read(output.join("keep.txt")).unwrap(), b"original");
+    assert!(!output.join("skip.txt").exists());
+    assert!(!output.join("folder").exists());
+
+    std::fs::remove_file(&source).unwrap();
+    app.press("role:checkbox[keep.txt]").unwrap();
+    app.press("role:checkbox[folder/]").unwrap();
+    app.wait_for("1 selected").unwrap();
+    let output = temp.path().join("directory");
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("Extracted 2 entries").unwrap();
+    assert_eq!(
+        std::fs::read(output.join("folder/child.txt")).unwrap(),
+        b"child"
+    );
+    assert!(!output.join("keep.txt").exists());
+    assert!(app.screen().shows("1 selected"));
+    assert!(app.screen().shows("4 entries") || app.screen().shows("skip.txt"));
+}
+
+#[test]
+fn created_archive_snapshot_survives_deleted_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.txt");
+    let archive = temp.path().join("created.zip");
+    let destination = temp.path().join("extracted");
+    std::fs::write(&input, b"created snapshot").unwrap();
+    let mut app = start();
+    app.on_pick_paths(vec![input]).unwrap();
+    app.on_pick_save_path(Some(archive.clone())).unwrap();
+    app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("Created ZIP: 1 entries").unwrap();
+    app.press("role:checkbox[input.txt]").unwrap();
+    std::fs::remove_file(archive).unwrap();
+    app.on_pick_save_path(Some(destination.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("Extracted 1 entries").unwrap();
+    assert_eq!(
+        std::fs::read(destination.join("input.txt")).unwrap(),
+        b"created snapshot"
+    );
+}
