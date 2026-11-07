@@ -2,9 +2,9 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use nsh_base::{button, checkbox, theme, toolbar};
 use nsh_core::{element::Position, prelude::*};
-use peazip_core::Entry;
+use peazip_core::{ArchiveFormat, Entry};
 
-type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>);
+type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>, ArchiveFormat);
 
 #[cfg(target_arch = "wasm32")]
 mod browser;
@@ -20,25 +20,27 @@ fn native(registry: &mut Registry) {
 #[component]
 pub fn App() -> impl IntoElement {
     let snapshot = signal(Arc::new(Vec::<u8>::new()));
+    let format = signal(ArchiveFormat::Zip);
     let entries = signal(Vec::<Entry>::new());
     let path = signal(String::new());
-    let status = signal("Open a ZIP archive to view its contents.".to_owned());
+    let status = signal("Open an archive to view its contents.".to_owned());
     let busy = signal(false);
     #[cfg(target_arch = "wasm32")]
     let cancellable = signal(false);
     #[cfg(target_arch = "wasm32")]
     let cancel_message = signal("Creation cancelled.".to_owned());
-    let activity = signal("Opening ZIP…".to_owned());
+    let activity = signal("Opening archive…".to_owned());
     let selected = signal(BTreeSet::<String>::new());
     let open = move || {
         if busy.get_untracked() {
             return;
         }
         busy.set(true);
-        activity.set("Opening ZIP…".to_owned());
+        activity.set("Opening archive…".to_owned());
         spawn(async move {
             match choose_archive().await {
-                Ok(Some((name, (bytes, rows)))) => {
+                Ok(Some((name, (bytes, rows, kind)))) => {
+                    format.set(kind);
                     snapshot.set(bytes);
                     status.set(format!("{} entries", rows.len()));
                     path.set(name);
@@ -46,7 +48,7 @@ pub fn App() -> impl IntoElement {
                     selected.set(BTreeSet::new());
                 }
                 Ok(None) => {}
-                Err(error) => status.set(format!("Could not open ZIP: {error}")),
+                Err(error) => status.set(format!("Could not open archive: {error}")),
             }
             busy.set(false);
         });
@@ -69,7 +71,7 @@ pub fn App() -> impl IntoElement {
                 .bg(move || theme().muted)
                 .active(|s| s.opacity(0.6))
                 .disabled_style(|s| s.opacity(0.4))
-                .child(text("Open ZIP…")),
+                .child(text("Open archive…")),
         );
     #[cfg(any(
         target_arch = "wasm32",
@@ -90,7 +92,8 @@ pub fn App() -> impl IntoElement {
         activity.set("Creating ZIP…".to_owned());
         spawn(async move {
             match create_archive(folders, activity).await {
-                Ok(Some((name, (bytes, rows)))) => {
+                Ok(Some((name, (bytes, rows, kind)))) => {
+                    format.set(kind);
                     snapshot.set(bytes);
                     status.set(format!("Created ZIP: {} entries", rows.len()));
                     path.set(name);
@@ -134,13 +137,14 @@ pub fn App() -> impl IntoElement {
                     return;
                 }
                 let bytes = snapshot.get_untracked();
+                let kind = format.get_untracked();
                 busy.set(true);
-                activity.set("Saving ZIP…".into());
+                activity.set("Saving archive…".into());
                 spawn(async move {
-                    match android::save_zip(bytes).await {
-                        Ok(Some(name)) => status.set(format!("Saved ZIP: {name}")),
+                    match android::save_archive(bytes, kind).await {
+                        Ok(Some(name)) => status.set(format!("Saved archive: {name}")),
                         Ok(None) => status.set("Save cancelled.".into()),
-                        Err(error) => status.set(format!("Could not save ZIP: {error}")),
+                        Err(error) => status.set(format!("Could not save archive: {error}")),
                     }
                     busy.set(false);
                 });
@@ -152,7 +156,10 @@ pub fn App() -> impl IntoElement {
             .bg(move || theme().muted)
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
-            .child(text("Save ZIP…")),
+            .child(text(move || match format.get() {
+                ArchiveFormat::Zip => "Save ZIP…",
+                ArchiveFormat::Tar => "Save TAR…",
+            })),
     );
     #[cfg(target_arch = "wasm32")]
     let actions = actions.child(
@@ -162,9 +169,9 @@ pub fn App() -> impl IntoElement {
                 if busy.get_untracked() {
                     return;
                 }
-                match browser::download(&snapshot.get_untracked()) {
-                    Ok(()) => status.set("ZIP download requested.".into()),
-                    Err(error) => status.set(format!("Could not download ZIP: {error}")),
+                match browser::download(&snapshot.get_untracked(), format.get_untracked()) {
+                    Ok(()) => status.set("Archive download requested.".into()),
+                    Err(error) => status.set(format!("Could not download archive: {error}")),
                 }
             })
             .px_3()
@@ -174,7 +181,10 @@ pub fn App() -> impl IntoElement {
             .bg(move || theme().muted)
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
-            .child(text("Download ZIP")),
+            .child(text(move || match format.get() {
+                ArchiveFormat::Zip => "Download ZIP",
+                ArchiveFormat::Tar => "Download TAR",
+            })),
     );
     #[cfg(target_arch = "wasm32")]
     let actions = actions.child(
@@ -213,12 +223,14 @@ pub fn App() -> impl IntoElement {
                 cancel_message.set("Extraction cancellation requested.".into());
                 activity.set("Choose an export directory…".into());
                 spawn(async move {
-                    match browser::extract_zip(&bytes, &paths, move |message| activity.set(message))
-                        .await
+                    match browser::extract_archive(&bytes, &paths, move |message| {
+                        activity.set(message)
+                    })
+                    .await
                     {
                         Ok(Some(report)) => status.set(report),
                         Ok(None) => status.set("Extraction cancelled.".into()),
-                        Err(error) => status.set(format!("Could not extract ZIP: {error}")),
+                        Err(error) => status.set(format!("Could not extract archive: {error}")),
                     }
                     busy.set(false);
                     cancellable.set(false);
@@ -269,19 +281,19 @@ pub fn App() -> impl IntoElement {
                 let bytes = snapshot.get_untracked();
                 let paths = selected.with(|paths| paths.iter().cloned().collect::<Vec<_>>());
                 busy.set(true);
-                activity.set("Extracting ZIP…".to_owned());
+                activity.set("Extracting archive…".to_owned());
                 spawn(async move {
                     #[cfg(target_os = "android")]
                     match extract_android_archive(bytes, paths).await {
                         Ok(Some(report)) => status.set(report),
                         Ok(None) => status.set("Extraction cancelled.".into()),
-                        Err(error) => status.set(format!("Could not extract ZIP: {error}")),
+                        Err(error) => status.set(format!("Could not extract archive: {error}")),
                     }
                     #[cfg(not(target_os = "android"))]
                     match extract_archive(bytes, paths).await {
                         Ok(Some(count)) => status.set(format!("Extracted {count} entries")),
                         Ok(None) => {}
-                        Err(error) => status.set(format!("Could not extract ZIP: {error}")),
+                        Err(error) => status.set(format!("Could not extract archive: {error}")),
                     }
                     busy.set(false);
                 });
@@ -452,7 +464,7 @@ async fn extract_android_archive(
     selected: Vec<String>,
 ) -> Result<Option<String>, String> {
     let entries = blocking(move || {
-        peazip_core::extract_selected_zip(&bytes, &selected, peazip_core::Limits::default())
+        peazip_core::extract_selected_archive(&bytes, &selected, peazip_core::Limits::default())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -538,9 +550,9 @@ async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
     use nsh_core::file_dialog::{FileFilter, OpenDialog};
     let paths = pick_paths(
         OpenDialog::files()
-            .title("Open ZIP archive")
+            .title("Open archive")
             .button_label("Open")
-            .filter(FileFilter::new("ZIP archives", ["zip"])),
+            .filter(FileFilter::new("Archives", ["zip", "tar"])),
     )
     .await?;
     let Some(path) = paths.and_then(|paths| paths.into_iter().next()) else {
@@ -556,9 +568,10 @@ async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
     use nsh_core::{file_dialog::FileFilter, picker::FilePickRequest};
-    let files =
-        pick_files(FilePickRequest::new(false, 1).filter(FileFilter::new("ZIP archives", ["zip"])))
-            .await;
+    let files = pick_files(
+        FilePickRequest::new(false, 1).filter(FileFilter::new("Archives", ["zip", "tar"])),
+    )
+    .await;
     let Some(file) = files.into_iter().next() else {
         return Ok(None);
     };
@@ -585,9 +598,10 @@ fn read_archive(path: &std::path::Path) -> Result<LoadedArchive, String> {
 }
 
 fn load_archive(bytes: Arc<Vec<u8>>) -> Result<LoadedArchive, String> {
-    let rows = peazip_core::list_zip(&bytes, peazip_core::Limits::default())
+    let rows = peazip_core::list_archive(&bytes, peazip_core::Limits::default())
         .map_err(|error| error.to_string())?;
-    Ok((bytes, rows))
+    let format = peazip_core::detect_format(&bytes).map_err(|error| error.to_string())?;
+    Ok((bytes, rows, format))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -607,7 +621,7 @@ async fn extract_archive(
         return Ok(None);
     };
     blocking(move || {
-        peazip_native::extract_zip_to_directory(
+        peazip_native::extract_archive_to_directory(
             &bytes,
             &selected,
             &destination,

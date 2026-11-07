@@ -9,7 +9,7 @@
 | 1 | Rust workspace、内存 ZIP 核心、安全边界、上游基线与 CI | 正常归档往返、恶意路径及限额测试；基线报告可执行 | 本地验证完成；远程 CI 待运行 |
 | 2 | nsh Rust 界面：打开、列表、选择、创建、解压、错误反馈 | 用真实归档操作界面；UI 状态测试与本机启动验证 | 已有桌面/Web 与 Android ZIP 基本流程；更多格式、iOS 功能及剩余外部 API 验收待完成 |
 | 3 | 安全文件系统与平台文件选择、后台任务、进度、取消、覆盖冲突 | 符号链接/竞态/失败清理测试；大文件不中断界面 | 已有有界读取、后台操作、新目标原子不覆盖发布、Web 创建取消与阶段进度；桌面取消/进度、其他冲突策略/流式大文件待完成 |
-| 4 | 上游格式与功能逐项迁移 | 格式/操作能力清单；跨工具兼容样本、加密/分卷/损坏文件测试 | 待完成 |
+| 4 | 上游格式与功能逐项迁移 | 格式/操作能力清单；跨工具兼容样本、加密/分卷/损坏文件测试 | 已有 ZIP 和未压缩 TAR 读取/选中解压；其余格式、加密/分卷等待完成 |
 | 5 | 文件管理、搜索、预览、校验、转换、分割、配置、语言与无障碍 | 按上游功能回归；权限和交互验证 | 待完成 |
 | 6 | 六平台构建、打包与发布 | 每个平台真实构建、运行、文件导入导出和归档往返；发布物可安装 | Web 浏览器流程、Android arm64 调试 APK 安装/导入已验证；iOS SDK 构建、移动导出及各平台发布验收待完成 |
 | 7 | 持续跟进上游 | 定期差异报告、映射到回归测试、审查并更新基线 | 持续 |
@@ -120,4 +120,14 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 本轮 hostchecks：86 项导出策略、25 项 JNI、13 项资产、11 项读取及生命周期检查通过；这些使用部分 Android doubles。最终 APK 全量真实 Android 36 DocumentsUI/SAF smoke 退出码 0：树 picker 取消无输出，CRC 错误在 picker 前拒绝；嵌套二进制和 txt 内容、空目录、未选文件缺席、sentinel 不变及错误后恢复均已拉回核对。最终本机运行 token 为 `cf3a77e3610d`，截图在 `target/android-smoke/<token>/extracted.png`。
 - Rust workspace 回归、主机/Android target Clippy、格式检查和 Web 32 项测试通过；只读 nsh 保持未改动。Android 此处验证的是 API36 本机 Documents provider，不代表所有云 provider、真实外部竞态或进程被强杀后的恢复都完成。
 
-下一步：扩展 TAR/GZIP/7z 等归档后端并推进大文件流式处理，同时继续解决 iOS SDK 构建/文件导出和 Windows/Linux 实际运行验收；补齐 Web 外部目录、桌面/移动端主动取消与进度、冲突策略及文件管理功能。Web/Android 打开归档仍走 nsh picker，创建使用独立有界入口；两者限制不可混为一谈。六平台实际运行、完整功能与发布验收仍是最终要求。
+## 格式后端推进
+
+- 新增内容识别和通用 `list_archive` / `extract_archive` / `extract_selected_archive`，保留 ZIP 专用 API。未压缩 TAR 复用路径、重名/父子冲突、实际字节及隐式目录预算；支持 ustar、常见 PAX 本地 path/size、GNU 长名、UTF-8、空目录，去除标准前导 `./` 并省略根目录条目。
+- 使用锁定的 tar 0.4.46 原始头读取，不在限额前展开 GNU/PAX/sparse 内容；扩展头和根目录计入扫描预算，扩展数据计入字节预算。TAR 头有 checksum，**普通 payload 没有 CRC**，提取成功不能证明其内容未被修改。
+- 明确拒绝链接、特殊/稀疏文件（含 GNU、SCHILY、Solaris sparse 扩展），以及当前未实现的全局 path/size、重复 path/size 覆盖等变体。要求完整结束块、仅零尾部，不能将隐藏条目/拼接容器当作成功；这是严格兼容策略，部分标准工具可接受的尾部也会被拒绝。尚不读取压缩 TAR，也不创建新 TAR。
+- 有效首部 TAR 优先于 ZIP magic/SFX 探测，防止 PAX 头和 ZIP 尾部混合时隐藏 TAR 内容；无效 TAR checksum 不误拒普通 ZIP/MZ SFX。PAX 关键词长度和控制字符也受检查，避免未知扩展将巨大输入放大到错误消息。
+- UI 打开/提取采用通用接口；Web Worker、桌面原子目录发布和 Android SAF 复用同一解码结果。Web/Android 保存原归档按识别出的类型使用 `.zip` 或 `.tar` 与对应 MIME，不重新打包、不会把 TAR 标成 ZIP；创建操作仍只生成 ZIP。
+- 本轮验证：core 40 项测试，新增 native、headless UI、worker TAR 流程通过；系统 tar 与 Python tarfile 验证参考样本。浏览器 33 项通过，包含误命名 `.zip` 的 TAR 正确识别、下载字节不变和 OPFS 选中提取。Android 完整 ZIP+TAR smoke 已通过：真实 application/x-tar 保存/取消、字节完全一致及独立 tarfile 校验、真实 SAF 子树/Unicode/二进制/空目录、未选内容缺席、既有输出不变。设备记录 `target/android-smoke/be58e81d781d/console.log`。
+- 主机 JNI 检查已覆盖 ZIP/TAR 格式传输、非法代码拒绝和生命周期；格式与结构错误统一使用 archive 文案。Rust 回归/Clippy、格式检查保持通过。iOS 当前配置仍未发现完整 SDK；Docker 指向本地 OrbStack socket，但 daemon 未运行，未据此宣称 Linux 运行验收完成。
+
+下一步：补充 GZIP 压缩 TAR、更多归档格式与大文件流式处理，同时继续推进 iOS SDK/文件导出和 Windows/Linux 实际运行；补齐 Web 外部目录、桌面/移动端主动取消与进度、冲突策略及文件管理功能。Web/Android 打开归档仍走 nsh picker，创建使用独立有界入口；两者限制不可混为一谈。六平台实际运行、完整功能与发布验收仍是最终要求。

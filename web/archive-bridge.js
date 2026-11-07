@@ -121,16 +121,18 @@ function cancel() {
   return 1;
 }
 
-function download(ptr, length) {
+function download(ptr, length, format) {
   if (!wasm || !length || length > MAX_ARCHIVE) return 0;
+    const kind = { 0: { name: 'Archive.zip', mime: 'application/zip' }, 1: { name: 'Archive.tar', mime: 'application/x-tar' } }[format];
+    if (!kind) return 0;
   let url;
   let link;
   try {
     const bytes = new Uint8Array(wasm.memory.buffer, ptr >>> 0, length).slice();
-    url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
+    url = URL.createObjectURL(new Blob([bytes], { type: kind.mime }));
     link = document.createElement('a');
     link.href = url;
-    link.download = 'Archive.zip';
+    link.download = kind.name;
     document.body.append(link);
     link.click();
     return 1;

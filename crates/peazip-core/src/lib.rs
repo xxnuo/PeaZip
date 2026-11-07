@@ -1,8 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+use std::ops::Bound::{Included, Unbounded};
 use zip::read::Config;
 use zip::unstable::read::ZipIterable;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
+
+mod tar;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveFormat {
+    Zip,
+    Tar,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -35,19 +44,25 @@ pub enum Error {
     UnsupportedEntry(String),
     UnknownEntry(String),
     InvalidArchive(zip::result::ZipError),
+    InvalidTar(io::Error),
+    UnsupportedFormat,
     Io(io::Error),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Limit(kind) => write!(f, "ZIP limit exceeded: {kind}"),
-            Self::UnsafePath(path) => write!(f, "unsafe ZIP path: {path:?}"),
-            Self::DuplicatePath(path) => write!(f, "duplicate or conflicting ZIP path: {path:?}"),
-            Self::UnsupportedEntry(path) => write!(f, "unsupported ZIP entry: {path:?}"),
-            Self::UnknownEntry(path) => write!(f, "ZIP entry not found: {path:?}"),
+            Self::Limit(kind) => write!(f, "Archive limit exceeded: {kind}"),
+            Self::UnsafePath(path) => write!(f, "unsafe archive path: {path:?}"),
+            Self::DuplicatePath(path) => {
+                write!(f, "duplicate or conflicting archive path: {path:?}")
+            }
+            Self::UnsupportedEntry(path) => write!(f, "unsupported archive entry: {path:?}"),
+            Self::UnknownEntry(path) => write!(f, "archive entry not found: {path:?}"),
             Self::InvalidArchive(e) => write!(f, "invalid ZIP: {e}"),
-            Self::Io(e) => write!(f, "ZIP I/O error: {e}"),
+            Self::InvalidTar(e) => write!(f, "invalid TAR: {e}"),
+            Self::UnsupportedFormat => write!(f, "unsupported archive format"),
+            Self::Io(e) => write!(f, "archive I/O error: {e}"),
         }
     }
 }
@@ -55,7 +70,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidArchive(e) => Some(e),
-            Self::Io(e) => Some(e),
+            Self::Io(e) | Self::InvalidTar(e) => Some(e),
             _ => None,
         }
     }
@@ -130,7 +145,13 @@ fn path_key(path: &str, is_dir: bool, limits: Limits) -> Result<String, Error> {
 
 fn insert_path(paths: &mut BTreeMap<String, bool>, key: String, dir: bool) -> Result<(), Error> {
     if paths.contains_key(&key)
-        || (!dir && paths.keys().any(|p| p.starts_with(&format!("{key}/"))))
+        || (!dir && {
+            let prefix = format!("{key}/");
+            paths
+                .range::<str, _>((Included(prefix.as_str()), Unbounded))
+                .next()
+                .is_some_and(|(path, _)| path.starts_with(&prefix))
+        })
         || key
             .match_indices('/')
             .any(|(i, _)| paths.get(&key[..i]) == Some(&false))
@@ -149,6 +170,64 @@ fn sizes(size: u64, compressed: u64, total: &mut u64, limits: Limits) -> Result<
         return Err(Error::Limit("compression ratio"));
     }
     Ok(())
+}
+
+pub fn detect_format(bytes: &[u8]) -> Result<ArchiveFormat, Error> {
+    // Prefer a TAR header at offset zero over a ZIP embedded in its payload or tail.
+    let tar = tar::recognizes(bytes);
+    if matches!(&tar, Ok(true)) {
+        return Ok(ArchiveFormat::Tar);
+    }
+    // A bad TAR checksum can be ZIP payload; a complete TAR end marker is not an SFX stub.
+    if bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"PK\x05\x06")
+        || (!bytes.starts_with(&[0; 1024])
+            && ZipIterable::try_new(Cursor::new(bytes), Config::default()).is_ok())
+    {
+        return Ok(ArchiveFormat::Zip);
+    }
+    tar?;
+    Err(Error::UnsupportedFormat)
+}
+
+pub fn list_archive(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
+    check(
+        bytes.len() as u64,
+        limits.max_archive_bytes,
+        "archive bytes",
+    )?;
+    match detect_format(bytes)? {
+        ArchiveFormat::Zip => list_zip(bytes, limits),
+        ArchiveFormat::Tar => tar::list(bytes, limits),
+    }
+}
+
+pub fn extract_archive(bytes: &[u8], limits: Limits) -> Result<Vec<MemoryEntry>, Error> {
+    extract_matching_archive(bytes, None, limits)
+}
+
+pub fn extract_selected_archive(
+    bytes: &[u8],
+    selected: &[String],
+    limits: Limits,
+) -> Result<Vec<MemoryEntry>, Error> {
+    extract_matching_archive(bytes, Some(selected), limits)
+}
+
+fn extract_matching_archive(
+    bytes: &[u8],
+    selected: Option<&[String]>,
+    limits: Limits,
+) -> Result<Vec<MemoryEntry>, Error> {
+    check(
+        bytes.len() as u64,
+        limits.max_archive_bytes,
+        "archive bytes",
+    )?;
+    match detect_format(bytes)? {
+        ArchiveFormat::Zip => extract_matching(bytes, selected, limits),
+        ArchiveFormat::Tar => tar::extract(bytes, selected, limits),
+    }
 }
 
 pub fn list_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
@@ -216,6 +295,34 @@ fn extract_matching(
     limits: Limits,
 ) -> Result<Vec<MemoryEntry>, Error> {
     let entries = list_zip(bytes, limits)?;
+    let indices = selected_indices(&entries, selected, limits)?;
+    let mut archive = ZipArchive::new(Cursor::new(bytes))?;
+    let mut output = Vec::new();
+    for i in indices {
+        let entry = &entries[i];
+        let mut file = archive.by_index(i)?;
+        let mut data = Vec::new();
+        // One extra byte detects false size declarations without unbounded decompression.
+        file.by_ref()
+            .take(entry.size.saturating_add(1))
+            .read_to_end(&mut data)?;
+        if data.len() as u64 != entry.size {
+            return Err(Error::Limit("declared entry size"));
+        }
+        output.push(MemoryEntry {
+            path: entry.path.clone(),
+            is_dir: entry.is_dir,
+            data,
+        });
+    }
+    Ok(output)
+}
+
+fn selected_indices(
+    entries: &[Entry],
+    selected: Option<&[String]>,
+    limits: Limits,
+) -> Result<Vec<usize>, Error> {
     let selected = selected.map(|paths| paths.iter().map(String::as_str).collect::<BTreeSet<_>>());
     if let Some(selected) = &selected {
         let names: BTreeSet<_> = entries.iter().map(|entry| entry.path.as_str()).collect();
@@ -225,10 +332,9 @@ fn extract_matching(
             }
         }
     }
-    let mut archive = ZipArchive::new(Cursor::new(bytes))?;
-    let mut output = Vec::new();
+    let mut indices = Vec::new();
     let mut output_paths = BTreeSet::new();
-    for (i, entry) in entries.into_iter().enumerate() {
+    for (i, entry) in entries.iter().enumerate() {
         if let Some(selected) = &selected
             && !selected.contains(entry.path.as_str())
             && !entry
@@ -238,7 +344,7 @@ fn extract_matching(
         {
             continue;
         }
-        // Implicit parents consume filesystem entries too, even if the ZIP omits them.
+        // Implicit parents consume filesystem entries too, even if the archive omits them.
         let end = entry.path.trim_end_matches('/').len();
         for boundary in entry
             .path
@@ -253,22 +359,9 @@ fn extract_matching(
                 "output entry count",
             )?;
         }
-        let mut file = archive.by_index(i)?;
-        let mut data = Vec::new();
-        // One extra byte detects false size declarations without unbounded decompression.
-        file.by_ref()
-            .take(entry.size.saturating_add(1))
-            .read_to_end(&mut data)?;
-        if data.len() as u64 != entry.size {
-            return Err(Error::Limit("declared entry size"));
-        }
-        output.push(MemoryEntry {
-            path: entry.path,
-            is_dir: entry.is_dir,
-            data,
-        });
+        indices.push(i);
     }
-    Ok(output)
+    Ok(indices)
 }
 
 struct BoundedWriter {

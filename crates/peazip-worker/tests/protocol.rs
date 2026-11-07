@@ -13,6 +13,46 @@ fn packet(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
 }
 
 #[test]
+fn extraction_request_detects_tar_and_returns_real_file_bytes() {
+    let archive = include_bytes!("../../../tests/fixtures/sample.tar");
+    let name = b"docs/";
+    let mut request = 1u32.to_le_bytes().to_vec();
+    request.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    request.extend_from_slice(name);
+    request.extend_from_slice(&(archive.len() as u32).to_le_bytes());
+    request.extend_from_slice(archive);
+    let output = peazip_worker::extract_from_request(&request).unwrap();
+    let mut at = 0;
+    fn number(bytes: &[u8], at: &mut usize) -> usize {
+        let value = u32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap()) as usize;
+        *at += 4;
+        value
+    }
+    assert_eq!(number(&output, &mut at), 4);
+    let mut files = std::collections::BTreeMap::new();
+    for _ in 0..4 {
+        let kind = number(&output, &mut at);
+        let path_len = number(&output, &mut at);
+        let data_len = number(&output, &mut at);
+        let path = std::str::from_utf8(&output[at..at + path_len])
+            .unwrap()
+            .to_owned();
+        at += path_len;
+        let data = output[at..at + data_len].to_vec();
+        at += data_len;
+        files.insert(path, (kind, data));
+    }
+    assert_eq!(at, output.len());
+    assert_eq!(
+        files["docs/你好.txt"],
+        (0, "tar 你好\n".as_bytes().to_vec())
+    );
+    assert_eq!(files["docs/nested/data.bin"], (0, vec![0, 127, 255]));
+    assert_eq!(files["docs/empty/"], (1, vec![]));
+    assert!(!files.contains_key("other.txt"));
+}
+
+#[test]
 fn roundtrip_chinese_and_empty_files() {
     let request = packet(&[("目录/中文.txt".as_bytes(), b"hello"), (b"empty", b"")]);
     let zip = create_from_request(&request).unwrap();

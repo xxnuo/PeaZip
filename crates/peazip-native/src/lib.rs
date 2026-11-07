@@ -273,6 +273,23 @@ pub fn extract_zip_to_directory(
         return Err(Error::UnsupportedEntry("empty selection".into()));
     }
     let entries = peazip_core::extract_selected_zip(bytes, selected, limits)?;
+    publish_extracted(entries, destination)
+}
+
+pub fn extract_archive_to_directory(
+    bytes: &[u8],
+    selected: &[String],
+    destination: &Path,
+    limits: Limits,
+) -> Result<usize, Error> {
+    if selected.is_empty() {
+        return Err(Error::UnsupportedEntry("empty selection".into()));
+    }
+    let entries = peazip_core::extract_selected_archive(bytes, selected, limits)?;
+    publish_extracted(entries, destination)
+}
+
+fn publish_extracted(entries: Vec<MemoryEntry>, destination: &Path) -> Result<usize, Error> {
     let name = destination.file_name().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "missing destination filename")
     })?;

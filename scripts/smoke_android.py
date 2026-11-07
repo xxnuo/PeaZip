@@ -9,6 +9,7 @@ import shlex
 import struct
 import subprocess
 import sys
+import tarfile
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -95,7 +96,7 @@ class Smoke:
             self.adb("shell", "input", "tap", x, y)
 
     def picker(self):
-        self.tap("Open ZIP…")
+        self.tap("Open archive…")
         self.wait("system DocumentsUI picker", lambda t: any(
             n.get("package", "").endswith(".documentsui") for n in t.iter("node")))
 
@@ -125,6 +126,18 @@ class Smoke:
     def documents(self):
         return self.wait("system DocumentsUI", lambda t: any(
             n.get("package", "").endswith(".documentsui") for n in t.iter("node")))
+
+    def cancel_documents(self):
+        # Back first navigates up when DocumentsUI restores a nested directory.
+        for _ in range(12):
+            tree = self.dump()
+            if not any(n.get("package", "").endswith(".documentsui")
+                       for n in tree.iter("node")):
+                self.wait("return to archive", lambda t: any(
+                    n.get("package") == PACKAGE for n in t.iter("node")))
+                return
+            self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
+        raise RuntimeError("DocumentsUI did not close after bounded Back navigation")
 
     def button(self, labels):
         tree = self.wait(" / ".join(labels), lambda t: any(
@@ -225,10 +238,10 @@ class Smoke:
         self.label(output_name)
         self.button(("Save", "SAVE"))
         tree = self.wait("save result (never confirm Replace)", lambda t: any(
-            n.get("text", "").startswith("Saved ZIP: ") or self.match(n, "Replace")
-            or n.get("text", "").startswith("Could not save ZIP") for n in t.iter("node")))
-        saved = next((n.get("text")[len("Saved ZIP: "):] for n in tree.iter("node")
-                      if n.get("text", "").startswith("Saved ZIP: ")), None)
+            n.get("text", "").startswith("Saved archive: ") or self.match(n, "Replace")
+            or n.get("text", "").startswith("Could not save archive:") for n in t.iter("node")))
+        saved = next((n.get("text")[len("Saved archive: "):] for n in tree.iter("node")
+                      if n.get("text", "").startswith("Saved archive: ")), None)
         if not saved:
             raise RuntimeError(f"Save did not complete; no Replace confirmation: {self.xml}")
         if not re.fullmatch(rf"peazip-{self.token}-saved(?: \(\d+\))?\.zip", saved):
@@ -240,7 +253,7 @@ class Smoke:
             raise RuntimeError("Save silently overwrote the same-name sentinel")
         if saved == output_name:
             raise RuntimeError("Save reused the sentinel name")
-        self.archive("Archive.zip", len(contents), f"Saved ZIP: {saved}", directory=False)
+        self.archive("Archive.zip", len(contents), f"Saved archive: {saved}", directory=False)
         local = self.out / saved
         self.adb("pull", remote, local)
         with zipfile.ZipFile(local) as archive:
@@ -274,15 +287,15 @@ class Smoke:
             return False
         self.wait(f"Extract selected enabled={enabled}", valid)
 
-    def extraction_state(self, filename, status=None):
+    def extraction_state(self, filename, status=None, selected_entry="tree/"):
         self.label(filename)
         self.label("1 selected")
         if status:
             self.label(status)
-        self.wait("only tree/ selected; archive snapshot preserved", lambda t: {
+        self.wait(f"only {selected_entry} selected; archive snapshot preserved", lambda t: {
             n.get("content-desc"): n.get("checked") for n in t.iter("node")
             if n.get("checkable") == "true" and n.get("package") == PACKAGE
-        } == {name: str(name == "tree/").lower() for name in self.entries})
+        } == {name: str(name == selected_entry).lower() for name in self.entries})
         self.extraction_button(True)
 
     def export_snapshot(self, name):
@@ -291,14 +304,14 @@ class Smoke:
         return {p.relative_to(local).as_posix(): None if p.is_dir() else p.read_bytes()
                 for p in local.rglob("*")}
 
-    def tree_picker(self):
+    def tree_picker(self, evidence="extract-tree-picker"):
         self.tap("Extract selected…")
         self.documents()
-        self.save("extract-tree-picker")
+        self.save(evidence)
         self.wait("tree picker folder action", lambda t: any(
             n.get("text", "").lower() == "use this folder" for n in t.iter("node")))
 
-    def export_destination(self):
+    def export_destination(self, evidence="extract-parent-picker"):
         model = self.adb("shell", "getprop", "ro.product.model").strip()
         tree = self.documents()
         if any(self.match(n, "Show roots") for n in tree.iter("node")):
@@ -320,7 +333,7 @@ class Smoke:
             self.tap(model, breadcrumb.get("resource-id"))
         self.tap("Documents", "android:id/title")
         self.tap(Path(self.export_parent).name, "android:id/title")
-        self.save("extract-parent-picker")
+        self.save(evidence)
         self.button(("Use this folder", "USE THIS FOLDER"))
         self.button(("Allow", "ALLOW"))
 
@@ -381,11 +394,11 @@ class Smoke:
         def rejected(tree):
             if any(n.get("package", "").endswith(".documentsui") for n in tree.iter("node")):
                 raise AssertionError("CRC-invalid payload opened DocumentsUI before rejection")
-            return any(n.get("text", "").startswith("Could not extract ZIP:")
+            return any(n.get("text", "").startswith("Could not extract archive:")
                        for n in tree.iter("node"))
         tree = self.wait("CRC rejection before tree picker", rejected)
         error = next(n.get("text") for n in tree.iter("node")
-                     if n.get("text", "").startswith("Could not extract ZIP:"))
+                     if n.get("text", "").startswith("Could not extract archive:"))
         self.extraction_state(bad.name, error)
         if self.export_snapshot("crc-rejected") != baseline:
             raise RuntimeError("CRC rejection wrote output")
@@ -398,9 +411,9 @@ class Smoke:
         self.export_destination()
         tree = self.wait("extraction report", lambda t: any(
             n.get("text", "").startswith("Extracted ") or
-            n.get("text", "").startswith("Could not extract ZIP:") for n in t.iter("node")))
+            n.get("text", "").startswith("Could not extract archive:") for n in t.iter("node")))
         report = next(n.get("text") for n in tree.iter("node") if
-                      n.get("text", "").startswith(("Extracted ", "Could not extract ZIP:")))
+                      n.get("text", "").startswith(("Extracted ", "Could not extract archive:")))
         match = re.fullmatch(r"Extracted 4 entries to (PeaZip-([0-9a-fA-F-]{36}))", report)
         if not match:
             raise RuntimeError(f"Unexpected extraction report: {report}")
@@ -422,6 +435,123 @@ class Smoke:
             "Recovery: reopened valid ZIP and extracted successfully.\n")
         print(f"PASS Android {sdk} real SAF: {report}; nested bytes/empty directory verified; "
               "unselected other.txt absent; sentinel unchanged; recovery after CRC rejection", flush=True)
+
+    @staticmethod
+    def tar_contents(path):
+        contents = {}
+        with tarfile.open(path, "r:") as archive:
+            for member in archive:
+                name = member.name.removeprefix("./")
+                if name == ".":
+                    continue
+                if not (member.isdir() or member.isfile()):
+                    raise RuntimeError(f"Unexpected TAR member type: {member.name}")
+                name = name.rstrip("/") + "/" if member.isdir() else name
+                if name in contents:
+                    raise RuntimeError(f"Duplicate TAR member: {name}")
+                contents[name] = None if member.isdir() else archive.extractfile(member).read()
+        return contents
+
+    def tar_save_picker(self, evidence):
+        self.tap("Save TAR…")
+        self.documents()
+        activities = self.adb("shell", "dumpsys", "activity", "activities")
+        (self.out / f"{evidence}-intent.log").write_text(activities)
+        if not any("act=android.intent.action.CREATE_DOCUMENT" in line and
+                   "typ=application/x-tar" in line for line in activities.splitlines()):
+            raise RuntimeError("TAR save picker lacks ACTION_CREATE_DOCUMENT application/x-tar")
+        self.save(evidence)
+
+    def tar_smoke(self):
+        fixture = ROOT / "tests/fixtures/sample.tar"
+        contents = self.tar_contents(fixture)
+        assert contents == {"docs/": None, "docs/你好.txt": "tar 你好\n".encode(),
+                            "docs/empty/": None, "docs/nested/data.bin": bytes((0, 127, 255)),
+                            "other.txt": b"not selected\n"}
+        name = f"peazip-{self.token}-sample.tar"
+        remote = f"/sdcard/Download/{name}"
+        self.files.append(remote)
+        self.adb("push", fixture, remote)
+        self.scan(remote)
+        self.entries = list(contents)
+        self.choose(name)
+        self.archive(name)
+        tree = self.label("Save TAR…")
+        if any(self.match(n, "Save ZIP…") for n in tree.iter("node")):
+            raise RuntimeError("Opened TAR exposes Save ZIP")
+        self.label("Create ZIP…")
+        self.save("tar-imported")
+        self.tap("docs/")
+        self.extraction_state(name, selected_entry="docs/")
+        before = self.adb("shell", "ls", "-1", "/sdcard/Download")
+        self.tar_save_picker("tar-save-cancel-picker")
+        self.cancel_documents()
+        self.extraction_state(name, "Save cancelled.", selected_entry="docs/")
+        if self.adb("shell", "ls", "-1", "/sdcard/Download") != before:
+            raise RuntimeError("TAR save cancellation changed Downloads")
+        self.save("tar-save-cancelled")
+        self.tar_save_picker("tar-save-picker")
+        self.downloads()
+        tree = self.wait("TAR save filename", lambda t: any(
+            n.get("class") == "android.widget.EditText" for n in t.iter("node")))
+        field = next(n for n in tree.iter("node") if n.get("class") == "android.widget.EditText")
+        self.tap(field.get("text", ""), field.get("resource-id"))
+        self.adb("shell", "input", "keyevent", "KEYCODE_MOVE_END")
+        self.adb("shell", "input", "keyevent", *(["KEYCODE_DEL"] * len(field.get("text", ""))))
+        saved = f"peazip-{self.token}-saved.tar"
+        self.adb("shell", "input", "text", saved)
+        self.label(saved)
+        output = f"/sdcard/Download/{saved}"
+        self.files.append(output)
+        self.button(("Save", "SAVE"))
+        self.extraction_state(name, f"Saved archive: {saved}", selected_entry="docs/")
+        local = self.out / saved
+        self.adb("pull", output, local)
+        if local.read_bytes() != fixture.read_bytes():
+            raise RuntimeError("Saved TAR differs byte-for-byte from fixture")
+        if self.tar_contents(local) != contents:
+            raise RuntimeError("Python tarfile verification of saved TAR failed")
+        self.save("tar-saved")
+        baseline = self.export_snapshot("tar-before")
+        self.tree_picker("tar-extract-cancel-picker")
+        self.cancel_documents()
+        self.extraction_state(name, "Extraction cancelled.", selected_entry="docs/")
+        if self.export_snapshot("tar-cancelled") != baseline:
+            raise RuntimeError("TAR tree cancellation changed export parent")
+        self.save("tar-extract-cancelled")
+        self.tree_picker("tar-extract-tree-picker")
+        self.export_destination("tar-extract-parent-picker")
+        tree = self.wait("TAR extraction report", lambda t: any(
+            n.get("text", "").startswith(("Extracted ", "Could not extract archive:"))
+            for n in t.iter("node")))
+        report = next(n.get("text") for n in tree.iter("node") if
+                      n.get("text", "").startswith(("Extracted ", "Could not extract archive:")))
+        match = re.fullmatch(r"Extracted 4 entries to (PeaZip-([0-9a-fA-F-]{36}))", report)
+        if not match:
+            raise RuntimeError(f"Unexpected TAR extraction report: {report}")
+        uuid.UUID(match[2])
+        folder = match[1]
+        if folder in baseline:
+            raise RuntimeError("TAR extraction reused an existing export directory")
+        expected = {**baseline, folder: None, f"{folder}/docs": None,
+                    f"{folder}/docs/你好.txt": contents["docs/你好.txt"],
+                    f"{folder}/docs/empty": None, f"{folder}/docs/nested": None,
+                    f"{folder}/docs/nested/data.bin": contents["docs/nested/data.bin"]}
+        if self.export_snapshot("tar-success") != expected:
+            raise RuntimeError("TAR extraction directories/Unicode/binary/empty directory differ; "
+                               "other.txt must be absent and previous exports unchanged")
+        self.extraction_state(name, report, selected_entry="docs/")
+        self.save("tar-extracted")
+        self.health()
+        result = ("PASS TAR: five entries excluding ./ root; Save TAR without Save ZIP; "
+                  "real ACTION_CREATE_DOCUMENT application/x-tar on cancel and save; "
+                  "save cancellation preserves snapshot/selection and Downloads; "
+                  "saved bytes identical to fixture, independently verified with Python tarfile; "
+                  "real SAF tree cancellation and docs/ extraction of four entries; "
+                  "Unicode/binary bytes and empty directory verified, other.txt absent; "
+                  f"previous exports unchanged. {report}\n")
+        (self.out / "tar-result.log").write_text(result)
+        print(result, end="", flush=True)
 
     def health(self):
         pid = self.adb("shell", "pidof", PACKAGE).strip()
@@ -463,7 +593,7 @@ class Smoke:
             self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
             tree = self.dump()
         self.adb("shell", "am", "start", "-n", f"{PACKAGE}/com.longbridge.nsh.PeaZipActivity")
-        self.label("Open ZIP…")
+        self.label("Open archive…")
         self.health()
         sample, invalid = [Path(p).name for p in self.files]
         self.choose(sample)
@@ -482,9 +612,9 @@ class Smoke:
         print("PASS cancelling picker preserves archive and entries", flush=True)
         self.choose(invalid)
         self.wait("invalid ZIP error", lambda t: any(
-            n.get("text", "").startswith("Could not open ZIP:") for n in t.iter("node")))
+            n.get("text", "").startswith("Could not open archive:") for n in t.iter("node")))
         self.save("invalid")
-        print("PASS invalid ZIP reports Could not open ZIP", flush=True)
+        print("PASS invalid ZIP reports Could not open archive", flush=True)
         self.health()
         self.choose(sample)
         self.archive(sample)
@@ -493,6 +623,7 @@ class Smoke:
         self.create_oversized(sample)
         self.create_save()
         self.extract_selected()
+        self.tar_smoke()
 
 
 def main():

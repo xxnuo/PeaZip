@@ -5,7 +5,7 @@ use futures_channel::oneshot;
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::jlong;
 use jni::{JNIEnv, JavaVM};
-use peazip_core::{Limits, MemoryEntry};
+use peazip_core::{ArchiveFormat, Limits, MemoryEntry};
 
 static VM: OnceLock<JavaVM> = OnceLock::new();
 static STATE: Mutex<State> = Mutex::new(State {
@@ -140,7 +140,7 @@ fn local_frame<T>(
         .map_err(jni_error)?
 }
 
-async fn request(kind: Kind, bytes: Option<Arc<Vec<u8>>>) -> Reply {
+async fn request(kind: Kind, bytes: Option<Arc<Vec<u8>>>, format: ArchiveFormat) -> Reply {
     let (id, activity, receiver) = {
         let mut state = state();
         if state.pending.is_some() {
@@ -192,16 +192,29 @@ async fn request(kind: Kind, bytes: Option<Arc<Vec<u8>>>) -> Reply {
                         .map_err(jni_error)?,
                     Some(bytes) => {
                         let array = env.byte_array_from_slice(&bytes).map_err(jni_error)?;
-                        env.call_method(
-                            activity.as_obj(),
-                            if kind == Kind::Export {
-                                "exportEntries"
-                            } else {
-                                "saveArchive"
-                            },
-                            "(J[B)Z",
-                            &[JValue::Long(id), JValue::Object(array.as_ref())],
-                        )
+                        if kind == Kind::Export {
+                            env.call_method(
+                                activity.as_obj(),
+                                "exportEntries",
+                                "(J[B)Z",
+                                &[JValue::Long(id), JValue::Object(array.as_ref())],
+                            )
+                        } else {
+                            let format = match format {
+                                ArchiveFormat::Zip => 0,
+                                ArchiveFormat::Tar => 1,
+                            };
+                            env.call_method(
+                                activity.as_obj(),
+                                "saveArchive",
+                                "(J[BI)Z",
+                                &[
+                                    JValue::Long(id),
+                                    JValue::Object(array.as_ref()),
+                                    JValue::Int(format),
+                                ],
+                            )
+                        }
                         .map_err(jni_error)?
                         .z()
                         .map_err(jni_error)?
@@ -227,18 +240,21 @@ async fn request(kind: Kind, bytes: Option<Arc<Vec<u8>>>) -> Reply {
 }
 
 pub async fn pick_files() -> Result<Option<Vec<MemoryEntry>>, String> {
-    match request(Kind::Pick, None).await? {
+    match request(Kind::Pick, None, ArchiveFormat::Zip).await? {
         None => Ok(None),
         Some(Output::Files(files)) => Ok(Some(files)),
         _ => Err("Unexpected Android input response.".into()),
     }
 }
 
-pub async fn save_zip(bytes: Arc<Vec<u8>>) -> Result<Option<String>, String> {
+pub async fn save_archive(
+    bytes: Arc<Vec<u8>>,
+    format: ArchiveFormat,
+) -> Result<Option<String>, String> {
     if bytes.len() as u64 > Limits::default().max_archive_bytes {
         return Err("Archive exceeds the 32 MiB save limit.".into());
     }
-    let reply = request(Kind::Save, Some(bytes))
+    let reply = request(Kind::Save, Some(bytes), format)
         .await
         .map_err(|error| format!("{error} The destination may contain a partial document."))?;
     match reply {
@@ -287,7 +303,7 @@ pub async fn export_entries(entries: Vec<MemoryEntry>) -> Result<Option<String>,
         packet.extend_from_slice(entry.path.as_bytes());
         packet.extend_from_slice(&entry.data);
     }
-    match request(Kind::Export, Some(Arc::new(packet))).await? {
+    match request(Kind::Export, Some(Arc::new(packet)), ArchiveFormat::Zip).await? {
         None => Ok(None),
         Some(Output::Name(name)) => Ok(Some(format!("Extracted {count} entries to {name}"))),
         _ => Err("Unexpected Android export response.".into()),

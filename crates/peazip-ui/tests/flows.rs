@@ -6,19 +6,46 @@ use peazip_core::{Limits, MemoryEntry};
 
 fn start() -> Headless {
     let mut app = Headless::start(EngineConfig::new(Root::of::<peazip_ui::App>())).unwrap();
-    app.wait_for("Open a ZIP archive to view its contents.")
+    app.wait_for("Open an archive to view its contents.")
         .unwrap();
     app
+}
+
+#[test]
+fn opens_tar_by_content_and_extracts_selected_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("misnamed.zip");
+    std::fs::write(
+        &source,
+        include_bytes!("../../../tests/fixtures/sample.tar"),
+    )
+    .unwrap();
+    let mut app = start();
+    app.on_pick_paths(vec![source]).unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("5 entries").unwrap();
+    app.wait_for("docs/你好.txt").unwrap();
+    app.press("role:checkbox[docs/]").unwrap();
+    let destination = temp.path().join("output");
+    app.on_pick_save_path(Some(destination.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("Extracted 4 entries").unwrap();
+    assert_eq!(
+        std::fs::read(destination.join("docs/你好.txt")).unwrap(),
+        "tar 你好\n".as_bytes()
+    );
+    assert!(destination.join("docs/empty").is_dir());
+    assert!(!destination.join("other.txt").exists());
 }
 
 #[test]
 fn cancel_keeps_the_initial_state_and_open_available() {
     let mut app = start();
     app.on_pick_paths(vec![]).unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
-    app.wait_for("Open a ZIP archive to view its contents.")
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("Open an archive to view its contents.")
         .unwrap();
-    assert!(app.screen().enabled("role:button[Open ZIP…]").unwrap());
+    assert!(app.screen().enabled("role:button[Open archive…]").unwrap());
     assert_eq!(app.screen().file_requests().len(), 1);
 }
 
@@ -37,24 +64,23 @@ fn lists_real_zip_then_reports_invalid_zip_and_recovers() {
     std::fs::write(&path, bytes).unwrap();
     let mut app = start();
     app.on_pick_paths(vec![path.clone()]).unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
+    app.press("role:button[Open archive…]").unwrap();
     app.wait_for("hello.txt").unwrap();
     app.wait_for("1 entries").unwrap();
     app.wait_for("text:5").unwrap();
-    assert!(app.screen().enabled("role:button[Open ZIP…]").unwrap());
+    assert!(app.screen().enabled("role:button[Open archive…]").unwrap());
 
     std::fs::write(&path, b"not a zip").unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
-    app.wait_for("text:/^Could not open ZIP: invalid ZIP:/")
-        .unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("text:/^Could not open archive:/").unwrap();
     assert!(app.screen().shows("hello.txt"));
-    assert!(app.screen().enabled("role:button[Open ZIP…]").unwrap());
+    assert!(app.screen().enabled("role:button[Open archive…]").unwrap());
 
     std::fs::remove_file(&path).unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
-    app.wait_for("text:/^Could not open ZIP:.*os error/")
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("text:/^Could not open archive:.*os error/")
         .unwrap();
-    assert!(app.screen().enabled("role:button[Open ZIP…]").unwrap());
+    assert!(app.screen().enabled("role:button[Open archive…]").unwrap());
 }
 
 #[test]
@@ -66,10 +92,10 @@ fn rejects_an_oversized_archive_and_allows_another_open() {
     drop(file);
     let mut app = start();
     app.on_pick_paths(vec![path.clone()]).unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
-    app.wait_for("text:/^Could not open ZIP: ZIP limit exceeded: archive bytes/")
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("text:/^Could not open archive: Archive limit exceeded: archive bytes/")
         .unwrap();
-    assert!(app.screen().enabled("role:button[Open ZIP…]").unwrap());
+    assert!(app.screen().enabled("role:button[Open archive…]").unwrap());
     std::fs::remove_file(path).unwrap();
 }
 
@@ -95,7 +121,7 @@ fn selects_individual_entries_all_and_none_and_resets_on_new_archive() {
             .unwrap()
     );
     app.on_pick_paths(vec![path.clone()]).unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
+    app.press("role:button[Open archive…]").unwrap();
     app.wait_for("first.txt").unwrap();
     app.press("role:checkbox[first.txt]").unwrap();
     app.wait_for("1 selected").unwrap();
@@ -123,17 +149,17 @@ fn selects_individual_entries_all_and_none_and_resets_on_new_archive() {
     app.press("role:checkbox[first.txt]").unwrap();
     app.wait_for("1 selected").unwrap();
     app.on_pick_paths(vec![]).unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
+    app.press("role:button[Open archive…]").unwrap();
     app.wait_for("2 entries").unwrap();
     assert!(app.screen().shows("1 selected"));
     app.on_pick_paths(vec![temp.path().join("missing.zip")])
         .unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
-    app.wait_for("text:/^Could not open ZIP:/").unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("text:/^Could not open archive:/").unwrap();
     assert!(app.screen().shows("1 selected"));
 
     app.on_pick_paths(vec![path]).unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
+    app.press("role:button[Open archive…]").unwrap();
     app.wait_for("2 entries").unwrap();
     app.wait_for("0 selected").unwrap();
     assert_eq!(
@@ -161,7 +187,7 @@ fn creates_zip_from_selected_files_and_refuses_to_overwrite_it() {
     app.wait_for("Created ZIP: 2 entries").unwrap();
     app.wait_for("first.txt").unwrap();
     app.wait_for("中文.txt").unwrap();
-    assert!(app.screen().enabled("role:button[Open ZIP…]").unwrap());
+    assert!(app.screen().enabled("role:button[Open archive…]").unwrap());
     assert!(app.screen().enabled("role:button[Create ZIP…]").unwrap());
     let original = std::fs::read(&output).unwrap();
     let extracted = peazip_core::extract_zip(&original, Limits::default()).unwrap();
@@ -196,14 +222,14 @@ fn cancelling_creation_at_either_dialog_writes_nothing() {
     let mut app = start();
     app.on_pick_paths(vec![]).unwrap();
     app.press("role:button[Create ZIP…]").unwrap();
-    app.wait_for("Open a ZIP archive to view its contents.")
+    app.wait_for("Open an archive to view its contents.")
         .unwrap();
     assert_eq!(app.screen().file_requests().len(), 1);
     assert!(app.screen().enabled("role:button[Create ZIP…]").unwrap());
     app.on_pick_paths(vec![input.clone()]).unwrap();
     app.on_pick_save_path(None).unwrap();
     app.press("role:button[Create ZIP…]").unwrap();
-    app.wait_for("Open a ZIP archive to view its contents.")
+    app.wait_for("Open an archive to view its contents.")
         .unwrap();
     assert_eq!(app.screen().file_requests().len(), 3);
     assert!(app.screen().enabled("role:button[Create ZIP…]").unwrap());
@@ -249,7 +275,7 @@ fn extracts_selection_from_snapshot_and_retries_without_overwriting() {
             .unwrap()
     );
     app.on_pick_paths(vec![source.clone()]).unwrap();
-    app.press("role:button[Open ZIP…]").unwrap();
+    app.press("role:button[Open archive…]").unwrap();
     app.wait_for("4 entries").unwrap();
     app.press("role:checkbox[keep.txt]").unwrap();
     app.wait_for("1 selected").unwrap();
@@ -288,7 +314,7 @@ fn extracts_selection_from_snapshot_and_retries_without_overwriting() {
     std::fs::write(existing.join("sentinel"), b"untouched").unwrap();
     app.on_pick_save_path(Some(existing.clone())).unwrap();
     app.press("role:button[Extract selected…]").unwrap();
-    app.wait_for("text:/^Could not extract ZIP:/").unwrap();
+    app.wait_for("text:/^Could not extract archive:/").unwrap();
     assert_eq!(
         std::fs::read(existing.join("sentinel")).unwrap(),
         b"untouched"
@@ -405,7 +431,7 @@ fn folder_picker_cancellation_does_not_create_an_archive() {
     app.on_pick_paths(vec![]).unwrap();
     app.on_pick_save_path(Some(output.clone())).unwrap();
     app.press("role:button[Create folder ZIP…]").unwrap();
-    app.wait_for("Open a ZIP archive to view its contents.")
+    app.wait_for("Open an archive to view its contents.")
         .unwrap();
     assert_eq!(app.screen().file_requests().len(), 1);
     assert!(!output.exists());

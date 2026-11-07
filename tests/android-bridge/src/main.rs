@@ -3,6 +3,7 @@ mod android;
 use android::*;
 use jni::objects::{JClass, JObject, JObjectArray, JValue};
 use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM, NativeMethod};
+use peazip_core::ArchiveFormat;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
@@ -203,20 +204,47 @@ fn main() {
         checks += 1;
     }
     {
-        let mut save = Box::pin(save_zip(Arc::new(vec![0; 32 * 1024 * 1024 + 1])));
+        let mut save = Box::pin(save_archive(
+            Arc::new(vec![0; 32 * 1024 * 1024 + 1]),
+            ArchiveFormat::Zip,
+        ));
         assert!(matches!(poll(save.as_mut()), Poll::Ready(Err(_))));
         checks += 1;
     }
     {
-        let mut save = Box::pin(save_zip(Arc::new(vec![0; 13])));
+        let mut save = Box::pin(save_archive(Arc::new(vec![0; 13]), ArchiveFormat::Zip));
         assert!(matches!(poll(save.as_mut()), Poll::Ready(Err(_))));
         assert!(!env.exception_check().unwrap());
         checks += 1;
     }
-    {
-        let mut save = Box::pin(save_zip(Arc::new(vec![0; 1])));
+    for (format, code, filename) in [
+        (ArchiveFormat::Zip, 0, "Archive.zip"),
+        (ArchiveFormat::Tar, 1, "Archive.tar"),
+    ] {
+        // Opaque bytes, including SFX ZIP prefixes, must not determine the format.
+        let mut save = Box::pin(save_archive(
+            Arc::new(b"MZ opaque archive".to_vec()),
+            format,
+        ));
         assert!(poll(save.as_mut()).is_pending());
-        let name = env.new_string("Archive.zip").unwrap();
+        assert_eq!(
+            env.get_field(&activity, "format", "I")
+                .unwrap()
+                .i()
+                .unwrap(),
+            code
+        );
+        let packet = jni::objects::JByteArray::from(
+            env.get_field(&activity, "packet", "[B")
+                .unwrap()
+                .l()
+                .unwrap(),
+        );
+        assert_eq!(
+            env.convert_byte_array(packet).unwrap(),
+            b"MZ opaque archive"
+        );
+        let name = env.new_string(filename).unwrap();
         Java_com_longbridge_nsh_PeaZipActivity_nativeSaved(
             unsafe { env.unsafe_clone() },
             class(),
@@ -229,7 +257,7 @@ fn main() {
             class(),
             id(&mut env, &activity),
         );
-        assert!(matches!(poll(save.as_mut()), Poll::Ready(Ok(Some(name))) if name=="Archive.zip"));
+        assert!(matches!(poll(save.as_mut()), Poll::Ready(Ok(Some(name))) if name==filename));
         checks += 1;
     }
     {
@@ -270,7 +298,7 @@ fn main() {
         );
         assert!(matches!(poll(pick.as_mut()), Poll::Ready(Ok(None))));
         checks += 1;
-        let mut save = Box::pin(save_zip(Arc::new(vec![0; 1])));
+        let mut save = Box::pin(save_archive(Arc::new(vec![0; 1]), ArchiveFormat::Zip));
         assert!(poll(save.as_mut()).is_pending());
         Java_com_longbridge_nsh_PeaZipActivity_nativeUnbind(
             unsafe { env.unsafe_clone() },
@@ -347,7 +375,7 @@ fn main() {
         assert_eq!(env.convert_byte_array(packet).unwrap(), expected);
         let mut pick = Box::pin(pick_files());
         assert!(matches!(poll(pick.as_mut()), Poll::Ready(Err(_))));
-        let mut save = Box::pin(save_zip(Arc::new(vec![1])));
+        let mut save = Box::pin(save_archive(Arc::new(vec![1]), ArchiveFormat::Zip));
         assert!(matches!(poll(save.as_mut()), Poll::Ready(Err(_))));
         let wrong_name = env.new_string("Archive.zip").unwrap();
         Java_com_longbridge_nsh_PeaZipActivity_nativeSaved(
@@ -525,6 +553,16 @@ fn main() {
                 fn_ptr: Java_com_longbridge_nsh_PeaZipActivity_nativeCancelled as *mut c_void,
             },
         ],
+    )
+    .unwrap();
+    let picker = env
+        .alloc_object("com/longbridge/nsh/PeaZipActivity")
+        .unwrap();
+    env.call_static_method(
+        "BridgeLifecycleCheck",
+        "checkSaveFormats",
+        "(Lcom/longbridge/nsh/PeaZipActivity;)V",
+        &[JValue::Object(&picker)],
     )
     .unwrap();
     // Allocate the host Activity without running android.jar's stub constructor.

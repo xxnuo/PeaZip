@@ -136,8 +136,13 @@ public final class PeaZipActivity extends Activity {
     }
 
     public boolean saveArchive(long id, byte[] bytes) {
+        return saveArchive(id, bytes, 0);
+    }
+
+    public boolean saveArchive(long id, byte[] bytes, int format) {
+        if (format != 0 && format != 1) throw new IllegalArgumentException("Unsupported archive format code: " + format);
         if (bytes == null || bytes.length > MAX_ARCHIVE) throw new IllegalArgumentException("Invalid archive byte count.");
-        return begin(id, bytes);
+        return begin(id, bytes, false, format);
     }
 
     public boolean exportEntries(long id, byte[] packet) {
@@ -150,10 +155,14 @@ public final class PeaZipActivity extends Activity {
     }
 
     private boolean begin(long id, byte[] bytes, boolean export) {
+        return begin(id, bytes, export, 0);
+    }
+
+    private boolean begin(long id, byte[] bytes, boolean export, int format) {
         Task task;
         synchronized (TRANSFERS) {
             if (destroyed || active != null) return false;
-            task = new Task(id, 0, bytes, export);
+            task = new Task(id, 0, bytes, export, format);
             task.owner = new WeakReference<>(this);
             active = task;
         }
@@ -186,18 +195,23 @@ public final class PeaZipActivity extends Activity {
         task.requestCode = ++requestCode;
         pending = task;
         try {
-            Intent intent = new Intent(task.export != null ? Intent.ACTION_OPEN_DOCUMENT_TREE
-                    : task.save ? Intent.ACTION_CREATE_DOCUMENT : Intent.ACTION_OPEN_DOCUMENT);
-            if (task.export == null) {
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.setType(task.save ? "application/zip" : "*/*");
-                if (task.save) intent.putExtra(Intent.EXTRA_TITLE, "Archive.zip");
-                else intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-            }
+            Intent intent = pickerIntent(task);
             startActivityForResult(intent, task.requestCode);
         } catch (Exception e) {
             finish(task, null, null, null, message(e));
         }
+    }
+
+    private static Intent pickerIntent(Task task) {
+        Intent intent = new Intent(task.export != null ? Intent.ACTION_OPEN_DOCUMENT_TREE
+                : task.save ? Intent.ACTION_CREATE_DOCUMENT : Intent.ACTION_OPEN_DOCUMENT);
+        if (task.export == null) {
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType(task.save ? (task.format == 1 ? "application/x-tar" : "application/zip") : "*/*");
+            if (task.save) intent.putExtra(Intent.EXTRA_TITLE, task.format == 1 ? "Archive.tar" : "Archive.zip");
+            else intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        }
+        return intent;
     }
 
     @Override
@@ -238,6 +252,7 @@ public final class PeaZipActivity extends Activity {
         final long id;
         int requestCode;
         final boolean save;
+        final int format;
         final TreeExport export;
         volatile boolean destroyed;
         volatile byte[] bytes;
@@ -256,6 +271,11 @@ public final class PeaZipActivity extends Activity {
         }
 
         Task(long id, int code, byte[] bytes, boolean exporting) {
+            this(id, code, bytes, exporting, 0);
+        }
+
+        Task(long id, int code, byte[] bytes, boolean exporting, int format) {
+            this.format = format;
             this.id = id;
             this.requestCode = code;
             this.save = bytes != null && !exporting;

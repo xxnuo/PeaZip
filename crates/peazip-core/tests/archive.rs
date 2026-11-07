@@ -225,6 +225,20 @@ fn rejects_bombs_corruption_and_false_sizes() {
 }
 
 #[test]
+fn file_parent_check_respects_separator_ordering() {
+    let input = [entry("a-", b""), entry("a0", b""), entry("a", b"")];
+    let zip = create_zip(&input, Limits::default()).unwrap();
+    assert_eq!(extract_zip(&zip, Limits::default()).unwrap(), input);
+    for names in [["a-", "a/b", "a"], ["a-", "a", "a/b"]] {
+        let input = names.map(|path| entry(path, b""));
+        assert!(matches!(
+            create_zip(&input, Limits::default()),
+            Err(Error::DuplicatePath(_))
+        ));
+    }
+}
+
+#[test]
 fn rejects_conflicts_in_external_archives_in_both_orders() {
     for names in [
         ["a", "a/b"],

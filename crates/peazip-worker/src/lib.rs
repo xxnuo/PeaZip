@@ -28,11 +28,11 @@ pub fn extract_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
     if len as u64 > limits.max_archive_bytes {
         return Err("archive byte limit exceeded".into());
     }
-    let zip = take(&mut remaining, len)?;
+    let archive = take(&mut remaining, len)?;
     if !remaining.is_empty() {
         return Err("trailing request bytes".into());
     }
-    let entries = peazip_core::extract_selected_zip(zip, &selected, limits)
+    let entries = peazip_core::extract_selected_archive(archive, &selected, limits)
         .map_err(|error| error.to_string())?;
     let size = 4 + entries
         .iter()

@@ -63,12 +63,12 @@ test('Chromium runs WASM: open ZIP, select entries, recover from invalid ZIP', {
   await page.goto(baseURL);
   assert.equal((await wasm).ok(), true, 'WASM must load successfully');
   await expect(page).toHaveTitle('PeaZip');
-  const open = page.getByRole('button', { name: 'Open ZIP…', exact: true });
+  const open = page.getByRole('button', { name: 'Open archive…', exact: true });
   const all = page.getByRole('button', { name: 'Select all', exact: true });
   const clear = page.getByRole('button', { name: 'Clear selection', exact: true });
   const selected = (count) => page.getByText(`${count} selected`, { exact: true });
   await expect(open).toBeEnabled();
-  await expect(page.getByText('Open a ZIP archive to view its contents.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Open an archive to view its contents.', { exact: true })).toBeVisible();
   await expect(all).toBeDisabled();
   await expect(clear).toBeDisabled();
   await expect(selected(0)).toBeVisible();
@@ -112,13 +112,13 @@ test('Chromium runs WASM: open ZIP, select entries, recover from invalid ZIP', {
   await chinese.click();
   await expect(selected(1)).toBeVisible();
   await choose('invalid.zip');
-  await expect(page.getByText(/^Could not open ZIP:/)).toBeVisible();
+  await expect(page.getByText(/^Could not open archive:/)).toBeVisible();
   const oversized = page.waitForEvent('filechooser');
   await open.click();
   await (await oversized).setFiles({
     name: 'oversized.zip', mimeType: 'application/zip', buffer: Buffer.alloc(32 * 1024 * 1024 + 1),
   });
-  await expect(page.getByText('Could not open ZIP: Archive exceeds the 32 MiB limit.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Could not open archive: Archive exceeds the 32 MiB limit.', { exact: true })).toBeVisible();
   await expect(selected(1)).toBeVisible();
   await expect(open).toBeEnabled();
   await choose('sample.zip');
@@ -152,7 +152,7 @@ test('Chromium creates, downloads and reopens ZIP using a real Rust worker', { t
   t.after(() => assert.deepEqual(errors, []));
   await page.goto(await serve(t));
   const create = page.getByRole('button', { name: 'Create ZIP…', exact: true });
-  const open = page.getByRole('button', { name: 'Open ZIP…', exact: true });
+  const open = page.getByRole('button', { name: 'Open archive…', exact: true });
   const download = page.getByRole('button', { name: 'Download ZIP', exact: true });
   await expect(create).toBeEnabled();
   await expect(download).toBeDisabled();
@@ -260,7 +260,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
   await expect(first).toBeChecked();
   assert.equal(workers.length, 1, 'file count rejection must not start a worker');
   await choose(create, [files[0], { ...files[0], buffer: Buffer.from('duplicate') }]);
-  await expect(page.getByText(/^Could not create ZIP:.*duplicate or conflicting ZIP path:/)).toBeVisible();
+  await expect(page.getByText(/^Could not create ZIP:.*duplicate or conflicting archive path:/)).toBeVisible();
   await released(1);
   await rows();
   await expect(first).toBeChecked();
@@ -386,7 +386,7 @@ test('Cancel during real worker WASM loading preserves snapshot; retry ignores s
     await choose('Create ZIP…', [{ name: 'cancelled.txt', mimeType: 'text/plain', buffer: Buffer.from('cancel me') }]);
     await expect.poll(() => intercepted).toBe(true);
     await expect(cancel).toBeEnabled();
-    for (const name of ['Create ZIP…', 'Open ZIP…', 'Download ZIP', 'Select all', 'Clear selection']) await expect(button(name)).toBeDisabled();
+    for (const name of ['Create ZIP…', 'Open archive…', 'Download ZIP', 'Select all', 'Clear selection']) await expect(button(name)).toBeDisabled();
     await cancel.click();
     await expect(page.getByText('Creation cancelled.', { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.archiveWorkers[1].terminated)).toBe(true);
@@ -410,7 +410,7 @@ test('Cancel during real worker WASM loading preserves snapshot; retry ignores s
     old({ data: { progress: { phase: 'read', done: 1, total: 9 } } });
     old({ data: { code: 1, bytes: new Uint8Array([0, 1, 2]) } });
   });
-  await expect(page.getByText('ZIP download requested.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Archive download requested.', { exact: true })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'retry.txt', exact: true })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'retry.txt', exact: true })).toBeChecked();
   assert.deepEqual(await snapshot(), retry, 'stale success cannot overwrite retry snapshot');
@@ -534,7 +534,7 @@ async function extractionPage(t, available = true) {
   }, { available });
   await page.goto(await serve(t));
   const button = (name) => page.getByRole('button', { name, exact: true });
-  await expect(button('Open ZIP…')).toBeEnabled();
+  await expect(button('Open archive…')).toBeEnabled();
   await expect(button('Extract selected…')).toBeDisabled();
   await page.evaluate(async () => {
     const root = await navigator.storage.getDirectory();
@@ -551,10 +551,10 @@ async function extractionPage(t, available = true) {
   });
   async function choose(files = fixture('sample.zip')) {
     const pending = page.waitForEvent('filechooser');
-    await button('Open ZIP…').click();
+    await button('Open archive…').click();
     await (await pending).setFiles(files);
     await expect(page.getByText('3 entries', { exact: true })).toBeVisible();
-    await expect(button('Open ZIP…')).toBeEnabled();
+    await expect(button('Open archive…')).toBeEnabled();
   }
   async function tree() {
     return page.evaluate(async () => {
@@ -573,6 +573,34 @@ async function extractionPage(t, available = true) {
 }
 
 const sentinelTree = { 'sentinel.txt': Array.from(Buffer.from('leave me unchanged')) };
+
+test('TAR is detected by content, downloaded unchanged and extracted by the Rust worker', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree, downloads } = await extractionPage(t);
+  const bytes = await readFile(new URL('../../tests/fixtures/sample.tar', import.meta.url));
+  const picked = page.waitForEvent('filechooser');
+  await button('Open archive…').click();
+  await (await picked).setFiles({ name: 'misnamed.zip', mimeType: 'application/zip', buffer: bytes });
+  await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true })).toBeVisible();
+  await expect(button('Download TAR')).toBeEnabled();
+  await expect(button('Download ZIP')).toHaveCount(0);
+  const pending = page.waitForEvent('download');
+  await button('Download TAR').click();
+  const download = await pending;
+  assert.equal(download.suggestedFilename(), 'Archive.tar');
+  const chunks = [];
+  for await (const chunk of await download.createReadStream()) chunks.push(chunk);
+  assert.deepEqual(Buffer.concat(chunks), bytes, 'TAR bytes must not be mislabeled or recompressed');
+  await page.getByRole('checkbox', { name: 'docs/', exact: true }).click();
+  await button('Extract selected…').click();
+  const report = page.getByText(/^Extracted 4 entries to PeaZip-/);
+  await expect(report).toBeVisible();
+  const folder = (await report.innerText()).split(' to ')[1];
+  assert.deepEqual(await tree(), { ...sentinelTree, [folder]: {
+    docs: { '你好.txt': Array.from(Buffer.from('tar 你好\n')), empty: {}, nested: { 'data.bin': [0, 127, 255] } },
+  } });
+  assert.equal(downloads.length, 1);
+});
 
 test('Web extraction writes selected bytes and empty directories through real OPFS and Rust worker', { timeout: 120_000 }, async (t) => {
   const { page, button, choose, tree, downloads } = await extractionPage(t);
@@ -602,7 +630,7 @@ test('Web extraction handles picker cancellation and denial, CRC failure, then r
   for (const failure of ['AbortError', 'NotAllowedError']) {
     await page.evaluate((name) => { window.pickerFailure = name; }, failure);
     await button('Extract selected…').click();
-    await expect(page.getByText(failure === 'AbortError' ? 'Extraction cancelled.' : /^Could not extract ZIP:.*Test picker rejection/)).toBeVisible();
+    await expect(page.getByText(failure === 'AbortError' ? 'Extraction cancelled.' : /^Could not extract archive:.*Test picker rejection/)).toBeVisible();
     await expect(button('Extract selected…')).toBeEnabled();
     await expect(selected).toBeChecked();
     assert.deepEqual(await tree(), sentinelTree);
@@ -616,7 +644,7 @@ test('Web extraction handles picker cancellation and denial, CRC failure, then r
   await choose({ name: 'bad-crc.zip', mimeType: 'application/zip', buffer: corrupt });
   await selected.click();
   await button('Extract selected…').click();
-  await expect(page.getByText(/^Could not extract ZIP:/)).toBeVisible();
+  await expect(page.getByText(/^Could not extract archive:/)).toBeVisible();
   await expect(button('Extract selected…')).toBeEnabled();
   await expect(selected).toBeChecked();
   assert.deepEqual(await tree(), sentinelTree, 'CRC validation must finish before any output directory is created');
@@ -672,7 +700,7 @@ test('Cancel extraction during real worker WASM loading preserves archive snapsh
     await button('Extract selected…').click();
     await expect.poll(() => intercepted).toBe(true);
     await expect(button('Cancel')).toBeEnabled();
-    for (const name of ['Create ZIP…', 'Open ZIP…', 'Download ZIP', 'Select all', 'Clear selection', 'Extract selected…']) await expect(button(name)).toBeDisabled();
+    for (const name of ['Create ZIP…', 'Open archive…', 'Download ZIP', 'Select all', 'Clear selection', 'Extract selected…']) await expect(button(name)).toBeDisabled();
     await button('Cancel').click();
     await expect(page.getByText('Extraction cancelled.', { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.extractionWorkers[1])).toEqual({ terminated: true, codes: [] });
@@ -736,7 +764,7 @@ test('Cancel during an OPFS write waits for abort and reports retained partial o
   await button('Extract selected…').click();
   await expect.poll(() => page.evaluate(() => window.exportWriteStarted === true)).toBe(true);
   await button('Cancel').click();
-  await expect(page.getByText(/^Could not extract ZIP: Cancelled:.*completed: 0.*possibly unfinished: 你好.txt.*output may remain/)).toBeVisible();
+  await expect(page.getByText(/^Could not extract archive: Cancelled:.*completed: 0.*possibly unfinished: 你好.txt.*output may remain/)).toBeVisible();
   assert.equal(await page.evaluate(() => window.exportWriteAborted), true);
   await expect(selected).toBeChecked();
   await expect(button('Extract selected…')).toBeEnabled();

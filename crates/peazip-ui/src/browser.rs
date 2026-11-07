@@ -23,7 +23,7 @@ unsafe extern "C" {
     fn pc_can_extract() -> u32;
     fn pc_extract_start(ptr: *const u8, len: usize) -> u32;
     fn pc_cancel() -> u32;
-    fn pc_download(ptr: *const u8, len: usize) -> u32;
+    fn pc_download(ptr: *const u8, len: usize, format: u32) -> u32;
 }
 
 pub async fn create_zip(progress: impl FnMut(String) + 'static) -> Reply {
@@ -65,7 +65,7 @@ pub fn can_extract() -> bool {
     unsafe { pc_can_extract() == 1 }
 }
 
-pub async fn extract_zip(
+pub async fn extract_archive(
     bytes: &[u8],
     selected: &[String],
     progress: impl FnMut(String),
@@ -112,7 +112,7 @@ pub extern "C" fn pc_progress(phase: u32, done: u32, total: u32) {
     let message = match phase {
         0 => format!("Reading files: {done}/{total}"),
         1 if done == total => "Compressing ZIP…".to_owned(),
-        2 => "Validating and extracting ZIP…".to_owned(),
+        2 => "Validating and extracting archive…".to_owned(),
         3 => format!("Writing entries: {done}/{total}"),
         _ => return,
     };
@@ -151,12 +151,16 @@ pub extern "C" fn pc_response_end(code: u32) {
     }
 }
 
-pub fn download(bytes: &[u8]) -> Result<(), String> {
+pub fn download(bytes: &[u8], format: peazip_core::ArchiveFormat) -> Result<(), String> {
     if bytes.is_empty() {
         return Err("No archive is open.".into());
     }
     // The host copies the bytes synchronously; it never retains the pointer.
-    if unsafe { pc_download(bytes.as_ptr(), bytes.len()) } == 1 {
+    let code = match format {
+        peazip_core::ArchiveFormat::Zip => 0,
+        peazip_core::ArchiveFormat::Tar => 1,
+    };
+    if unsafe { pc_download(bytes.as_ptr(), bytes.len(), code) } == 1 {
         Ok(())
     } else {
         Err("The browser could not start a download.".into())

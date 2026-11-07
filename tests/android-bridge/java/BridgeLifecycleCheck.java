@@ -1,3 +1,4 @@
+import android.content.Intent;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
@@ -59,6 +60,29 @@ public class BridgeLifecycleCheck {
         }
         task = next;
         return next;
+    }
+    public static void checkSaveFormats(PeaZipActivity picker) throws Exception {
+        for (int invalid : new int[] {-1, 2, Integer.MIN_VALUE, Integer.MAX_VALUE}) {
+            try {
+                picker.saveArchive(1, new byte[1], invalid);
+                throw new AssertionError("Invalid format accepted: " + invalid);
+            } catch (IllegalArgumentException expected) { }
+            if (field(ACTIVITY, "pending").get(picker) != null || !picker.archiveTransferAvailable())
+                throw new AssertionError("Invalid format launched picker or retained admission");
+        }
+        Constructor<?> constructor = TASK.getDeclaredConstructor(long.class, int.class, byte[].class, boolean.class, int.class);
+        constructor.setAccessible(true);
+        for (int format : new int[] {0, 1}) {
+            byte[] bytes = new byte[] {'M', 'Z'};
+            Object current = constructor.newInstance(10L + format, 1, bytes, false, format);
+            Intent intent = (Intent) call(ACTIVITY, null, "pickerIntent", new Class<?>[] {TASK}, current);
+            if (!Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction())
+                    || !(format == 0 ? "application/zip" : "application/x-tar").equals(intent.getType())
+                    || !(format == 0 ? "Archive.zip" : "Archive.tar").equals(intent.getStringExtra(Intent.EXTRA_TITLE)))
+                throw new AssertionError("Wrong archive action/MIME/title for format " + format);
+            if (get(current, "bytes") != bytes) throw new AssertionError("Archive bytes changed");
+        }
+        System.out.println("PASS: ZIP/TAR ACTION_CREATE_DOCUMENT MIME/title from explicit format, SFX bytes preserved; invalid codes rejected before admission");
     }
     public static boolean available() { return owner == null || owner.archiveTransferAvailable(); }
     public static void startDelivery(PeaZipActivity activity, long id) throws Exception {
