@@ -20,3 +20,15 @@ export function packetSize(files) {
   }
   return size;
 }
+
+// create-v1 wire values: Automatic=0, Stored=1, Deflate=2; unused levels must be zero.
+export function validateZipOptions(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)
+      || Object.keys(options).some((key) => key !== 'compression' && key !== 'level')
+      || !Number.isInteger(options.compression) || !Number.isInteger(options.level)
+      || !((options.compression === 0 || options.compression === 1) && options.level === 0
+        || options.compression === 2 && options.level >= 1 && options.level <= 9)) {
+    throw new Error('Invalid ZIP compression options.');
+  }
+  return options;
+}

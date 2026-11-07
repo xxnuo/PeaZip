@@ -6,6 +6,14 @@ use nsh_core::prelude::*;
 use peazip_core::{ArchiveFormat, Entry};
 
 mod commands;
+#[cfg(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "windows"
+))]
+mod create_dialog;
 mod explorer;
 mod icons;
 mod menus;
@@ -90,6 +98,15 @@ pub fn App() -> impl IntoElement {
     let selected = signal(BTreeSet::<String>::new());
     let controls = explorer::Controls::new(entries, navigation);
     let owner = Owner::current();
+    let creating = signal(None::<bool>);
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
+    let zip_options = signal(peazip_core::ZipOptions::default());
     let archive = ArchiveState {
         snapshot,
         source,
@@ -177,7 +194,7 @@ pub fn App() -> impl IntoElement {
         target_os = "linux",
         target_os = "windows"
     ))]
-    let create = move |folders: bool| {
+    let create = move |folders: bool, options: peazip_core::ZipOptions| {
         if busy.get_untracked() {
             return;
         }
@@ -193,12 +210,12 @@ pub fn App() -> impl IntoElement {
                 && files.active.get_untracked()
                 && !files.selected.with(BTreeSet::is_empty)
             {
-                disk.create_selection().await
+                disk.create_selection(options).await
             } else {
-                create_archive(folders, activity).await
+                create_archive(folders, activity, options).await
             };
             #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-            let result = create_archive(folders, activity).await;
+            let result = create_archive(folders, activity, options).await;
             match result {
                 Ok(Some(opened)) => {
                     let count = opened.data.1.len();
@@ -562,7 +579,7 @@ pub fn App() -> impl IntoElement {
             CommandId::CreateZip,
             "Create ZIP…",
             move || !busy.get(),
-            move || create(false),
+            move || creating.set(Some(false)),
         )
         .icon("add"),
         "mod+n",
@@ -573,7 +590,7 @@ pub fn App() -> impl IntoElement {
             CommandId::CreateFolderZip,
             "Create folder ZIP…",
             move || !busy.get(),
-            move || create(true),
+            move || creating.set(Some(true)),
         )
         .icon("add"),
     );
@@ -749,7 +766,11 @@ pub fn App() -> impl IntoElement {
     }
     let commands = Commands::new(
         all.into_iter()
-            .map(|command| command.in_owner(owner))
+            .map(|command| {
+                command
+                    .in_owner(owner)
+                    .unless(move || creating.get().is_some())
+            })
             .collect(),
     );
     for command in commands.iter() {
@@ -884,6 +905,73 @@ pub fn App() -> impl IntoElement {
     } else {
         root.child(text("Directory export is unavailable in this browser."))
     };
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
+    let root = root.child(when(
+        move || creating.get().is_some(),
+        move || {
+            let folders = creating.get_untracked().unwrap_or(false);
+            let input = if folders {
+                "Choose folders in the next step.".to_owned()
+            } else {
+                "Choose files in the next step.".to_owned()
+            };
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            let input = if !folders
+                && files.active.get_untracked()
+                && !files.selected.with(BTreeSet::is_empty)
+            {
+                format!(
+                    "{} selected items from {}",
+                    files.selected.with(BTreeSet::len),
+                    files.current.with(|view| view
+                        .as_ref()
+                        .map(|v| v.0.path().display().to_string())
+                        .unwrap_or_default())
+                )
+            } else {
+                input
+            };
+            create_dialog::show(
+                input,
+                zip_options.get_untracked(),
+                move |options| {
+                    owner.run(|| {
+                        if creating.get_untracked().is_none() || busy.get_untracked() {
+                            return;
+                        }
+                        zip_options.set(options);
+                        creating.set(None);
+                        create(folders, options);
+                    })
+                },
+                move || {
+                    owner.run(|| {
+                        creating.set(None);
+                        after_answer(move || {
+                            #[cfg(any(
+                                target_os = "macos",
+                                target_os = "linux",
+                                target_os = "windows"
+                            ))]
+                            focus_contents();
+                            #[cfg(not(any(
+                                target_os = "macos",
+                                target_os = "linux",
+                                target_os = "windows"
+                            )))]
+                            controls.content.focus();
+                        });
+                    })
+                },
+            )
+        },
+    ));
     root.child(
         text(move || {
             if busy.get() {
@@ -996,6 +1084,7 @@ async fn extract_android_archive(
 async fn create_archive(
     folders: bool,
     _activity: Signal<String>,
+    options: peazip_core::ZipOptions,
 ) -> Result<Option<OpenedArchive>, String> {
     use nsh_core::file_dialog::{FileFilter, OpenDialog, SaveDialog};
     let dialog = if folders {
@@ -1028,8 +1117,13 @@ async fn create_archive(
     let name = destination.display().to_string();
     let source_path = Some(destination.clone());
     let rows = blocking(move || {
-        peazip_native::create_zip_from_paths(&paths, &destination, peazip_core::Limits::default())
-            .map_err(|error| error.to_string())?;
+        peazip_native::create_zip_from_paths_with_options(
+            &paths,
+            &destination,
+            peazip_core::Limits::default(),
+            options,
+        )
+        .map_err(|error| error.to_string())?;
         read_archive(&destination)
     })
     .await
@@ -1045,8 +1139,10 @@ async fn create_archive(
 async fn create_archive(
     _folders: bool,
     activity: Signal<String>,
+    options: peazip_core::ZipOptions,
 ) -> Result<Option<OpenedArchive>, String> {
-    let Some(bytes) = browser::create_zip(move |message| activity.set(message)).await? else {
+    let Some(bytes) = browser::create_zip(options, move |message| activity.set(message)).await?
+    else {
         return Ok(None);
     };
     Ok(Some(OpenedArchive {
@@ -1060,14 +1156,16 @@ async fn create_archive(
 async fn create_archive(
     _folders: bool,
     activity: Signal<String>,
+    options: peazip_core::ZipOptions,
 ) -> Result<Option<OpenedArchive>, String> {
     let Some(files) = android::pick_files().await? else {
         return Ok(None);
     };
     activity.set("Compressing ZIP…".into());
     let archive = blocking(move || {
-        let bytes = peazip_core::create_zip(&files, peazip_core::Limits::default())
-            .map_err(|error| error.to_string())?;
+        let bytes =
+            peazip_core::create_zip_with_options(&files, peazip_core::Limits::default(), options)
+                .map_err(|error| error.to_string())?;
         load_archive(Arc::new(bytes))
     })
     .await

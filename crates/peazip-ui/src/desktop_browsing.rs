@@ -393,7 +393,10 @@ impl Browser {
             .set("Open an archive to view its contents.".into());
     }
 
-    pub async fn create_selection(self) -> Result<Option<OpenedArchive>, String> {
+    pub async fn create_selection(
+        self,
+        options: peazip_core::ZipOptions,
+    ) -> Result<Option<OpenedArchive>, String> {
         use nsh_core::file_dialog::{FileFilter, SaveDialog};
         let Some(view) = self.files.current.get_untracked() else {
             return Err("No folder is open.".into());
@@ -417,7 +420,12 @@ impl Browser {
         let name = destination.display().to_string();
         let data = blocking(move || {
             view.0
-                .create_zip(&ids, &destination, peazip_core::Limits::default())
+                .create_zip_with_options(
+                    &ids,
+                    &destination,
+                    peazip_core::Limits::default(),
+                    options,
+                )
                 .map_err(|error| error.to_string())?;
             crate::read_archive(&destination)
         })

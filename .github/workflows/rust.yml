@@ -69,6 +69,8 @@ jobs:
         run: cargo build -p peazip-ui --locked && bash scripts/smoke_linux.sh target/debug/peazip-ui target/linux-smoke
       - if: runner.os == 'Linux'
         run: bash scripts/smoke_linux_filesystem.sh target/debug/peazip-ui target/linux-filesystem
+      - if: runner.os == 'Linux'
+        run: bash scripts/smoke_linux_create_options.sh target/debug/peazip-ui target/linux-create-options
       - if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
@@ -76,6 +78,7 @@ jobs:
           path: |
             target/linux-smoke/
             target/linux-filesystem/
+            target/linux-create-options/
   android-build:
     runs-on: ubuntu-latest
     steps:

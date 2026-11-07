@@ -79,6 +79,11 @@ impl Command {
         self.owner = Some(owner);
         self
     }
+    pub fn unless(mut self, blocked: impl Fn() -> bool + 'static) -> Self {
+        let enabled = self.enabled;
+        self.enabled = Rc::new(move || !blocked() && enabled());
+        self
+    }
     pub fn invoke(&self) {
         let run = || {
             if self.enabled() {
@@ -120,6 +125,28 @@ pub(crate) fn button(command: &Command) -> nsh_base::ButtonElement {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn modal_gate_blocks_existing_command_clones_until_dismissed() {
+        let modal = Rc::new(Cell::new(false));
+        let calls = Rc::new(Cell::new(0));
+        let command = Command::new(CommandId::CreateZip, "Create", || true, {
+            let calls = calls.clone();
+            move || calls.set(calls.get() + 1)
+        })
+        .unless({
+            let modal = modal.clone();
+            move || modal.get()
+        });
+        let native_menu_item = command.clone();
+        modal.set(true);
+        assert!(!native_menu_item.enabled());
+        native_menu_item.invoke();
+        assert_eq!(calls.get(), 0);
+        modal.set(false);
+        native_menu_item.invoke();
+        assert_eq!(calls.get(), 1);
+    }
 
     #[test]
     fn clones_share_live_eligibility_and_actions_without_stale_invocations() {

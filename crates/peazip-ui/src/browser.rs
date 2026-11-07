@@ -141,7 +141,7 @@ mod host {
 
     #[link(wasm_import_module = "peazip")]
     unsafe extern "C" {
-        fn pc_create_start() -> u32;
+        fn pc_create_with_options_start(compression: u32, level: u32) -> u32;
         fn pc_list_start(ptr: *const u8, len: usize) -> u32;
         fn pc_test_start(ptr: *const u8, len: usize) -> u32;
         fn pc_can_extract() -> u32;
@@ -166,8 +166,21 @@ mod host {
         .transpose()
     }
 
-    pub async fn create_zip(progress: impl FnMut(String) + 'static) -> Reply {
-        run(|| unsafe { pc_create_start() }, progress).await
+    pub async fn create_zip(
+        options: peazip_core::ZipOptions,
+        progress: impl FnMut(String) + 'static,
+    ) -> Reply {
+        options.validate().map_err(|error| error.to_string())?;
+        let (compression, level) = match options.compression {
+            peazip_core::ZipCompression::Automatic => (0, 0),
+            peazip_core::ZipCompression::Stored => (1, 0),
+            peazip_core::ZipCompression::Deflate { level } => (2, u32::from(level)),
+        };
+        run(
+            || unsafe { pc_create_with_options_start(compression, level) },
+            progress,
+        )
+        .await
     }
 
     pub async fn test_archive(

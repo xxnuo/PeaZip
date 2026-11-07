@@ -202,3 +202,19 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 真实 GTK/X11 流程通过：文件夹选择、路径/根目录/历史、Unicode 文件及空目录选择创建 ZIP（系统 7z 独立提取逐字节对照）、7z/TAR 打开与关闭、外部新增文件后直接 F5 刷新并清除选择、非法路径/归档/外部链接拒绝，以及整个目录被替换后仍通过原 capability 读取。最终应用源哈希、截图与流程记录在 `target/linux-filesystem/focus-fixed-source.json`、`focus-fixed/run-29HUwD`、`focus-fixed.log`；1024×600 与 1440×900 截图已目视核查。新增 `scripts/smoke_linux_filesystem.sh` 并接入 Linux CI；最终脚本完整复验通过，记录 `target/linux-filesystem/ci-final.log`，`ci-source.json` 中脚本和应用源哈希与待提交内容一致。远程 CI 尚未运行。
 - 当前 APK Android 菜单回归通过，证据 `target/android-smoke/78157b7fb499`、`menus-owner-0bb5d9c6c107.log`；安装 APK 哈希与本地一致，PID 稳定无应用 fatal。Android/Web 只回归原归档流程，本轮没有开放桌面文件系统浏览能力；iOS SDK/运行验证和 Windows 实际运行仍未完成。
 - 阶段 2a 继续未完成：完整文件管理、书签、原版列/布局/双击行为及选项对话框、所有平台视觉和运行验收仍需推进。本轮是文件浏览功能单元，不等同于 PeaZip 完整界面迁移。汇总证据位于 `target/filesystem-evidence.json`。
+
+## 创建归档选项（UI-CREATE-01）
+
+- Create ZIP / Create folder ZIP 先显示创建表单，展示 ZIP 格式、输入来源和压缩设置；Continue 后才调用既有文件/目录及保存选择器。文件浏览已有选择时继续使用当前目录 capability 和原始条目 ID，不重新请求输入选择。Cancel、Escape、Android Back 不启动创建或保存；表单期间旧菜单、工具栏和快捷键同样受门禁限制。确认操作归属 App owner，不随表单销毁取消。
+- 核心新增 `ZipOptions` / `ZipCompression` 与 `create_zip_with_options`，native 路径/快照创建贯穿参数，旧 API 保留默认行为。Automatic 保留原有 Deflate 超压缩比时回退 Store 的策略；Stored 真正写入不压缩数据；显式 Deflate 接受 1–9，非法级别立即拒绝，超安全压缩比报错且不回退。目录使用 Stored。既有路径、大小、计数和原子不覆盖发布策略不变。
+- Web 新增独立版本化创建请求，保留旧入口兼容；JS 在打开 picker / 读取文件前验证参数，Rust 再验证版本与参数并限制请求长度。选项穿过实际 WASM Worker；取消、进度、旧回调隔离保持有效。Android 选项传入后台 Rust 创建，沿用 SAF 保存。确认过的选项在当前运行会话内保留供错误后调整重试，取消不保存草稿；尚未实现跨启动配置持久化。
+- 原版参考新增 `tests/ui-baseline/peazip-11.4.0-linux-gtk2/*-create-zip-normal.png`，复用官方 11.4.0 GTK2 二进制，采集 1024×600/1440×900 的 ZIP/Normal/New archive/Single volume 面板，验证 Cancel 后输入不变且无输出。来源、步骤、哈希与配置记录在该目录 `provenance.json`，未断言发行二进制来自精确源码 commit。
+- 原版行为差异明确保留：`peach.pas:23294` 默认 Fast/Deflate，`peach.pas:31916` 的 0/1/3/5/7/9 预设还联动 Word/Passes；当前数字级别来自 Rust ZIP 后端，不冒称完整复刻这些预设。Automatic 是当前兼容选项。原版全窗口输入列表/编辑、输出参数、多格式、加密、分卷和 Advanced/Console 等仍待迁移，本表单不代表完整创建面板或阶段 2a 完成。
+- 主机工作区 207 次测试执行通过，包含真实压缩方法与不同级别效果、非法参数、旧 API 兼容、no-overwrite、modal 取消/输入资格/会话参数和错误重试；主机/WASM/Android target Clippy 通过。Web 完整 71 项通过；最终布局版本另跑 5 项创建相关浏览器流程通过，包含真实 Worker 的 Stored/Deflate1/9 产物及解压字节、ratio 失败保留原快照与选择后改 Store 重试，以及 1024/1440 桌面和 360/430 触屏亮暗主题截图。证据 `target/create-options-workspace-tests.log`、`create-options-web-tests.log`、`create-dialog-web-final.log`。
+- 表单采用 nsh 原生 modal 与可访问控件，窄屏内容可滚动；为软键盘增加底部空间，使数字输入时确认/取消仍可操作。锁定 nsh 的 AccessibilityRole 尚无 Dialog，因此内容使用带名称的 Group；Web 的完整 dialog 角色语义仍待依赖能力补齐，不以当前截图或控件测试宣称完整屏幕阅读器验收。
+
+- 最终 GTK 创建流程通过，记录 `target/linux-create-options/run3.log`；`run3-source.json` 中应用与脚本哈希已核对一致。原版归档快照/选择在 Cancel/Escape 与 ratio 失败后保持，输出目录哨兵不变；独立 7z/ZIP 检查确认 Store 方法 0、Deflate 方法 8，级别 1/9 的样本压缩后分别 4663/2936 字节，错误后可在同目标路径改用 Store 成功。新增 `scripts/smoke_linux_create_options.sh` 并接入 Linux CI，远程 CI 未运行。
+- 最终 Windows GNU optimized release/check 通过，`target/windows-build/create-options` 包含 57,103,499 字节 GUI PE、官方 loader 与许可证/哈希；应用源哈希与待提交内容一致。该结果仍只证明构建与静态导入检查，不证明 Windows 实际运行。iOS 仍缺完整 SDK，未增加其构建或运行声明。
+
+- 最终 APK Android 36 实机 smoke 完整通过，证据 `target/android-smoke/89665dcba2a2` 与 `create-options-run.log`；安装/测试 APK 与最终本地产物 SHA256 一致。真实 DocumentsUI/SAF 保存后以 Python zipfile 与 raw DEFLATE 独立检查名称、方法、CRC 和全部字节；647168 字节样本在 level1/9 下分别为 25915/20680 字节，Stored 保留原长度。Cancel/Back 无文件选择器启动、原快照/选择/Downloads 不变，ratio 失败后再次保存的旧快照字节完全一致，改用 Store 重试成功。最终截图确认 IME 打开时 Continue/Cancel 可见且真实点击成功，PID 稳定无应用 fatal。可复现脚本 `uv run python scripts/smoke_android_create_options.py --serial SERIAL --apk APK`；仍只覆盖专用 API36 模拟器与本机 Documents provider。
+- 最终创建表单 headless 5 项复验通过；各构建、截图与测试汇总源哈希在 `target/create-options-evidence.json`。原版完整创建面板、更多格式/加密/分卷、流式大文件、全部平台实际运行与发布门槛仍保留为未完成。

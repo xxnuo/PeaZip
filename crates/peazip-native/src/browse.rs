@@ -1,5 +1,6 @@
 use super::{
-    Entry, Error, Limits, create_zip_from_sources, is_link, open_source, read_archive_file,
+    Entry, Error, Limits, ZipOptions, create_zip_from_sources, is_link, open_source,
+    read_archive_file,
 };
 use cap_fs_ext::MetadataExt;
 use cap_std::fs::Dir;
@@ -197,6 +198,16 @@ impl DirectorySnapshot {
         destination: &Path,
         limits: Limits,
     ) -> Result<Vec<Entry>, Error> {
+        self.create_zip_with_options(ids, destination, limits, ZipOptions::default())
+    }
+
+    pub fn create_zip_with_options(
+        &self,
+        ids: &[usize],
+        destination: &Path,
+        limits: Limits,
+        options: ZipOptions,
+    ) -> Result<Vec<Entry>, Error> {
         let sources = ids.iter().map(|&id| {
             let entry = self.entry(id)?;
             if !matches!(entry.kind, EntryKind::File | EntryKind::Directory) {
@@ -204,7 +215,7 @@ impl DirectorySnapshot {
             }
             Ok((Arc::clone(&self.dir), entry.name.clone()))
         });
-        create_zip_from_sources(ids.len(), sources, destination, limits)
+        create_zip_from_sources(ids.len(), sources, destination, options, limits)
     }
 
     fn entry(&self, id: usize) -> Result<&DirectoryEntry, Error> {

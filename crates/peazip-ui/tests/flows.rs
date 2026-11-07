@@ -483,6 +483,8 @@ fn creates_zip_from_selected_files_and_refuses_to_overwrite_it() {
         .unwrap();
     app.on_pick_save_path(Some(output.clone())).unwrap();
     app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Created ZIP: 2 entries").unwrap();
     app.wait_for("first.txt").unwrap();
     app.wait_for("中文.txt").unwrap();
@@ -499,6 +501,8 @@ fn creates_zip_from_selected_files_and_refuses_to_overwrite_it() {
     app.wait_for("1 selected").unwrap();
     std::fs::write(&first, b"changed").unwrap();
     app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("text:/^Could not create ZIP:/").unwrap();
     assert_eq!(std::fs::read(&output).unwrap(), original);
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 3);
@@ -508,6 +512,8 @@ fn creates_zip_from_selected_files_and_refuses_to_overwrite_it() {
     let next = temp.path().join("next.zip");
     app.on_pick_save_path(Some(next.clone())).unwrap();
     app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Created ZIP: 2 entries").unwrap();
     app.wait_for("0 selected").unwrap();
     assert!(next.is_file());
@@ -521,6 +527,8 @@ fn cancelling_creation_at_either_dialog_writes_nothing() {
     let mut app = start();
     app.on_pick_paths(vec![]).unwrap();
     app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Open an archive to view its contents.")
         .unwrap();
     assert_eq!(app.screen().file_requests().len(), 1);
@@ -528,6 +536,8 @@ fn cancelling_creation_at_either_dialog_writes_nothing() {
     app.on_pick_paths(vec![input.clone()]).unwrap();
     app.on_pick_save_path(None).unwrap();
     app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Open an archive to view its contents.")
         .unwrap();
     assert_eq!(app.screen().file_requests().len(), 3);
@@ -656,6 +666,8 @@ fn created_archive_snapshot_survives_deleted_output() {
     app.on_pick_paths(vec![input]).unwrap();
     app.on_pick_save_path(Some(archive.clone())).unwrap();
     app.press("role:button[Create ZIP…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Created ZIP: 1 entries").unwrap();
     app.press("role:checkbox[input.txt]").unwrap();
     std::fs::remove_file(archive).unwrap();
@@ -683,6 +695,8 @@ fn creates_and_extracts_directory_tree_with_empty_directories() {
     app.on_pick_paths(vec![tree.clone(), empty]).unwrap();
     app.on_pick_save_path(Some(archive.clone())).unwrap();
     app.press("role:button[Create folder ZIP…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Created ZIP: 6 entries").unwrap();
     match &app.screen().file_requests()[0] {
         nsh_core::file_dialog::FileRequest::OpenDialog(dialog) => {
@@ -730,6 +744,8 @@ fn folder_picker_cancellation_does_not_create_an_archive() {
     app.on_pick_paths(vec![]).unwrap();
     app.on_pick_save_path(Some(output.clone())).unwrap();
     app.press("role:button[Create folder ZIP…]").unwrap();
+    app.wait_for("role:button[Continue]").unwrap();
+    app.press("role:button[Continue]").unwrap();
     app.wait_for("Open an archive to view its contents.")
         .unwrap();
     assert_eq!(app.screen().file_requests().len(), 1);

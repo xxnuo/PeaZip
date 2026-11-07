@@ -166,6 +166,8 @@ class Smoke:
 
     def create_inputs(self, query, names, evidence):
         self.tap("Create ZIP…")
+        self.label("Create archive")
+        self.tap("Continue")
         self.documents()
         self.tap("Search")
         self.wait("focused search", lambda t: any(n.get("focused") == "true" and

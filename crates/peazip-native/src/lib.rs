@@ -5,8 +5,10 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use peazip_core::{Entry, Error, Limits};
-use peazip_core::{MemoryEntry, create_zip, list_zip};
+#[cfg(test)]
+use peazip_core::create_zip;
+pub use peazip_core::{Entry, Error, Limits, ZipCompression, ZipOptions};
+use peazip_core::{MemoryEntry, create_zip_with_options, list_zip};
 
 mod browse;
 pub use browse::{DirectoryEntry, DirectoryError, DirectoryLimits, DirectorySnapshot, EntryKind};
@@ -116,6 +118,15 @@ pub fn create_zip_from_paths(
     destination: &Path,
     limits: Limits,
 ) -> Result<Vec<Entry>, Error> {
+    create_zip_from_paths_with_options(paths, destination, limits, ZipOptions::default())
+}
+
+pub fn create_zip_from_paths_with_options(
+    paths: &[PathBuf],
+    destination: &Path,
+    limits: Limits,
+    options: ZipOptions,
+) -> Result<Vec<Entry>, Error> {
     let sources = paths.iter().map(|path| {
         if path.to_str().is_none() {
             return Err(Error::UnsafePath(path.to_string_lossy().into_owned()));
@@ -130,7 +141,7 @@ pub fn create_zip_from_paths(
         let parent = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
         Ok((Arc::new(parent), name.to_owned()))
     });
-    create_zip_from_sources(paths.len(), sources, destination, limits)
+    create_zip_from_sources(paths.len(), sources, destination, options, limits)
 }
 
 type Source = (Arc<cap_std::fs::Dir>, OsString);
@@ -139,8 +150,10 @@ fn create_zip_from_sources(
     count: usize,
     sources: impl IntoIterator<Item = Result<Source, Error>>,
     destination: &Path,
+    options: ZipOptions,
     limits: Limits,
 ) -> Result<Vec<Entry>, Error> {
+    options.validate()?;
     if count == 0 {
         return Err(Error::UnsupportedEntry("empty selection".into()));
     }
@@ -231,7 +244,7 @@ fn create_zip_from_sources(
         }
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
-    let bytes = create_zip(&entries, limits)?;
+    let bytes = create_zip_with_options(&entries, limits, options)?;
     let listed = list_zip(&bytes, limits)?;
     publish(&bytes, destination)?;
     Ok(listed)

@@ -17,6 +17,34 @@ pub enum ArchiveFormat {
     SevenZip,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ZipCompression {
+    #[default]
+    Automatic,
+    Stored,
+    Deflate {
+        level: u8,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ZipOptions {
+    pub compression: ZipCompression,
+}
+
+impl ZipOptions {
+    pub fn validate(&self) -> Result<(), Error> {
+        if let ZipCompression::Deflate { level } = self.compression
+            && !(1..=9).contains(&level)
+        {
+            return Err(Error::InvalidZipOptions(
+                "Deflate level must be between 1 and 9",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub max_archive_bytes: u64,
@@ -42,6 +70,7 @@ impl Default for Limits {
 
 #[derive(Debug)]
 pub enum Error {
+    InvalidZipOptions(&'static str),
     Limit(&'static str),
     UnsafePath(String),
     DuplicatePath(String),
@@ -58,6 +87,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidZipOptions(message) => write!(f, "invalid ZIP options: {message}"),
             Self::Limit(kind) => write!(f, "Archive limit exceeded: {kind}"),
             Self::UnsafePath(path) => write!(f, "unsafe archive path: {path:?}"),
             Self::DuplicatePath(path) => {
@@ -496,6 +526,15 @@ impl Seek for BoundedWriter {
 }
 
 pub fn create_zip(entries: &[MemoryEntry], limits: Limits) -> Result<Vec<u8>, Error> {
+    create_zip_with_options(entries, limits, ZipOptions::default())
+}
+
+pub fn create_zip_with_options(
+    entries: &[MemoryEntry],
+    limits: Limits,
+    zip_options: ZipOptions,
+) -> Result<Vec<u8>, Error> {
+    zip_options.validate()?;
     check(
         entries.len() as u64,
         limits.max_entries as u64,
@@ -522,15 +561,31 @@ pub fn create_zip(entries: &[MemoryEntry], limits: Limits) -> Result<Vec<u8>, Er
             .ok_or(Error::Limit("total bytes"))?;
         check(total, limits.max_total_bytes, "total bytes")?;
     }
-    for method in [CompressionMethod::Deflated, CompressionMethod::Stored] {
+    let methods: &[CompressionMethod] = match zip_options.compression {
+        ZipCompression::Automatic => &[CompressionMethod::Deflated, CompressionMethod::Stored],
+        ZipCompression::Stored => &[CompressionMethod::Stored],
+        ZipCompression::Deflate { .. } => &[CompressionMethod::Deflated],
+    };
+    let level = match zip_options.compression {
+        ZipCompression::Deflate { level } => Some(i64::from(level)),
+        _ => None,
+    };
+    for &method in methods {
         let mut writer = ZipWriter::new(BoundedWriter {
             cursor: Cursor::new(Vec::new()),
             max: limits.max_archive_bytes,
         });
-        let options = SimpleFileOptions::default().compression_method(method);
+        let options = SimpleFileOptions::default()
+            .compression_method(method)
+            .compression_level(level);
         for entry in entries {
             if entry.is_dir {
-                writer.add_directory(&entry.path, options)?;
+                writer.add_directory(
+                    &entry.path,
+                    options
+                        .compression_method(CompressionMethod::Stored)
+                        .compression_level(None),
+                )?;
             } else {
                 writer.start_file(&entry.path, options)?;
                 writer.write_all(&entry.data)?;
@@ -539,12 +594,14 @@ pub fn create_zip(entries: &[MemoryEntry], limits: Limits) -> Result<Vec<u8>, Er
         let bytes = writer.finish()?.cursor.into_inner();
         match list_zip(&bytes, limits) {
             // Retry trusted input without compression so it passes the same read limits.
-            Err(Error::Limit("compression ratio")) if method == CompressionMethod::Deflated => {}
+            Err(Error::Limit("compression ratio"))
+                if zip_options.compression == ZipCompression::Automatic
+                    && method == CompressionMethod::Deflated => {}
             result => {
                 result?;
                 return Ok(bytes);
             }
         }
     }
-    unreachable!("Stored output returns its validation result")
+    unreachable!("the final compression method returns its validation result")
 }

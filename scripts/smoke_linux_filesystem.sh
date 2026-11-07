@@ -200,6 +200,7 @@ select_row '^empty$'
 selection_count 3
 screen 03-zip-selection
 menu_action File '^ZIP'
+click_word '^Continue$'
 save=$(timeout 20 xdotool search --sync --onlyvisible --name '^Create ZIP — choose a new filename$' | head -n1)
 ! xdotool search --onlyvisible --name '^Select files to archive$' >/dev/null
 xdotool windowfocus --sync "$save"

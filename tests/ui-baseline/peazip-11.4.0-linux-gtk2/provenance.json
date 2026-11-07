@@ -14,7 +14,8 @@
   "states": [
     "empty filesystem directory /work/original/empty",
     "sample.7z archive root (docs folder and other.txt)",
-    "double-click docs folder (empty, nested, 你好.txt)"
+    "double-click docs folder (empty, nested, 你好.txt)",
+    "ZIP creation panel: ZIP / Normal / New archive / Single volume, do not split; cancelled without creating archive"
   ],
   "reproduce": "Use the verified asset_url and the recorded capture_steps. The automated replay under target/linux-ui-baseline/reproduced had occlusion and is not the canonical capture.",
   "limitations": [
@@ -30,7 +31,9 @@
     "1024x600-docs.png",
     "1440x900-empty.png",
     "1440x900-archive.png",
-    "1440x900-docs.png"
+    "1440x900-docs.png",
+    "1024x600-create-zip-normal.png",
+    "1440x900-create-zip-normal.png"
   ],
   "capture_note": "Canonical six images manually inspected without tooltips. Automated reproduced/ run had an occlusion artifact in docs and is diagnostic only.",
   "source_revision": "367c68278a7b0e7741fd8fe3106f34d6cfcb656f",
@@ -59,6 +62,80 @@
     "1024x600-docs.png": "6539e0716f8fb656a90f7f8bf9a82f57e3cff9b3b67aa687761871cb130c86da",
     "1440x900-empty.png": "abe8bf4779b3e9457855a27c28064badcabc462bea5f7f676e7cd1c1d78686fe",
     "1440x900-archive.png": "3e31ed695991b864482821fcc05303b7e24e19a76d4e7a0e855db4b032e7ae6d",
-    "1440x900-docs.png": "46eafcfe25810f52d315be2ef45d4929f0269cefaa1c7851b4761c6a5a5819ff"
+    "1440x900-docs.png": "46eafcfe25810f52d315be2ef45d4929f0269cefaa1c7851b4761c6a5a5819ff",
+    "1024x600-create-zip-normal.png": "52ac7e0e53144039a31b95669240277f7f6e63d5f63733cba173998c0994aed8",
+    "1440x900-create-zip-normal.png": "9cfe19f867ef4db0749b72e3c0225776366812f7433d48ad8262624fe3762e70"
+  },
+  "create_zip_normal_capture": {
+    "captured_at_utc": "2026-11-07T22:45:21.789085+00:00",
+    "version": "11.4.0",
+    "binary_sha256": "a20276b4f8bc40faff3f1958f3d4c94c0071ca1f1997d6d49e53ff01f167cafb",
+    "source_revision_reference": "367c68278a7b0e7741fd8fe3106f34d6cfcb656f",
+    "source_file": "peazip-sources/dev/peach.pas",
+    "source_sha256": "4c58f314d252f05da57c331d099f6671e7881e017b39a64da3beaa53c31d8e48",
+    "source_git_blob": "69c233cc8bcd700a55a09cdb77006381d55c0711",
+    "matches_reference_source_blob": true,
+    "local_version_evidence": "peazip-sources/dev/peach.pas:211 (11.4.0 changelog entry)",
+    "exact_binary_build_from_source_not_asserted": true,
+    "ui_kind": "Original Add/Archive creation panel in the main Lazarus GTK2 window; not a separate GtkDialog",
+    "settings": {
+      "type": "ZIP",
+      "level": "Normal",
+      "function": "New archive",
+      "split": "Single volume, do not split",
+      "input": "reference.txt (41 bytes)",
+      "additional_checkboxes": "all unchecked",
+      "password_keyfile": "not entered during capture"
+    },
+    "theme": {
+      "peazip": "main-embedded (built-in neutral/light theme)",
+      "configured_theme": "themes/main-embedded/theme.txt",
+      "configured_theme_directory": "themes/main-embedded/",
+      "resource_note": "Graphics/theme are embedded in the released binary; see peazip-sources/res/share/themes/main-embedded/readme.txt",
+      "gtk": "Default GTK2 widget styling; no GTK_THEME/GTK2_RC_FILES override applied",
+      "gtk_runtime": "2.24.33-4ubuntu1.1 arm64",
+      "isolated_config_sha256_after_cancel": "7ff1e948511c40169a40d829de48a1818f01f2c180e66dfd942c427b3a0f5b85"
+    },
+    "environment": "Ubuntu 24.04 arm64; GTK2 2.24.33; Xvfb X11; no window manager; root user; Noto CJK fonts",
+    "screenshots": {
+      "1024x600-create-zip-normal.png": "52ac7e0e53144039a31b95669240277f7f6e63d5f63733cba173998c0994aed8",
+      "1440x900-create-zip-normal.png": "9cfe19f867ef4db0749b72e3c0225776366812f7433d48ad8262624fe3762e70"
+    },
+    "capture_steps": [
+      "Inspect existing canonical PNGs/provenance and reuse cached PeaZip 11.4.0 LINUX.GTK2.aarch64 binary; no download.",
+      "Copy the cached portable directory inside the same owned container to /work/original/create-reference/portable for isolated settings.",
+      "Start that executable on /work/original/create-reference/input using Xvfb 1440x900x24 and dbus-run-session, English locale, no window manager.",
+      "Create only the input reference.txt (41 bytes); record its SHA256 before opening the application.",
+      "At 1024x600 client size select reference.txt and click toolbar Add. The original main window switches to its Archive creation panel.",
+      "ZIP is selected; change the cached Level value Fast to Normal using the dropdown. Keep New archive and Single volume, do not split. Leave additional options unchecked; do not enter a password/keyfile.",
+      "Move pointer outside the client and resize to expose/repaint. Capture the actual window with ImageMagick import -window WINDOW_ID at 1024x600 and 1440x900.",
+      "At 1440x900 click Cancel (1380,875), returning to the file manager. Never activate OK.",
+      "Verify original reference.txt SHA256 unchanged, reference.zip absent, and the input directory still contains exactly one regular file."
+    ],
+    "cancel_verification": {
+      "passed": true,
+      "input_sha256_unchanged": true,
+      "reference_zip_absent": true,
+      "input_regular_file_count_after_cancel": 1,
+      "archive_creation_started": false
+    },
+    "local_capture_artifacts": "target/linux-create-baseline/captured",
+    "temporary_session_script": "target/linux-create-baseline/session.sh",
+    "source_reference_sha256": "4c58f314d252f05da57c331d099f6671e7881e017b39a64da3beaa53c31d8e48",
+    "source_bytes_equal_reference": true,
+    "input_sha256_before_and_after_cancel": "ba0b7050a4b64a4695fe4b54a598deb5fb7169941f8ba7ff1ce82341e0a49bf7",
+    "capture_handles": {
+      "app_pid": 50,
+      "window_id": "2097246",
+      "display": ":101"
+    },
+    "coordinate_steps_1024x600": [
+      "Select reference.txt at (265,155), click Add at (52,49).",
+      "Open Level dropdown at (490,439), select Normal at (275,460).",
+      "Move pointer to (1439,899); resize briefly to 1024x601 then 1024x600 to expose/repaint.",
+      "import -window WINDOW_ID 1024x600-create-zip-normal.png",
+      "Resize the same window to 1440x900; import -window WINDOW_ID 1440x900-create-zip-normal.png",
+      "Click Cancel at (1380,875); verify input hash and absence of reference.zip."
+    ]
   }
 }

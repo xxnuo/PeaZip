@@ -1,4 +1,4 @@
-import { packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH } from './archive-limits.js';
+import { validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH } from './archive-limits.js';
 import { exportEntries } from './directory-export.js';
 
 let wasm;
@@ -29,7 +29,10 @@ function fail(error, job = active) {
   reply(0, encoder.encode(String(error.message ?? error).slice(0, 4096)), job);
 }
 
-function create() {
+function create(options) {
+  if (options !== undefined) {
+    try { validateZipOptions(options); } catch { return 0; }
+  }
   if (active || !wasm || typeof Worker === 'undefined') return 0;
   const input = document.createElement('input');
   input.type = 'file';
@@ -59,7 +62,7 @@ function create() {
       };
       worker.onerror = (event) => { event.preventDefault(); fail(new Error('Archive worker failed.'), job); };
       worker.onmessageerror = () => fail(new Error('Archive worker returned an invalid response.'), job);
-      worker.postMessage(files);
+      worker.postMessage(options === undefined ? files : { operation: 'create-v1', options, files });
     } catch (error) { fail(error, job); }
   }, { once: true });
   try { input.click(); } catch (error) { fail(error, job); }
@@ -172,7 +175,8 @@ function download(ptr, length, format) {
 }
 
 export function __nsh_imports() {
-  return { peazip: { pc_create_start: create, pc_download: download, pc_cancel: cancel,
+  return { peazip: { pc_create_start: () => create(),
+    pc_create_with_options_start: (compression, level) => create({ compression, level }), pc_download: download, pc_cancel: cancel,
     pc_list_start: (ptr, length) => inspect(ptr, length, 'list'),
     pc_test_start: (ptr, length) => inspect(ptr, length, 'test'),
     pc_extract_start: extract, pc_can_extract: () => typeof window.showDirectoryPicker === 'function' ? 1 : 0,

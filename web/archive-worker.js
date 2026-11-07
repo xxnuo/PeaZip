@@ -1,13 +1,13 @@
-import { packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH, MAX_TOTAL } from './archive-limits.js';
+import { validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH, MAX_TOTAL } from './archive-limits.js';
 import init from './worker-core.js';
 
-self.onmessage = async ({ data: files }) => {
+self.onmessage = async ({ data: request }) => {
   try {
-    if (files?.operation === 'list' || files?.operation === 'test') {
-      const testing = files.operation === 'test';
-      const packet = files.packet;
+    if (request?.operation === 'list' || request?.operation === 'test') {
+      const testing = request.operation === 'test';
+      const packet = request.packet;
       if (!(packet instanceof ArrayBuffer) || !packet.byteLength || packet.byteLength > MAX_ARCHIVE) {
-        throw new Error(`Invalid ${files.operation} request.`);
+        throw new Error(`Invalid ${request.operation} request.`);
       }
       const wasm = await init({ module_or_path: new URL('./worker-core_bg.wasm', import.meta.url) });
       const pointer = wasm.pw_input_resize(packet.byteLength) >>> 0;
@@ -23,8 +23,8 @@ self.onmessage = async ({ data: files }) => {
       self.postMessage({ code: ok ? 1 : 0, bytes: result }, [result.buffer]);
       return;
     }
-    if (files?.operation === 'extract') {
-      const packet = files.packet;
+    if (request?.operation === 'extract') {
+      const packet = request.packet;
       const maxRequest = MAX_ARCHIVE + MAX_ENTRIES * (4 + MAX_PATH) + 8;
       if (!(packet instanceof ArrayBuffer) || packet.byteLength < 8 || packet.byteLength > maxRequest) {
         throw new Error('Invalid extraction request.');
@@ -45,14 +45,24 @@ self.onmessage = async ({ data: files }) => {
       self.postMessage({ code: ok ? 1 : 0, bytes: result }, [result.buffer]);
       return;
     }
+    const versioned = request?.operation === 'create-v1';
+    if (!versioned && !Array.isArray(request)) throw new Error('Invalid archive request.');
+    const options = versioned ? validateZipOptions(request.options) : null;
+    const files = versioned ? request.files : request;
     if (!Array.isArray(files)) throw new Error('Invalid archive request.');
-    const size = packetSize(files);
+    const size = packetSize(files) + (versioned ? 12 : 0);
     const wasm = await init({ module_or_path: new URL('./worker-core_bg.wasm', import.meta.url) });
     const pointer = wasm.pw_input_resize(size) >>> 0;
     if (!pointer) throw new Error('Archive request is too large.');
     const view = new DataView(wasm.memory.buffer);
     const bytes = new Uint8Array(wasm.memory.buffer);
     let at = pointer;
+    if (versioned) {
+      view.setUint32(at, 1, true);
+      view.setUint32(at + 4, options.compression, true);
+      view.setUint32(at + 8, options.level, true);
+      at += 12;
+    }
     view.setUint32(at, files.length, true);
     at += 4;
     let done = 0;
@@ -74,7 +84,7 @@ self.onmessage = async ({ data: files }) => {
       }
     }
     self.postMessage({ progress: { phase: 'compress', done, total: files.length } });
-    const ok = wasm.pw_create() === 1;
+    const ok = (versioned ? wasm.pw_create_v1() : wasm.pw_create()) === 1;
     const length = wasm.pw_output_len() >>> 0;
     if (length > MAX_ARCHIVE) throw new Error('Worker output exceeds the archive limit.');
     const result = new Uint8Array(wasm.memory.buffer, wasm.pw_output_ptr() >>> 0, length).slice();
