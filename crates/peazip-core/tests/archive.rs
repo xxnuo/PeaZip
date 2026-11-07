@@ -428,3 +428,50 @@ fn only_selected_payloads_are_decoded_and_crc_checked() {
     assert!(extract_selected_zip(&zip, &["bad".into()], Limits::default()).is_err());
     assert!(extract_zip(&zip, Limits::default()).is_err());
 }
+
+#[test]
+fn extraction_counts_implicit_parent_directories_in_output_budget() {
+    let zip = create_zip(
+        &[entry("a/b/file", b"deep"), entry("plain", b"plain")],
+        Limits::default(),
+    )
+    .unwrap();
+    let limits = Limits {
+        max_entries: 2,
+        ..Limits::default()
+    };
+    assert!(list_zip(&zip, limits).is_ok());
+    assert!(matches!(
+        extract_selected_zip(&zip, &["a/b/file".into()], limits),
+        Err(Error::Limit("output entry count"))
+    ));
+    assert_eq!(
+        extract_selected_zip(&zip, &["plain".into()], limits).unwrap(),
+        vec![entry("plain", b"plain")]
+    );
+
+    let zip = create_zip(&[entry("a/x", b"x"), entry("a/y", b"y")], Limits::default()).unwrap();
+    assert_eq!(
+        extract_zip(
+            &zip,
+            Limits {
+                max_entries: 3,
+                ..limits
+            }
+        )
+        .unwrap()
+        .len(),
+        2
+    );
+    let zip = create_zip(&[entry("a/x", b"x"), entry("A/y", b"y")], Limits::default()).unwrap();
+    assert!(matches!(
+        extract_zip(
+            &zip,
+            Limits {
+                max_entries: 3,
+                ..limits
+            }
+        ),
+        Err(Error::Limit("output entry count"))
+    ));
+}

@@ -227,6 +227,7 @@ fn extract_matching(
     }
     let mut archive = ZipArchive::new(Cursor::new(bytes))?;
     let mut output = Vec::new();
+    let mut output_paths = BTreeSet::new();
     for (i, entry) in entries.into_iter().enumerate() {
         if let Some(selected) = &selected
             && !selected.contains(entry.path.as_str())
@@ -236,6 +237,21 @@ fn extract_matching(
                 .any(|(at, _)| selected.contains(&entry.path[..=at]))
         {
             continue;
+        }
+        // Implicit parents consume filesystem entries too, even if the ZIP omits them.
+        let end = entry.path.trim_end_matches('/').len();
+        for boundary in entry
+            .path
+            .match_indices('/')
+            .map(|(at, _)| at)
+            .chain(std::iter::once(end))
+        {
+            output_paths.insert(entry.path[..boundary].to_owned());
+            check(
+                output_paths.len() as u64,
+                limits.max_entries as u64,
+                "output entry count",
+            )?;
         }
         let mut file = archive.by_index(i)?;
         let mut data = Vec::new();
