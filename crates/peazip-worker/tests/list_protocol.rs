@@ -4,7 +4,9 @@
 mod browser;
 
 use peazip_core::{Entry, Limits, MemoryEntry};
-use peazip_worker::{MAX_LIST_OUTPUT_BYTES, list_from_request};
+use peazip_worker::{
+    MAX_LIST_OUTPUT_BYTES, TEST_REPORT_BYTES, list_from_request, test_from_request,
+};
 
 const TAR: &[u8] = include_bytes!("../../../tests/fixtures/sample.tar");
 const GZIP: &[u8] = include_bytes!("../../../tests/fixtures/sample.tar.gz");
@@ -242,4 +244,135 @@ fn maximum_metadata_stays_below_the_callback_cap() {
     assert_eq!(output.len(), MAX_LIST_OUTPUT_BYTES);
     assert!(output.len() as u64 <= limits.max_archive_bytes);
     assert_eq!(decode_entries(&output).unwrap().len(), limits.max_entries);
+}
+
+fn test_report_packet(entries: u32, files: u32, total: u64, checksummed: u32) -> Vec<u8> {
+    let mut packet = entries.to_le_bytes().to_vec();
+    packet.extend(files.to_le_bytes());
+    packet.extend(total.to_le_bytes());
+    packet.extend(checksummed.to_le_bytes());
+    packet
+}
+
+#[test]
+fn test_report_roundtrips_zip_tar_gzip_and_7z_with_exact_counts_and_coverage() {
+    let zip = include_bytes!("../../../web/tests/fixtures/sample.zip");
+    for (archive, entries, files, total, checksummed) in [
+        (zip.as_slice(), 3, 2, 13, 2),
+        (TAR, 5, 3, 27, 0),
+        (GZIP, 5, 3, 27, 3),
+        (SEVEN_ZIP, 6, 3, 26, 3),
+    ] {
+        let bytes = test_from_request(archive).unwrap();
+        assert_eq!(bytes.len(), TEST_REPORT_BYTES);
+        assert_eq!(
+            bytes,
+            test_report_packet(entries, files, total, checksummed)
+        );
+        let decoded = browser::decode_test_report(&bytes).unwrap();
+        assert_eq!(decoded.entries, entries as usize);
+        assert_eq!(decoded.files, files as usize);
+        assert_eq!(decoded.total_bytes, total);
+        assert_eq!(decoded.checksummed_files, checksummed as usize);
+    }
+    assert_eq!(
+        test_from_request(&[0; 1024]).unwrap(),
+        vec![0; TEST_REPORT_BYTES]
+    );
+}
+
+#[test]
+fn test_report_decoder_rejects_truncation_trailing_bytes_counts_coverage_and_totals() {
+    let valid = test_report_packet(3, 2, 13, 2);
+    for end in 0..valid.len() {
+        assert!(
+            browser::decode_test_report(&valid[..end]).is_err(),
+            "prefix {end}"
+        );
+    }
+    let mut trailing = valid;
+    trailing.push(0);
+    assert!(browser::decode_test_report(&trailing).is_err());
+    for (entries, files, total, checksummed) in [
+        (4097, 0, 0, 0),
+        (u32::MAX, 0, 0, 0),
+        (1, 2, 0, 0),
+        (1, u32::MAX, 0, 0),
+        (2, 1, 0, 2),
+        (1, 1, 0, u32::MAX),
+        (1, 0, 1, 0),
+        (1, 1, 16 * 1024 * 1024 + 1, 1),
+        (5, 5, 64 * 1024 * 1024 + 1, 5),
+        (1, 1, 1u64 << 32, 0),
+        (1, 1, u64::MAX, 0),
+    ] {
+        assert!(
+            browser::decode_test_report(&test_report_packet(entries, files, total, checksummed))
+                .is_err()
+        );
+    }
+    for (entries, files, total, checksummed) in [
+        (0, 0, 0, 0),
+        (4096, 0, 0, 0),
+        (4096, 4096, 0, 4096),
+        (4, 4, 64 * 1024 * 1024, 0),
+        (4, 4, 64 * 1024 * 1024, 4),
+    ] {
+        assert!(
+            browser::decode_test_report(&test_report_packet(entries, files, total, checksummed))
+                .is_ok()
+        );
+    }
+}
+
+#[test]
+fn test_request_checks_unselected_zip_file_crc_and_recovers_after_invalid_archives() {
+    let limits = Limits::default();
+    let mut zip = peazip_core::create_zip(
+        &[
+            MemoryEntry {
+                path: "good".into(),
+                is_dir: false,
+                data: b"good".to_vec(),
+            },
+            MemoryEntry {
+                path: "hidden".into(),
+                is_dir: false,
+                data: b"bad!".to_vec(),
+            },
+        ],
+        limits,
+    )
+    .unwrap();
+    let valid = zip.clone();
+    let central = zip
+        .windows(4)
+        .enumerate()
+        .filter(|(_, bytes)| *bytes == b"PK\x01\x02")
+        .nth(1)
+        .unwrap()
+        .0;
+    let local = u32::from_le_bytes(zip[central + 42..central + 46].try_into().unwrap()) as usize;
+    zip[local + 14..local + 18].fill(0);
+    zip[central + 16..central + 20].fill(0);
+    assert!(list_from_request(&zip).is_ok());
+    assert!(peazip_core::extract_selected_archive(&zip, &["good".into()], limits).is_ok());
+    assert!(
+        test_from_request(&zip).is_err(),
+        "testing must read hidden, unselected payloads too"
+    );
+    for archive in [
+        b"".as_slice(),
+        b"not an archive",
+        &GZIP[..GZIP.len() - 1],
+        &SEVEN_ZIP[..SEVEN_ZIP.len() - 1],
+    ] {
+        assert!(test_from_request(archive).is_err());
+    }
+    assert!(
+        test_from_request(&vec![0; limits.max_archive_bytes as usize + 1])
+            .unwrap_err()
+            .contains("archive byte")
+    );
+    assert!(test_from_request(&valid).is_ok());
 }

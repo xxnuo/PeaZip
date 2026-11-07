@@ -62,7 +62,7 @@ jobs:
         with:
           components: clippy
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev xvfb xauth dbus-x11 xdotool imagemagick fonts-noto-cjk p7zip-full
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev xvfb xauth dbus-x11 xdotool imagemagick tesseract-ocr fonts-noto-cjk p7zip-full
       - run: cargo test -p peazip-ui --locked
       - run: cargo clippy -p peazip-ui --all-targets --locked -- -D warnings
       - if: runner.os == 'Linux'

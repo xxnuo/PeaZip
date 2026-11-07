@@ -149,7 +149,7 @@ test('Chromium creates, downloads and reopens ZIP using a real Rust worker', { t
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('download', (download) => downloads.push(download));
   page.on('worker', (worker) => {
-    if (new URL(worker.url()).searchParams.get('operation') !== 'list') workers.push({ worker, closed: once(worker, 'close') });
+    if (!['list', 'test'].includes(new URL(worker.url()).searchParams.get('operation'))) workers.push({ worker, closed: once(worker, 'close') });
   });
   t.after(() => assert.deepEqual(errors, []));
   await page.goto(await serve(t));
@@ -326,7 +326,7 @@ async function creationPage(t) {
     window.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
-        if (new URL(args[0], location.href).searchParams.get('operation') === 'list') return;
+        if (['list', 'test'].includes(new URL(args[0], location.href).searchParams.get('operation'))) return;
         const record = { messages: [], terminated: false };
         window.archiveWorkers.push(record);
         this.addEventListener('message', ({ data }) => {
@@ -514,18 +514,21 @@ async function extractionPage(t, available = true) {
     window.extractionWorkers = [];
     window.listWorkers = [];
     window.listWorkerHandlers = [];
+    window.testWorkers = [];
+    window.testWorkerHandlers = [];
     const NativeWorker = window.Worker;
     window.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
         const record = { terminated: false, codes: [] };
-        const isList = new URL(args[0], location.href).searchParams.get('operation') === 'list';
-        const records = isList ? window.listWorkers : window.extractionWorkers;
+        const operation = new URL(args[0], location.href).searchParams.get('operation');
+        const records = operation === 'list' ? window.listWorkers : operation === 'test' ? window.testWorkers : window.extractionWorkers;
+        const handlers = operation === 'list' ? window.listWorkerHandlers : window.testWorkerHandlers;
         const index = records.push(record) - 1;
-        if (isList) {
+        if (operation === 'list' || operation === 'test') {
           const descriptor = Object.getOwnPropertyDescriptor(NativeWorker.prototype, 'onmessage');
           Object.defineProperty(this, 'onmessage', {
-            set(handler) { window.listWorkerHandlers[index] = handler; descriptor.set.call(this, handler); },
+            set(handler) { handlers[index] = handler; descriptor.set.call(this, handler); },
             get() { return descriptor.get.call(this); },
           });
         }
@@ -595,6 +598,142 @@ async function downloadArchive(page, button) {
   const chunks = [];
   for await (const chunk of await artifact.createReadStream()) chunks.push(chunk);
   return { name: artifact.suggestedFilename(), bytes: Buffer.concat(chunks) };
+}
+
+test('Test archive validates ZIP, TAR, TGZ and 7Z in real workers without exports or downloads', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree, downloads } = await extractionPage(t);
+  await expect(button('Test archive')).toBeDisabled();
+  const reports = [];
+  for (const [name, path, entries, files, total, checksummed, selectedName] of [
+    ['zip.bin', fixture('sample.zip'), 3, 2, 13, 2, '你好.txt'],
+    ['tar.bin', fileURLToPath(new URL('../../tests/fixtures/sample.tar', import.meta.url)), 5, 3, 27, 0, 'docs/你好.txt'],
+    ['tgz.bin', fileURLToPath(new URL('../../tests/fixtures/sample.tar.gz', import.meta.url)), 5, 3, 27, 3, 'docs/你好.txt'],
+    ['7z.bin', fileURLToPath(new URL('../../tests/fixtures/sample.7z', import.meta.url)), 6, 3, 26, 3, 'docs/你好.txt'],
+  ]) {
+    const pending = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await pending).setFiles({ name, mimeType: 'application/octet-stream', buffer: await readFile(path) });
+    await expect(page.getByText(`${entries} entries`, { exact: true })).toBeVisible();
+    await expect(button('Test archive')).toBeEnabled();
+    const selected = page.getByRole('checkbox', { name: selectedName, exact: true });
+    await selected.click();
+    await button('Test archive').click();
+    await expect(page.getByText(`Tested ${entries} entries (${total} bytes). Content checksums: ${checksummed}/${files} files.`, { exact: true })).toBeVisible();
+    await expect(selected).toBeChecked();
+    await expect(page.getByText(name, { exact: true })).toBeVisible();
+    await expect(page.getByRole('checkbox')).toHaveCount(entries);
+    await expect(button('Test archive')).toBeEnabled();
+    reports.push({ terminated: true, codes: [1] });
+    await expect.poll(() => page.evaluate(() => window.testWorkers)).toEqual(reports);
+    await expect.poll(() => page.workers().length).toBe(0);
+    assert.deepEqual(await tree(), sentinelTree);
+    assert.equal(downloads.length, 0);
+  }
+  assert.deepEqual(await page.evaluate(() => window.pickerCalls), []);
+  assert.deepEqual(await page.evaluate(() => window.extractionWorkers), []);
+});
+
+test('Test archive catches an unselected ZIP file with bad CRC and preserves bytes and selection', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree, downloads } = await extractionPage(t);
+  const corrupt = Buffer.from(await readFile(fixture('sample.zip')));
+  const central = corrupt.indexOf(Buffer.from('PK\x01\x02'), corrupt.indexOf(Buffer.from('PK\x01\x02')) + 4);
+  assert.ok(central > 0);
+  const local = corrupt.readUInt32LE(central + 42);
+  assert.equal(corrupt.toString('utf8', central + 46, central + 46 + corrupt.readUInt16LE(central + 28)), 'notes.txt');
+  corrupt.writeUInt32LE(0, local + 14);
+  corrupt.writeUInt32LE(0, central + 16);
+  await choose({ name: 'hidden-bad-crc.zip', mimeType: 'application/zip', buffer: corrupt });
+  const selected = page.getByRole('checkbox', { name: '你好.txt', exact: true });
+  await selected.click();
+  await expect(page.getByRole('checkbox', { name: 'notes.txt', exact: true })).not.toBeChecked();
+  const snapshot = await downloadArchive(page, button('Download ZIP'));
+  const downloadsBefore = downloads.length;
+  await button('Test archive').click();
+  await expect(page.getByText(/^Could not test archive:/)).toBeVisible();
+  await expect(button('Test archive')).toBeEnabled();
+  await expect(selected).toBeChecked();
+  await expect(page.getByText('hidden-bad-crc.zip', { exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox')).toHaveCount(3);
+  await expect.poll(() => page.evaluate(() => window.testWorkers)).toEqual([{ terminated: true, codes: [0] }]);
+  assert.equal(downloads.length, downloadsBefore);
+  assert.deepEqual(await tree(), sentinelTree);
+  assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
+  assert.deepEqual(snapshot.bytes, corrupt);
+  await choose();
+  await button('Test archive').click();
+  await expect(page.getByText('Tested 3 entries (13 bytes). Content checksums: 2/2 files.', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.testWorkers)).toEqual([
+    { terminated: true, codes: [0] }, { terminated: true, codes: [1] },
+  ]);
+  assert.deepEqual(await page.evaluate(() => window.pickerCalls), []);
+  assert.deepEqual(await page.evaluate(() => window.extractionWorkers), []);
+});
+
+for (const cancellation of ['Cancel', 'pagehide']) {
+  test(`${cancellation} stops a real test worker; retry ignores stale reports and preserves the archive`, { timeout: 120_000 }, async (t) => {
+    const { page, button, choose, tree, downloads } = await extractionPage(t);
+    await choose();
+    const selected = page.getByRole('checkbox', { name: '你好.txt', exact: true });
+    await selected.click();
+    const snapshot = await downloadArchive(page, button('Download ZIP'));
+    const downloadsBefore = downloads.length;
+    let release, intercepted = false;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route('**/worker-core_bg.wasm', async (route) => {
+      intercepted = true;
+      await gate;
+      await route.continue().catch(() => {});
+    });
+    try {
+      await button('Test archive').click();
+      await expect.poll(() => intercepted).toBe(true);
+      await expect(page.getByText('Testing archive…', { exact: true })).toBeVisible();
+      await expect(button('Cancel')).toBeEnabled();
+      for (const name of ['Test archive', 'Open archive…', 'Create ZIP…', 'Download ZIP', 'Extract selected…', 'Select all', 'Clear selection']) await expect(button(name)).toBeDisabled();
+      if (cancellation === 'Cancel') await button('Cancel').click();
+      else await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+      await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
+      await expect(button('Test archive')).toBeEnabled();
+      await expect(button('Cancel')).toBeDisabled();
+      await expect(selected).toBeChecked();
+      await expect.poll(() => page.evaluate(() => window.testWorkers)).toEqual([{ terminated: true, codes: [] }]);
+      await expect.poll(() => page.workers().length).toBe(0);
+    } finally {
+      release();
+      await page.unrouteAll({ behavior: 'wait' });
+    }
+    let releaseRetry, retryIntercepted = false;
+    const retryGate = new Promise((resolve) => { releaseRetry = resolve; });
+    await page.route('**/worker-core_bg.wasm', async (route) => {
+      retryIntercepted = true;
+      await retryGate;
+      await route.continue().catch(() => {});
+    });
+    try {
+      await button('Test archive').click();
+      await expect.poll(() => retryIntercepted).toBe(true);
+      await page.evaluate(() => {
+        const old = window.testWorkerHandlers[0];
+        old({ data: { code: 1, bytes: new Uint8Array(20) } });
+        old({ data: { code: 0, bytes: new TextEncoder().encode('stale error') } });
+      });
+      await expect(page.getByText('Testing archive…', { exact: true })).toBeVisible();
+      await expect(button('Test archive')).toBeDisabled();
+    } finally {
+      releaseRetry();
+      await page.unrouteAll({ behavior: 'wait' });
+    }
+    await expect(page.getByText('Tested 3 entries (13 bytes). Content checksums: 2/2 files.', { exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.testWorkers)).toEqual([
+      { terminated: true, codes: [] }, { terminated: true, codes: [1] },
+    ]);
+    await expect(selected).toBeChecked();
+    assert.equal(downloads.length, downloadsBefore);
+    assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
+    assert.deepEqual(await tree(), sentinelTree);
+    assert.deepEqual(await page.evaluate(() => window.pickerCalls), []);
+    assert.deepEqual(await page.evaluate(() => window.extractionWorkers), []);
+  });
 }
 
 test('7Z uses real list/extract workers and preserves its snapshot after header CRC and next-header failures', { timeout: 120_000 }, async (t) => {

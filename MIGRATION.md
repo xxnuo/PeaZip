@@ -154,3 +154,12 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - Android 最终 APK 7z 真实 DocumentsUI/SAF smoke 通过，记录 `target/android-smoke/a5f82157f576`：打开 6 项、`application/x-7z-compressed` 保存/取消、保存字节与独立系统 7z 校验一致，选中 docs/ 提取 5 项、中文/二进制/空目录正确、未选文件缺席、既有哨兵未改；损坏头 CRC 在写出前拒绝并保留旧快照/选择。PID 稳定无应用 fatal，测试文件已清理，专用模拟器已关闭。
 
 下一步：补充更多归档格式与大文件流式处理，同时继续推进 iOS SDK/文件导出和 Windows/Linux 实际运行；补齐 Web 外部目录、桌面/移动端主动取消与进度、冲突策略及文件管理功能。Web/Android 打开归档仍走 nsh picker，创建使用独立有界入口；两者限制不可混为一谈。六平台实际运行、完整功能与发布验收仍是最终要求。
+
+## 归档完整性测试
+
+- 新增 `test_archive` 和各端 Test archive 操作：检查当前不可变快照中的全部条目，不受选择范围影响，不打开保存/目录对话框，也不写出文件。ZIP/7z 使用固定缓冲读取，7z 完整检查所有 block 与成员 CRC；TAR.GZ 保留已有有界整包解码，避免再复制各文件 payload。
+- 报告明确区分条目、文件、实际内容字节和带内容校验和的文件数量。TAR 仅验证结构且覆盖数为零，GZIP 容器 CRC 覆盖全部文件；7z 只有实际存在成员或所属数据块 CRC 的文件计入，空文件不虚增覆盖。不宣称校验和证明真实性，也不扩大已记录的后端完整性保证。
+- Web 使用真实独立 Worker，只返回 20 字节有界报告；支持 Cancel/pagehide、重试和旧回调隔离。桌面和 Android 使用后台任务；成功、失败、取消均保留原快照和选择。桌面/移动端此操作的主动取消仍待接入。
+- 验证：core 82 项、macOS 工作区 139 次测试执行通过，主机/WASM/Android Clippy 与格式检查通过；16 MiB ZIP/7z 样本的最大单次分配小于 4 MiB，确认未保留整份文件输出。浏览器 41 项通过，包括四格式校验覆盖、未选文件损坏、只读操作和实际 Worker 取消/旧回调。Python 6 项回归通过。
+- Android 36 最终 APK 定向 smoke 通过，记录 `target/android-smoke/8204e9cb53b6`：ZIP/TAR/TAR.GZ/7z 报告精确，未选 ZIP 文件 CRC 损坏被拒绝，快照/选择/Downloads/Documents/既有输出保持不变，无系统保存对话框，PID 稳定且无应用 fatal；测试文件已清理，专用模拟器已关闭。
+- Linux GTK/X11 测试脚本新增实际点击 Test archive、OCR 核对报告与选择、无输出及哨兵检查，然后继续提取并比较真实字节；连续两轮通过，证据位于 `target/linux-runtime-20261108-a/test-archive-final1.log`、`test-archive-final2.log` 与 `test-archive-final-tests.log`。CI 加入 tesseract-ocr 依赖，仍未运行远程 CI；GTK 固定布局与 X11 验证范围不变。

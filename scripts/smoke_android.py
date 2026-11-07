@@ -171,6 +171,46 @@ class Smoke:
         self.save(evidence)
         self.button(("Open", "OPEN", "Select", "SELECT"))
 
+    def test_archive(self, filename, contents, checksummed_files, evidence, reject=False):
+        def snapshot(tree):
+            return [(n.get("content-desc"), n.get("checked"), n.get("text"))
+                    for n in tree.iter("node")
+                    if n.get("checkable") == "true" and n.get("package") == PACKAGE]
+        before = snapshot(self.dump())
+        selected = sum(checked == "true" for _, checked, _ in before)
+        downloads = self.adb("shell", "ls", "-laR", "/sdcard/Download")
+        documents = self.adb("shell", "ls", "-laR", "/sdcard/Documents", check=False)
+        exports = self.export_snapshot(f"{evidence}-before") if self.export_owned else None
+        files = sum(data is not None for data in contents.values())
+        total = sum(len(data) for data in contents.values() if data is not None)
+        expected = (f"Tested {len(contents)} entries ({total} bytes). "
+                    f"Content checksums: {checksummed_files}/{files} files.")
+        self.tap("Test archive")
+        def finished(tree):
+            if any(n.get("package", "").endswith(".documentsui") or
+                   n.get("resource-id") == "android:id/alertTitle" for n in tree.iter("node")):
+                raise AssertionError("Test archive opened a dialog or DocumentsUI")
+            return any(n.get("text", "").startswith(("Tested ", "Could not test archive:"))
+                       for n in tree.iter("node"))
+        tree = self.wait("archive test result", finished)
+        report = next(n.get("text") for n in tree.iter("node") if
+                      n.get("text", "").startswith(("Tested ", "Could not test archive:")))
+        if (reject and not report.startswith("Could not test archive:")) or (not reject and report != expected):
+            raise RuntimeError(f"Unexpected archive test result: {report}; expected {expected}")
+        self.label(filename)
+        self.label(f"{selected} selected")
+        if snapshot(tree) != before:
+            raise RuntimeError("Test archive changed archive rows or selection")
+        if self.adb("shell", "ls", "-laR", "/sdcard/Download") != downloads:
+            raise RuntimeError("Test archive changed Downloads")
+        if self.adb("shell", "ls", "-laR", "/sdcard/Documents", check=False) != documents:
+            raise RuntimeError("Test archive changed Documents")
+        if exports is not None and self.export_snapshot(f"{evidence}-after") != exports:
+            raise RuntimeError("Test archive changed previous export bytes")
+        self.save(evidence)
+        self.health()
+        print(f"PASS read-only Test archive: {filename}: {report}; snapshot/selection preserved", flush=True)
+
     def create_oversized(self, sample):
         name = f"peazip-{self.token}-oversized.bin"
         local = self.out / name
@@ -392,6 +432,10 @@ class Smoke:
         print("PASS real tree picker cancellation preserves snapshot/selection; no output", flush=True)
         self.choose(bad.name)
         self.archive(bad.name)
+        self.tap("other.txt")
+        self.test_archive(bad.name, {k: None if k.endswith("/") else v for k, v in contents.items()},
+                          3, "test-zip-crc-rejected", reject=True)
+        self.tap("other.txt")
         self.tap("tree/")
         self.tap("Extract selected…")
         def rejected(tree):
@@ -521,6 +565,7 @@ class Smoke:
         self.save(f"{evidence}-imported")
         self.tap("docs/")
         self.extraction_state(name, selected_entry="docs/")
+        self.test_archive(name, contents, 0 if kind == "TAR" else 3, f"{evidence}-tested")
         before = self.adb("shell", "ls", "-1", "/sdcard/Download")
         self.tar_save_picker(f"{evidence}-save-cancel-picker", kind, mime)
         self.cancel_documents()
@@ -674,6 +719,13 @@ class Smoke:
         self.choose(sample)
         self.archive(sample)
         self.save("imported")
+        with zipfile.ZipFile(fixture / "sample.zip") as archive:
+            test_contents = {i.filename: None if i.is_dir() else archive.read(i)
+                             for i in archive.infolist()}
+        self.test_archive(sample, test_contents,
+                          sum(v is not None for v in test_contents.values()), "zip-tested")
+        self.choose(sample)
+        self.archive(sample)
         print(f"PASS system picker import: {sample}; entries={self.entries}", flush=True)
         self.tap("Select all")
         self.archive(sample, len(self.entries))

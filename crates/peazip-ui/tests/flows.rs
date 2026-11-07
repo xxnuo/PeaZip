@@ -12,6 +12,83 @@ fn start() -> Headless {
 }
 
 #[test]
+fn tests_all_archive_contents_without_dialogs_or_disk_output() {
+    let mut app = start();
+    assert!(!app.screen().enabled("role:button[Test archive]").unwrap());
+    for (bytes, entries, size, checksums) in [
+        (
+            include_bytes!("../../../tests/fixtures/sample.tar").as_slice(),
+            5,
+            27,
+            0,
+        ),
+        (
+            include_bytes!("../../../tests/fixtures/sample.tar.gz").as_slice(),
+            5,
+            27,
+            3,
+        ),
+        (
+            include_bytes!("../../../tests/fixtures/sample.7z").as_slice(),
+            6,
+            26,
+            3,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("archive.bin");
+        std::fs::write(&source, bytes).unwrap();
+        app.on_pick_paths(vec![source.clone()]).unwrap();
+        app.press("role:button[Open archive…]").unwrap();
+        app.wait_for(&format!("{entries} entries")).unwrap();
+        app.press("role:checkbox[docs/]").unwrap();
+        std::fs::remove_file(source).unwrap();
+        let requests = app.screen().file_requests().len();
+        app.press("role:button[Test archive]").unwrap();
+        app.wait_for(&format!(
+            "Tested {entries} entries ({size} bytes). Content checksums: {checksums}/3 files."
+        ))
+        .unwrap();
+        assert!(app.screen().shows("1 selected"));
+        assert_eq!(app.screen().file_requests().len(), requests);
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+        assert!(app.screen().enabled("role:button[Test archive]").unwrap());
+    }
+}
+
+#[test]
+fn archive_test_detects_unselected_zip_corruption_and_preserves_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("bad.zip");
+    let mut bytes = include_bytes!("../../../web/tests/fixtures/sample.zip").to_vec();
+    // The independent fixture stores notes.txt without compression.
+    let offset = bytes
+        .windows(b"hello\n".len())
+        .position(|w| w == b"hello\n")
+        .unwrap();
+    bytes[offset] ^= 1;
+    std::fs::write(&source, &bytes).unwrap();
+    let mut app = start();
+    app.on_pick_paths(vec![source.clone()]).unwrap();
+    app.press("role:button[Open archive…]").unwrap();
+    app.wait_for("3 entries").unwrap();
+    app.press("role:checkbox[你好.txt]").unwrap();
+    let requests = app.screen().file_requests().len();
+    app.press("role:button[Test archive]").unwrap();
+    app.wait_for("text:/^Could not test archive:/").unwrap();
+    assert!(app.screen().shows("1 selected"));
+    assert!(app.screen().shows("notes.txt"));
+    assert_eq!(app.screen().file_requests().len(), requests);
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    let output = temp.path().join("selected");
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.press("role:button[Extract selected…]").unwrap();
+    app.wait_for("Extracted 1 entries").unwrap();
+    assert!(output.join("你好.txt").is_file());
+}
+
+#[test]
 fn opens_tar_by_content_and_extracts_selected_directory() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("misnamed.zip");

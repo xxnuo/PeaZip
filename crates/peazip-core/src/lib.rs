@@ -111,6 +111,23 @@ pub struct MemoryEntry {
     pub data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestReport {
+    pub entries: usize,
+    pub files: usize,
+    pub total_bytes: u64,
+    pub checksummed_files: usize,
+}
+
+fn test_report(entries: &[Entry], checksummed_files: usize) -> TestReport {
+    TestReport {
+        entries: entries.len(),
+        files: entries.iter().filter(|entry| !entry.is_dir).count(),
+        total_bytes: entries.iter().map(|entry| entry.size).sum(),
+        checksummed_files,
+    }
+}
+
 fn check(value: u64, max: u64, kind: &'static str) -> Result<(), Error> {
     if value > max {
         Err(Error::Limit(kind))
@@ -220,6 +237,25 @@ pub fn list_archive(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
     list_archive_with_format(bytes, limits).map(|(_, entries)| entries)
 }
 
+pub fn test_archive(bytes: &[u8], limits: Limits) -> Result<TestReport, Error> {
+    check(
+        bytes.len() as u64,
+        limits.max_archive_bytes,
+        "archive bytes",
+    )?;
+    match detect_candidate(bytes)? {
+        ArchiveFormat::Zip => test_zip(bytes, limits),
+        ArchiveFormat::Tar => Ok(test_report(&tar::list(bytes, limits)?, 0)),
+        ArchiveFormat::TarGzip => {
+            let decoded = gzip::decode(bytes, limits)?;
+            let entries = tar::list(&decoded, limits)?;
+            let files = entries.iter().filter(|entry| !entry.is_dir).count();
+            Ok(test_report(&entries, files))
+        }
+        ArchiveFormat::SevenZip => sevenzip::test(bytes, limits),
+    }
+}
+
 pub fn list_archive_with_format(
     bytes: &[u8],
     limits: Limits,
@@ -318,6 +354,36 @@ pub fn list_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
 
 pub fn extract_zip(bytes: &[u8], limits: Limits) -> Result<Vec<MemoryEntry>, Error> {
     extract_matching(bytes, None, limits)
+}
+
+fn test_zip(bytes: &[u8], limits: Limits) -> Result<TestReport, Error> {
+    let entries = list_zip(bytes, limits)?;
+    let mut archive = ZipArchive::new(Cursor::new(bytes))?;
+    let mut total = 0u64;
+    let mut buffer = [0; 8192];
+    for (i, entry) in entries.iter().enumerate() {
+        let mut file = archive.by_index(i)?.take(entry.size.saturating_add(1));
+        let mut actual = 0u64;
+        loop {
+            let count = file.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            actual += count as u64;
+            check(actual, entry.size, "declared entry size")?;
+        }
+        if actual != entry.size {
+            return Err(Error::Limit("declared entry size"));
+        }
+        total = total
+            .checked_add(actual)
+            .ok_or(Error::Limit("total bytes"))?;
+        check(total, limits.max_total_bytes, "total bytes")?;
+    }
+    let files = entries.iter().filter(|entry| !entry.is_dir).count();
+    let mut report = test_report(&entries, files);
+    report.total_bytes = total;
+    Ok(report)
 }
 
 pub fn extract_selected_zip(

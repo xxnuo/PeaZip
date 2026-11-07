@@ -22,8 +22,8 @@ artifacts=$3
 fixture=$4
 run_dir=$(mktemp -d "$artifacts/run-XXXXXX")
 artifacts="$run_dir/artifacts"
-mkdir -p "$artifacts" "$run_dir/output" "$run_dir/reference"
-printf 'preserve-me\n' > "$run_dir/output/sentinel.txt"
+mkdir -p "$artifacts" "$run_dir/reference"
+printf 'preserve-me\n' > "$run_dir/sentinel.txt"
 "$binary" > "$artifacts/gtk.log" 2>&1 &
 app_pid=$!
 cleanup() {
@@ -67,9 +67,32 @@ if xdotool search --onlyvisible --name '^Open archive$' >/dev/null; then
 fi
 sleep 1
 import -window root "$artifacts/03-loaded.png"
-xdotool mousemove 20 134 click 1
+# The filename can wrap the toolbar; locate the first docs row on screen.
+tesseract "$artifacts/03-loaded.png" "$artifacts/loaded" --psm 11 tsv 2> "$artifacts/loaded-ocr.log"
+docs_y=$(awk -F '\t' '$12 == "docs/" {print int($8 + $10 / 2); exit}' "$artifacts/loaded.tsv")
+test -n "$docs_y"
+xdotool mousemove 20 "$docs_y" click 1
 sleep .5
 import -window root "$artifacts/04-selected.png"
+test ! -e "$run_dir/output"
+xdotool mousemove 660 25 click 1
+for n in $(seq 1 20); do
+  kill -0 "$app_pid"
+  import -window root "$artifacts/07-tested.png"
+  convert "$artifacts/07-tested.png" -crop 840x60+0+540 +repage -resize 300% "$artifacts/test-status.png"
+  tesseract "$artifacts/test-status.png" "$artifacts/test-status" --psm 6 2> "$artifacts/test-ocr.log"
+  if grep -Eq 'Tested 6 entries.*26 bytes.*Content checksums: 3/3 files' "$artifacts/test-status.txt"; then break; fi
+  sleep .2
+done
+grep -Eq 'Tested 6 entries.*26 bytes.*Content checksums: 3/3 files' "$artifacts/test-status.txt"
+convert "$artifacts/07-tested.png" -crop 840x34+0+80 +repage -resize 300% "$artifacts/test-selection.png"
+tesseract "$artifacts/test-selection.png" "$artifacts/tested-screen" --psm 6 2> "$artifacts/tested-screen-ocr.log"
+grep -Eq '1 selected' "$artifacts/tested-screen.txt"
+test ! -e "$run_dir/output"
+printf 'preserve-me\n' | cmp - "$run_dir/sentinel.txt"
+printf 'TEST_ARCHIVE_READ_ONLY_REPORT_OK\n' > "$artifacts/test-readonly.txt"
+mkdir "$run_dir/output"
+cp "$run_dir/sentinel.txt" "$run_dir/output/sentinel.txt"
 xdotool mousemove 520 25 click 1
 output_picker=$(timeout 20 xdotool search --sync --onlyvisible --name '^Extract selected — choose new folder name$' | head -n1)
 xdotool windowfocus --sync "$output_picker"
@@ -89,5 +112,5 @@ printf 'preserve-me\n' | cmp - "$run_dir/output/sentinel.txt"
 test -d "$run_dir/output/Extracted/docs/empty"
 sha256sum "$run_dir/output/Extracted/docs/nested/data.bin" "$run_dir/output/Extracted/docs/你好.txt" > "$artifacts/sha256.txt"
 kill -0 "$app_pid"
-if grep -Ei 'panic|critical|segmentation|could not open archive|could not extract archive' "$artifacts/gtk.log"; then exit 1; fi
-printf 'GUI_IMPORT_SELECTED_DOCS_BYTES_SENTINEL_OK %s\n' "$run_dir"
+if grep -Ei 'panic|critical|segmentation|could not open archive|could not extract archive|could not test archive' "$artifacts/gtk.log"; then exit 1; fi
+printf 'GUI_IMPORT_TEST_REPORT_SELECTED_DOCS_BYTES_SENTINEL_OK %s\n' "$run_dir"

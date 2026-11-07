@@ -1,6 +1,6 @@
 use peazip_core::{
     ArchiveFormat, Error, Limits, MemoryEntry, detect_format, extract_archive,
-    extract_selected_archive, list_archive, list_archive_with_format,
+    extract_selected_archive, list_archive, list_archive_with_format, test_archive,
 };
 
 fn samples() -> Vec<&'static [u8]> {
@@ -20,6 +20,7 @@ fn samples() -> Vec<&'static [u8]> {
 }
 
 fn assert_rejected(bytes: &[u8], limits: Limits) {
+    assert!(test_archive(bytes, limits).is_err());
     assert!(list_archive(bytes, limits).is_err());
     assert!(list_archive_with_format(bytes, limits).is_err());
     assert!(extract_archive(bytes, limits).is_err());
@@ -264,6 +265,10 @@ fn lzma2_prefix_crc_cannot_hide_surplus_decoded_bytes() {
         let bytes = lzma2_stream(&[1], block_crc, checksum.as_ref().map(|v| &v[..]));
         assert!(list_archive(&bytes, limits).is_ok());
         assert!(matches!(
+            test_archive(&bytes, limits),
+            Err(Error::InvalidSevenZip(_))
+        ));
+        assert!(matches!(
             extract_archive(&bytes, limits),
             Err(Error::InvalidSevenZip(_))
         ));
@@ -296,6 +301,10 @@ fn manual_crc_checks_cover_each_file_and_the_complete_touched_block() {
         let bytes = lzma2_stream(&[1, 2], block_crc, Some(&file_crcs));
         assert!(list_archive(&bytes, limits).is_ok());
         assert!(matches!(
+            test_archive(&bytes, limits),
+            Err(Error::InvalidSevenZip(_))
+        ));
+        assert!(matches!(
             extract_archive(&bytes, limits),
             Err(Error::InvalidSevenZip(_))
         ));
@@ -324,6 +333,44 @@ fn empty_stream_crc_is_validated_before_any_selection() {
     assert_eq!(output[0].data, b"a");
     assert!(output[1].data.is_empty());
     assert_eq!(output[2].data, b"bc");
+}
+
+#[test]
+fn integrity_report_distinguishes_file_block_and_absent_checksums() {
+    for (bytes, files, coverage) in [
+        (lzma2_stream(&[1, 2], None, None), 2, 0),
+        (lzma2_stream(&[1, 2], Some(crc(b"abc")), None), 2, 2),
+        (
+            lzma2_stream(&[1, 2], None, Some(&[crc(b"a"), crc(b"bc")])),
+            2,
+            2,
+        ),
+        (
+            lzma2_stream(&[1, 0, 2], None, Some(&[crc(b"a"), 0, crc(b"bc")])),
+            3,
+            3,
+        ),
+    ] {
+        assert_eq!(
+            test_archive(&bytes, Limits::default()).unwrap(),
+            peazip_core::TestReport {
+                entries: files,
+                files,
+                total_bytes: 3,
+                checksummed_files: coverage,
+            }
+        );
+    }
+    let bytes = streamless(&[("empty", false), ("directory", true)], false);
+    assert_eq!(
+        test_archive(&bytes, Limits::default()).unwrap(),
+        peazip_core::TestReport {
+            entries: 2,
+            files: 1,
+            total_bytes: 0,
+            checksummed_files: 0,
+        }
+    );
 }
 
 #[test]

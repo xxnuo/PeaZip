@@ -1,4 +1,7 @@
-use super::{Entry, Error, Limits, MemoryEntry, check, insert_path, path_key, selected_indices};
+use super::{
+    Entry, Error, Limits, MemoryEntry, TestReport, check, insert_path, path_key, selected_indices,
+    test_report,
+};
 use flate2::Crc;
 use sevenz_turbo::{Archive, ArchiveLimits, ArchiveReader, EncoderMethod, Password};
 use std::{
@@ -378,6 +381,39 @@ pub(super) fn extract(
             blocks.insert(block);
         }
     }
+    read_blocks(&mut reader, blocks, &wanted, &mut output, limits)?;
+    Ok(output)
+}
+
+pub(super) fn test(bytes: &[u8], limits: Limits) -> Result<TestReport, Error> {
+    let (mut reader, entries) = open(bytes, limits)?;
+    let archive = reader.archive();
+    let checksummed = archive
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(i, file)| {
+            !file.is_directory
+                && (file.has_crc
+                    || (file.has_stream
+                        && archive.stream_map.file_block_index[*i]
+                            .is_some_and(|block| archive.blocks[block].has_crc)))
+        })
+        .count();
+    let blocks = 0..archive.blocks.len();
+    let total = read_blocks(&mut reader, blocks, &BTreeMap::new(), &mut [], limits)?;
+    let mut report = test_report(&entries, checksummed);
+    report.total_bytes = total;
+    Ok(report)
+}
+
+fn read_blocks(
+    reader: &mut Reader<'_>,
+    blocks: impl IntoIterator<Item = usize>,
+    wanted: &BTreeMap<String, usize>,
+    output: &mut [MemoryEntry],
+    limits: Limits,
+) -> Result<u64, Error> {
     let mut total = 0;
     for block in blocks {
         let mut callback_error = None;
@@ -421,5 +457,5 @@ pub(super) fn extract(
             return Err(invalid("7z block checksum mismatch"));
         }
     }
-    Ok(output)
+    Ok(total)
 }

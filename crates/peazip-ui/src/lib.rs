@@ -320,6 +320,51 @@ pub fn App() -> impl IntoElement {
             .disabled_style(|s| s.opacity(0.4))
             .child(text("Extract selected…")),
     );
+    let actions = actions.child(
+        button()
+            .disabled(move || busy.get() || snapshot.with(|bytes| bytes.is_empty()))
+            .on_press(move || {
+                if busy.get_untracked() || snapshot.with(|bytes| bytes.is_empty()) {
+                    return;
+                }
+                let bytes = snapshot.get_untracked();
+                busy.set(true);
+                activity.set("Testing archive…".into());
+                #[cfg(target_arch = "wasm32")]
+                {
+                    cancellable.set(true);
+                    cancel_message.set("Archive test cancelled.".into());
+                }
+                spawn(async move {
+                    #[cfg(target_arch = "wasm32")]
+                    let result = browser::test_archive(bytes).await;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let result = test_archive(bytes).await.map(Some);
+                    match result {
+                        Ok(Some(report)) => status.set(format!(
+                            "Tested {} entries ({} bytes). Content checksums: {}/{} files.",
+                            report.entries,
+                            report.total_bytes,
+                            report.checksummed_files,
+                            report.files,
+                        )),
+                        Ok(None) => status.set("Archive test cancelled.".into()),
+                        Err(error) => status.set(format!("Could not test archive: {error}")),
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    cancellable.set(false);
+                    busy.set(false);
+                });
+            })
+            .px_3()
+            .py_2()
+            .border_1()
+            .border_color(move || theme().border)
+            .bg(move || theme().muted)
+            .active(|s| s.opacity(0.6))
+            .disabled_style(|s| s.opacity(0.4))
+            .child(text("Test archive")),
+    );
     view()
         .flex_1()
         .p_safe_area()
@@ -657,4 +702,12 @@ async fn extract_archive(
     .map_err(|error| error.to_string())?
     .map(Some)
     .map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn test_archive(bytes: Arc<Vec<u8>>) -> Result<peazip_core::TestReport, String> {
+    blocking(move || peazip_core::test_archive(&bytes, peazip_core::Limits::default()))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }

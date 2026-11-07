@@ -1,6 +1,28 @@
 #[cfg(target_arch = "wasm32")]
 pub use host::*;
 
+pub(crate) fn decode_test_report(packet: &[u8]) -> Result<peazip_core::TestReport, String> {
+    if packet.len() != 20 {
+        return Err("Invalid archive test report length.".into());
+    }
+    let report = peazip_core::TestReport {
+        entries: u32::from_le_bytes(packet[..4].try_into().unwrap()) as usize,
+        files: u32::from_le_bytes(packet[4..8].try_into().unwrap()) as usize,
+        total_bytes: u64::from_le_bytes(packet[8..16].try_into().unwrap()),
+        checksummed_files: u32::from_le_bytes(packet[16..20].try_into().unwrap()) as usize,
+    };
+    let limits = peazip_core::Limits::default();
+    if report.entries > limits.max_entries
+        || report.files > report.entries
+        || report.checksummed_files > report.files
+        || report.total_bytes > limits.max_total_bytes
+        || report.total_bytes > (report.files as u64).saturating_mul(limits.max_entry_bytes)
+    {
+        return Err("Invalid archive test report counts or sizes.".into());
+    }
+    Ok(report)
+}
+
 pub(crate) fn decode_list(
     mut packet: &[u8],
 ) -> Result<(peazip_core::ArchiveFormat, Vec<peazip_core::Entry>), String> {
@@ -121,6 +143,7 @@ mod host {
     unsafe extern "C" {
         fn pc_create_start() -> u32;
         fn pc_list_start(ptr: *const u8, len: usize) -> u32;
+        fn pc_test_start(ptr: *const u8, len: usize) -> u32;
         fn pc_can_extract() -> u32;
         fn pc_extract_start(ptr: *const u8, len: usize) -> u32;
         fn pc_cancel() -> u32;
@@ -145,6 +168,22 @@ mod host {
 
     pub async fn create_zip(progress: impl FnMut(String) + 'static) -> Reply {
         run(|| unsafe { pc_create_start() }, progress).await
+    }
+
+    pub async fn test_archive(
+        bytes: Arc<Vec<u8>>,
+    ) -> Result<Option<peazip_core::TestReport>, String> {
+        if bytes.is_empty() || bytes.len() as u64 > peazip_core::Limits::default().max_archive_bytes
+        {
+            return Err("Invalid archive size.".into());
+        }
+        run(
+            move || unsafe { pc_test_start(bytes.as_ptr(), bytes.len()) },
+            |_| {},
+        )
+        .await?
+        .map(|report| super::decode_test_report(&report))
+        .transpose()
     }
 
     async fn run(start: impl FnOnce() -> u32, mut progress: impl FnMut(String)) -> Reply {

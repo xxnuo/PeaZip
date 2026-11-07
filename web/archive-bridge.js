@@ -74,14 +74,16 @@ function progress(data, job) {
   if (Object.hasOwn(phases, phase)) wasm.pc_progress(phases[phase], done, total);
 }
 
-function list(ptr, length) {
+function inspect(ptr, length, operation) {
   if (active || !wasm || typeof Worker === 'undefined') return 0;
-  const job = { worker: null, phase: 'list' };
+  const job = { worker: null, phase: operation };
   active = job;
   try {
-    if (!Number.isInteger(length) || length < 1 || length > MAX_ARCHIVE) throw new Error('Invalid listing request size.');
+    if (!Number.isInteger(length) || length < 1 || length > MAX_ARCHIVE) throw new Error(`Invalid ${operation} request size.`);
     const packet = new Uint8Array(wasm.memory.buffer, ptr >>> 0, length).slice();
-    const worker = new Worker(new URL('./archive-worker.js?operation=list', import.meta.url), { type: 'module' });
+    const url = new URL('./archive-worker.js', import.meta.url);
+    url.searchParams.set('operation', operation);
+    const worker = new Worker(url, { type: 'module' });
     job.worker = worker;
     worker.onmessage = ({ data }) => {
       if (active !== job) return;
@@ -90,7 +92,7 @@ function list(ptr, length) {
     };
     worker.onerror = (event) => { event.preventDefault(); fail(new Error('Archive worker failed.'), job); };
     worker.onmessageerror = () => fail(new Error('Archive worker returned an invalid response.'), job);
-    worker.postMessage({ operation: 'list', packet: packet.buffer }, [packet.buffer]);
+    worker.postMessage({ operation, packet: packet.buffer }, [packet.buffer]);
   } catch (error) { fail(error, job); }
   return 1;
 }
@@ -171,7 +173,8 @@ function download(ptr, length, format) {
 
 export function __nsh_imports() {
   return { peazip: { pc_create_start: create, pc_download: download, pc_cancel: cancel,
-    pc_list_start: list,
+    pc_list_start: (ptr, length) => inspect(ptr, length, 'list'),
+    pc_test_start: (ptr, length) => inspect(ptr, length, 'test'),
     pc_extract_start: extract, pc_can_extract: () => typeof window.showDirectoryPicker === 'function' ? 1 : 0,
   } };
 }

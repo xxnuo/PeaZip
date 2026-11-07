@@ -4,6 +4,29 @@ pub const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024 + 4096 * (8 + 1024) + 4;
 pub const MAX_EXTRACT_REQUEST_BYTES: usize = 32 * 1024 * 1024 + 4096 * (4 + 1024) + 8;
 pub const MAX_EXTRACT_OUTPUT_BYTES: usize = 64 * 1024 * 1024 + 4096 * (12 + 1024) + 4;
 pub const MAX_LIST_OUTPUT_BYTES: usize = 5 + 4096 * (24 + 1024);
+pub const TEST_REPORT_BYTES: usize = 20;
+
+pub fn test_from_request(archive: &[u8]) -> Result<Vec<u8>, String> {
+    let limits = Limits::default();
+    if archive.len() as u64 > limits.max_archive_bytes {
+        return Err("archive byte limit exceeded".into());
+    }
+    let report = peazip_core::test_archive(archive, limits).map_err(|error| error.to_string())?;
+    if report.entries > limits.max_entries
+        || report.files > report.entries
+        || report.checksummed_files > report.files
+        || report.total_bytes > limits.max_total_bytes
+        || report.total_bytes > (report.files as u64).saturating_mul(limits.max_entry_bytes)
+    {
+        return Err("invalid archive test report".into());
+    }
+    let mut output = Vec::with_capacity(TEST_REPORT_BYTES);
+    output.extend_from_slice(&(report.entries as u32).to_le_bytes());
+    output.extend_from_slice(&(report.files as u32).to_le_bytes());
+    output.extend_from_slice(&report.total_bytes.to_le_bytes());
+    output.extend_from_slice(&(report.checksummed_files as u32).to_le_bytes());
+    Ok(output)
+}
 
 pub fn list_from_request(archive: &[u8]) -> Result<Vec<u8>, String> {
     let limits = Limits::default();
@@ -148,7 +171,10 @@ pub fn create_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use super::{MAX_REQUEST_BYTES, create_from_request, extract_from_request, list_from_request};
+    use super::{
+        MAX_REQUEST_BYTES, create_from_request, extract_from_request, list_from_request,
+        test_from_request,
+    };
     use std::cell::RefCell;
 
     thread_local! {
@@ -181,6 +207,11 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn pw_list() -> u32 {
         run(list_from_request)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn pw_test() -> u32 {
+        run(test_from_request)
     }
 
     fn run(operation: fn(&[u8]) -> Result<Vec<u8>, String>) -> u32 {
