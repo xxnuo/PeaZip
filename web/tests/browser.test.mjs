@@ -824,10 +824,10 @@ test('Real worker reports bounded read counts then compression and UI shows actu
   t.diagnostic(`Unmodified worker: 24 MiB real compression; UI phases ${JSON.stringify(stages)}; ${count} files emitted ${reads.length} read messages, then compress, then success.`);
 });
 
-async function extractionPage(t, available = true) {
+async function extractionPage(t, available = true, options = {}) {
   const browser = await chromium.launch();
   t.after(() => browser.close());
-  const page = await browser.newPage();
+  const page = await browser.newPage(options);
   const errors = [], downloads = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('download', (download) => downloads.push(download));
@@ -909,6 +909,227 @@ async function extractionPage(t, available = true) {
     });
   }
   return { page, button, choose, tree, downloads };
+}
+
+async function menuPage(t, options = {}) {
+  const context = await extractionPage(t, true, options);
+  const { page, button } = context;
+  const popup = page.getByRole('menu');
+  async function openMenu(group) {
+    await button(group).click();
+    await expect(popup).toHaveCount(1);
+    await expect(popup).toBeVisible();
+    return popup;
+  }
+  async function menuAction(group, name) {
+    await openMenu(group);
+    await popup.getByRole('menuitem', { name, exact: true }).click();
+    await expect(popup).toHaveCount(0);
+  }
+  return { ...context, popup, openMenu, menuAction };
+}
+
+test('Application menus share archive, hierarchy, layout and keyboard commands', { timeout: 120_000 }, async (t) => {
+  const { page, button, popup, openMenu, menuAction, downloads } = await menuPage(t, { viewport: { width: 1440, height: 900 } });
+  for (const group of ['File', 'Edit', 'Browser', 'Layout', 'Tools', 'Help']) await expect(button(group)).toBeVisible();
+  for (const group of ['Organize', 'Options']) await expect(button(group)).toHaveCount(0);
+  await openMenu('File');
+  await expect(popup.getByRole('menuitem', { name: 'Open archive…', exact: true })).toBeEnabled();
+  for (const name of ['Download archive', 'Close archive']) await expect(popup.getByRole('menuitem', { name, exact: true })).toBeDisabled();
+  const picked = page.waitForEvent('filechooser');
+  await popup.getByRole('menuitem', { name: 'Open archive…', exact: true }).click();
+  await (await picked).setFiles(fileURLToPath(new URL('../../tests/fixtures/sample.tar', import.meta.url)));
+  await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+  await expect(popup).toHaveCount(0);
+  await button('Folder view').click();
+  await expect(page.getByRole('checkbox')).toHaveCount(2);
+  await openMenu('Layout');
+  const flat = popup.getByRole('menuitemcheckbox', { name: 'All entries', exact: true });
+  await expect(flat).not.toBeChecked();
+  await flat.click();
+  await expect(button('Folder view')).toBeEnabled();
+  await expect(page.getByRole('checkbox')).toHaveCount(5);
+  await openMenu('Layout');
+  await expect(flat).toBeChecked();
+  await flat.click();
+  await expect(page.getByRole('checkbox')).toHaveCount(2);
+  await openMenu('Layout');
+  await expect(popup.getByRole('menuitemcheckbox', { name: 'Sort by name', exact: true })).toBeChecked();
+  await popup.getByRole('menuitemcheckbox', { name: 'Sort by size', exact: true }).click();
+  await openMenu('Layout');
+  await expect(popup.getByRole('menuitemcheckbox', { name: 'Sort by size', exact: true })).toBeChecked();
+  await expect(popup.getByRole('menuitemcheckbox', { name: 'Sort by name', exact: true })).not.toBeChecked();
+  await page.keyboard.press('Escape');
+  await expect(popup).toHaveCount(0);
+  await button('Open folder docs/').click();
+  await openMenu('Edit');
+  const apple = await page.evaluate(() => /mac|iphone|ipad/i.test(navigator.userAgentData?.platform ?? navigator.platform));
+  await expect(popup.getByText(`${apple ? 'Cmd' : 'Ctrl'}+A`, { exact: true })).toBeVisible();
+  await expect(popup.getByText(/\bmod\+/)).toHaveCount(0);
+  await popup.getByRole('menuitem', { name: 'Select all', exact: true }).click();
+  await expect(popup).toHaveCount(0);
+  await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+  for (const name of ['docs/empty/', 'docs/nested/', 'docs/你好.txt']) await expect(page.getByRole('checkbox', { name, exact: true })).toBeChecked();
+  const path = page.getByRole('textbox', { name: 'Archive path', exact: true });
+  await path.fill('docs/nested/');
+  await path.press('ControlOrMeta+a');
+  assert.deepEqual(await path.evaluate((input) => [input.selectionStart, input.selectionEnd]), [0, 'docs/nested/'.length]);
+  await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+  await path.press('Alt+ArrowLeft');
+  await expect(path).toHaveValue('docs/nested/');
+  await expect(page.getByRole('checkbox')).toHaveCount(3);
+  await expect(button('Forward')).toBeDisabled();
+  await button('Name').focus();
+  await expect(path).not.toBeFocused();
+  await page.keyboard.press('Alt+ArrowLeft');
+  await expect(path).toHaveValue('/');
+  await expect(page.getByRole('checkbox')).toHaveCount(2);
+  await expect(page.getByRole('checkbox', { name: 'other.txt', exact: true })).not.toBeChecked();
+  await button('Browser').focus();
+  await button('Browser').press('Enter');
+  await expect(popup).toHaveCount(1);
+  await page.keyboard.press('End');
+  await expect(popup.getByRole('menuitem', { name: 'Go to path', exact: true })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(popup).toHaveCount(0);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(path).toBeFocused();
+  await page.keyboard.type('docs/nested/');
+  await expect(path).toHaveValue('docs/nested/');
+  await path.press('Enter');
+  await expect(path).toHaveValue('docs/nested/');
+  await expect(path).not.toBeFocused();
+  await menuAction('Edit', 'Clear selection');
+  await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: 'docs/nested/data.bin', exact: true }).click();
+  await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+  await openMenu('File');
+  const pendingDownload = page.waitForEvent('download');
+  await popup.getByRole('menuitem', { name: 'Download archive', exact: true }).click();
+  assert.equal((await pendingDownload).suggestedFilename(), 'Archive.tar');
+  await menuAction('File', 'Close archive');
+  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  await expect(page.getByText('Open an archive to view its contents.', { exact: true })).toBeVisible();
+  await expect(path).toHaveValue('/');
+  await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+  for (const name of ['Back', 'Forward', 'Up', 'Download ZIP', 'Test archive', 'Extract selected…']) await expect(button(name)).toBeDisabled();
+  await openMenu('File');
+  for (const name of ['Download archive', 'Close archive']) await expect(popup.getByRole('menuitem', { name, exact: true })).toBeDisabled();
+  assert.equal(downloads.length, 1);
+});
+
+test('Busy application menu items match toolbar eligibility and menu Cancel stops the real test worker', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, popup, openMenu, menuAction, tree, downloads } = await menuPage(t);
+  await choose();
+  const selected = page.getByRole('checkbox', { name: '你好.txt', exact: true });
+  await selected.click();
+  let release, intercepted = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async (route) => {
+    intercepted = true;
+    await gate;
+    await route.continue().catch(() => {});
+  });
+  try {
+    await menuAction('Tools', 'Test archive');
+    await expect.poll(() => intercepted).toBe(true);
+    await expect(page.getByText('Testing archive…', { exact: true })).toBeVisible();
+    await openMenu('File');
+    for (const [item, action] of [['Open archive…', 'Open archive…'], ['Create ZIP…', 'Create ZIP…'], ['Download archive', 'Download ZIP']]) {
+      await expect(popup.getByRole('menuitem', { name: item, exact: true })).toBeDisabled();
+      await expect(button(action)).toBeDisabled();
+    }
+    await expect(popup.getByRole('menuitem', { name: 'Close archive', exact: true })).toBeDisabled();
+    await button('Tools').hover();
+    await expect(popup).toHaveCount(1);
+    for (const name of ['Test archive', 'Extract selected…']) {
+      await expect(popup.getByRole('menuitem', { name, exact: true })).toBeDisabled();
+      await expect(button(name)).toBeDisabled();
+    }
+    await expect(popup.getByRole('menuitem', { name: 'Cancel', exact: true })).toBeEnabled();
+    await expect(button('Cancel')).toBeEnabled();
+    await popup.getByRole('menuitem', { name: 'Cancel', exact: true }).click();
+    await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
+    await expect(button('Test archive')).toBeEnabled();
+    await expect(selected).toBeChecked();
+    await expect.poll(() => page.evaluate(() => window.testWorkers)).toEqual([{ terminated: true, codes: [] }]);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+  await menuAction('Tools', 'Test archive');
+  await expect(page.getByText('Tested 3 entries (13 bytes). Content checksums: 2/2 files.', { exact: true })).toBeVisible();
+  await expect(selected).toBeChecked();
+  assert.deepEqual(await tree(), sentinelTree);
+  assert.equal(downloads.length, 0);
+});
+
+test('The Help menu opens About and restores focus after dismissal', { timeout: 120_000 }, async (t) => {
+  const { page, button, menuAction } = await menuPage(t);
+  await menuAction('Help', 'About PeaZip');
+  const dialog = page.getByRole('alertdialog', { name: 'About PeaZip', exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(/Read: ZIP, TAR, TAR.GZ, 7z/)).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(button('Help')).toBeFocused();
+  await button('Help').press('Enter');
+  await page.getByRole('menuitem', { name: 'About PeaZip', exact: true }).press('Enter');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close', exact: true }).press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(button('Help')).toBeFocused();
+});
+
+for (const touch of [false, true]) {
+  for (const colorScheme of ['light', 'dark']) {
+    const viewport = touch ? { width: 360, height: 800 } : { width: 1440, height: 900 };
+    test(`Application menu popup uses distinct item roles in ${touch ? 'touch' : 'desktop'} ${colorScheme} mode`, { timeout: 120_000 }, async (t) => {
+      const { page, button, choose, popup, openMenu, menuAction } = await menuPage(t, { viewport, colorScheme, hasTouch: touch, isMobile: touch });
+      await choose();
+      await openMenu('File');
+      await expect(popup.getByRole('menuitem', { name: 'Open archive…', exact: true })).toBeVisible();
+      await expect(button('Open archive…')).toBeVisible();
+      await expect(popup.getByRole('button', { name: 'Open archive…', exact: true })).toHaveCount(0);
+      await expect(popup.getByRole('menuitem', { name: 'Create folder ZIP…', exact: true })).toHaveCount(0);
+      const bounds = await popup.boundingBox();
+      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width + 1);
+      if (touch) {
+        assert.ok(Math.abs(bounds.x) <= 1 && Math.abs(bounds.width - viewport.width) <= 1, 'touch menus must use the built-in full-width sheet');
+        await expect.poll(async () => {
+          const sheet = await popup.boundingBox();
+          return Math.abs(sheet.y + sheet.height - viewport.height);
+        }).toBeLessThanOrEqual(1);
+      }
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      const screenshot = resolve(root, '..', `web-menu-${touch ? 'touch' : 'desktop'}-${colorScheme}.png`);
+      await page.screenshot({ path: screenshot, fullPage: true, animations: 'disabled' });
+      t.diagnostic(`Screenshot: ${screenshot}`);
+      await page.keyboard.press('Escape');
+      await expect(popup).toHaveCount(0);
+      if (touch) {
+        await menuAction('Browser', 'Go to path');
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const path = page.getByRole('textbox', { name: 'Archive path', exact: true });
+        await expect(path).toBeFocused();
+        await page.keyboard.type('空目录/');
+        await expect(path).toHaveValue('空目录/');
+        await page.keyboard.press('Enter');
+        await expect(path).toHaveValue('空目录/');
+        await expect(path).not.toBeFocused();
+        await expect(page.getByRole('checkbox')).toHaveCount(3);
+        await button('Folder view').click();
+        await expect(page.getByRole('checkbox')).toHaveCount(0);
+        await button('All entries').click();
+        await expect(page.getByRole('checkbox')).toHaveCount(3);
+      }
+      await openMenu('Layout');
+      await expect(popup.getByRole('menuitemcheckbox', { name: 'All entries', exact: true })).toBeChecked();
+      await popup.getByRole('menuitemcheckbox', { name: 'All entries', exact: true }).click();
+      await expect(button('All entries')).toBeEnabled();
+    });
+  }
 }
 
 const sentinelTree = { 'sentinel.txt': Array.from(Buffer.from('leave me unchanged')) };

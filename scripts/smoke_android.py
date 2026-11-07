@@ -178,7 +178,7 @@ class Smoke:
         self.save(evidence)
         self.button(("Open", "OPEN", "Select", "SELECT"))
 
-    def test_archive(self, filename, contents, checksummed_files, evidence, reject=False):
+    def test_archive(self, filename, contents, checksummed_files, evidence, reject=False, test_action=None):
         def snapshot(tree):
             return [(n.get("content-desc"), n.get("checked"), n.get("text"))
                     for n in tree.iter("node")
@@ -195,7 +195,10 @@ class Smoke:
         total = sum(len(data) for data in contents.values() if data is not None)
         expected = (f"Tested {len(contents)} entries ({total} bytes). "
                     f"Content checksums: {checksummed_files}/{files} files.")
-        self.tap("Test archive")
+        if test_action is None:
+            self.tap("Test archive")
+        else:
+            test_action()
         def finished(tree):
             if any(n.get("package", "").endswith(".documentsui") or
                    n.get("resource-id") == "android:id/alertTitle" for n in tree.iter("node")):

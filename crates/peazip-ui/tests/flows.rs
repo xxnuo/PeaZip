@@ -13,6 +13,67 @@ fn start() -> Headless {
 }
 
 #[test]
+fn shortcuts_share_archive_actions_and_leave_path_editing_to_the_input() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("sample.tar");
+    let bytes = include_bytes!("../../../tests/fixtures/sample.tar");
+    std::fs::write(&source, bytes).unwrap();
+    let mut app = start();
+    app.on_pick_paths(vec![source.clone()]).unwrap();
+    app.press_key("mod+o").unwrap();
+    app.wait_for("5 entries").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.wait_for("5 selected").unwrap();
+    app.press_key("mod+shift+a").unwrap();
+    app.wait_for("0 selected").unwrap();
+
+    app.press_key("mod+l").unwrap();
+    app.clear("Archive path").unwrap();
+    app.type_text("Archive path", "docs/").unwrap();
+    app.press_key("mod+a").unwrap();
+    assert!(app.screen().shows("0 selected"));
+    app.press("role:button[Go]").unwrap();
+    app.press_key("alt+up").unwrap();
+    assert_eq!(app.screen().input_text("Archive path").unwrap(), Some("/"));
+    app.press_key("alt+left").unwrap();
+    assert_eq!(
+        app.screen().input_text("Archive path").unwrap(),
+        Some("docs/")
+    );
+    app.press_key("mod+l").unwrap();
+    app.press_key("alt+left").unwrap();
+    assert_eq!(
+        app.screen().input_text("Archive path").unwrap(),
+        Some("docs/")
+    );
+    app.press("role:button[Go]").unwrap();
+    app.press_key("alt+left").unwrap();
+    assert_eq!(app.screen().input_text("Archive path").unwrap(), Some("/"));
+
+    let requests = app.screen().file_requests().len();
+    app.press_key("mod+w").unwrap();
+    app.wait_for("Open an archive to view its contents.")
+        .unwrap();
+    assert!(!app.screen().enabled("role:button[Test archive]").unwrap());
+    assert!(!app.screen().enabled("role:button[Back]").unwrap());
+    assert_eq!(app.screen().count("role:checkbox").unwrap(), 0);
+    assert_eq!(app.screen().file_requests().len(), requests);
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    app.press_key("mod+o").unwrap();
+    app.wait_for("5 entries").unwrap();
+    app.press("role:checkbox[docs/]").unwrap();
+    let destination = temp.path().join("selected");
+    app.on_pick_save_path(Some(destination.clone())).unwrap();
+    app.press_key("mod+enter").unwrap();
+    app.wait_for("Extracted 4 entries").unwrap();
+    assert_eq!(
+        std::fs::read(destination.join("docs/你好.txt")).unwrap(),
+        "tar 你好\n".as_bytes()
+    );
+    assert!(!destination.join("other.txt").exists());
+}
+
+#[test]
 fn browses_implicit_directories_and_extracts_only_their_real_descendants() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("sample.tar");

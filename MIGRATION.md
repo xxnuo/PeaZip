@@ -175,3 +175,15 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 路径编辑使用字面输入（不自动大写或纠正）；合法 Enter/Go、历史导航与重开归档后显式结束编辑，避免 Android 首次目录点击只失焦而未选择。非法 Enter 保留编辑焦点，便于修正。
 - Android 最终 APK 的完整导航 smoke 退出码 0，记录 `target/android-smoke/a724445945d9`；真实 DocumentsUI/SAF 验证隐式目录仅导出实际后代、父目录选中后取消子文件确实不输出该文件、空目录/其他输出/哨兵正确，第一次点击生效，路径 Enter 成功失焦、非法输入保留焦点，重开与视图偏好正确。独立输入复验记录 `target/android-smoke/fd0c358f069f`。新增可重复运行的 `uv run python scripts/smoke_android_navigation.py --serial emulator-5554 --apk target/android/arm64-v8a/peazip-arm64-v8a-debug.apk`；测试文件清理、PID 稳定无应用 fatal，专用模拟器已关闭。
 - 阶段 2a 仍未完成：原版完整菜单、文件系统/书签/历史导航、双击与快捷键、列宽调整及完整属性列、创建/解压选项对话框、跨平台窗口/主题和 iOS/Windows 实际运行均需继续验收。此提交是可用的归档导航单元，不将它或六张截图等同于完整 PeaZip 界面迁移。
+
+## 系统菜单与共享命令
+
+- File、Edit、Browser、Layout、Tools、Help 接入已有归档操作、选择、导航与排序。macOS/Linux/Windows 代码使用 nsh 原生应用菜单，macOS 保留 PeaZip 应用菜单及系统 Hide/Quit roles；Web 与移动端使用同一命令集合的弹出菜单/底部菜单。未接入的 Organize、Options 及原版其余命令仍待迁移，不以空操作伪装可用。
+- 菜单、工具栏、导航按钮与快捷键共享实时 enabled/checked 与实际调用；执行时再次检查状态，旧菜单不能绕过 busy 或空快照限制。菜单启动的任务归属 App owner，不随 popup 销毁而取消。新增 Close archive，仅清除当前快照、选择和导航，不改源文件；再次打开从根目录开始，视图偏好保留。
+- 桌面使用 mod+O/N/W/L、mod+Enter；选择与导航还支持 mod+A、mod+Shift+A、Alt+Left/Right/Up（mod 按平台映射 Command/Control）。编辑敏感操作只在非文本编辑状态响应，Web 不注册浏览器保留的打开/新建/关闭/地址栏组合键。原生 accelerator 仅给 Open 和 FocusPath，避免 GTK/AppKit/Win32 忽略 NotEditing 而抢走文本全选；也保证菜单栏或空白区焦点下能打开归档。
+- 原生归档菜单动作完成后回到列表焦点，About 结束后再回焦；FocusPath 仍聚焦地址栏。实际修复了 GTK Edit/Clear 后焦点落入路径框、下一次 Ctrl+A 只选中文字的行为。Web 菜单采用独立菜单按钮组，修复通用 toolbar 与菜单同时处理 Enter 的重复切换；About 开启前记录有效触发器，关闭后恢复焦点。快捷键提示显示 Cmd/Ctrl 等用户可识别名称。
+- 验证：工作区 159 次测试执行通过；新增实际 App 的原生菜单 mount/事件分派测试，检查菜单分组、disabled/checked、编辑敏感项无 native accelerator，以及真实打开/关闭与状态更新。headless 覆盖快捷键实际打开和提取、路径编辑不误选、关闭与重开。主机/WASM/Android target Clippy、格式检查通过。
+- 浏览器 63 项通过：菜单触发异步归档任务、忙碌门禁、菜单取消真实 Worker、同一份快照/选择、路径编辑快捷键隔离、键盘打开菜单和焦点恢复；桌面与触屏亮暗主题截图已检查，触屏 Go to path 在 sheet 关闭两帧后仍能直接输入。源码/构建证据记录在 `target/menu-evidence.json`。
+- Linux 当前源码的原生 GTK 菜单两轮完整流程与后续焦点补充流程通过，包含 File/Open、Edit/Select/Clear、Browser/Layout、Tools/Test/Extract、File/Close、About，以及不额外点击内容区的 Ctrl+A 和排序后的 Alt 导航。16 项焦点探针通过；源码哈希和截图在 `target/linux-menu-native/verification.json`、`images.json`。保留 Xvfb DRI3 与 GTK Separator 尺寸 warning，不宣称日志完全无警告；没有 panic/critical。环境仍限定为已记录的 GTK/X11。
+- Android 最终 APK 菜单 smoke 退出码 0，记录 `target/android-smoke/00d122abec9c`：菜单 disabled/checked、File 打开/保存取消/关闭、Browser 历史与路径聚焦/Enter 失焦、Edit 选择、Layout 视图排序、Tools 只读 Test、Back/外部点击关闭、About 均通过；源文件/选择及取消状态按场景核对，PID 稳定无应用 fatal。可复现命令为 `uv run python scripts/smoke_android_menus.py --serial emulator-5554 --apk target/android/arm64-v8a/peazip-arm64-v8a-debug.apk`。测试文件已清理，专用模拟器已关闭。
+- 本轮重新尝试 iOS UI 检查仍因缺少 iphonesimulator SDK 在 ring 构建阶段失败；Windows UI 交叉检查缺少 x86_64-w64-mingw32-gcc。两者不计作 UI 构建或运行完成；既有 CI 配置尚未获得远程执行证据。完整菜单迁移、原版操作对话框、本地文件管理及其余阶段 2a 验收继续保留为未完成。

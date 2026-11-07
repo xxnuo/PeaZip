@@ -1,11 +1,14 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use nsh_base::{button, theme, toolbar};
+use commands::{Command, CommandId, Commands};
+use nsh_base::{theme, toolbar};
 use nsh_core::prelude::*;
 use peazip_core::{ArchiveFormat, Entry};
 
+mod commands;
 mod explorer;
 mod icons;
+mod menus;
 mod navigation;
 
 type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>, ArchiveFormat);
@@ -37,6 +40,8 @@ pub fn App() -> impl IntoElement {
     let cancel_message = signal("Creation cancelled.".to_owned());
     let activity = signal("Opening archive…".to_owned());
     let selected = signal(BTreeSet::<String>::new());
+    let controls = explorer::Controls::new(entries, navigation);
+    let active_menu = signal(None::<&'static str>);
     let open = move || {
         if busy.get_untracked() {
             return;
@@ -70,30 +75,6 @@ pub fn App() -> impl IntoElement {
             busy.set(false);
         });
     };
-    let actions = toolbar()
-        .flex_wrap()
-        .items_center()
-        .gap_3()
-        .p_2()
-        .border_b_1()
-        .border_color(move || theme().border)
-        .child(
-            button()
-                .disabled(move || busy.get())
-                .on_press(open)
-                .px_3()
-                .py_2()
-                .border_1()
-                .border_color(move || theme().border)
-                .bg(move || theme().muted)
-                .active(|s| s.opacity(0.6))
-                .disabled_style(|s| s.opacity(0.4))
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .child(icons::icon("open"))
-                .child(text("Open archive…")),
-        );
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
@@ -131,237 +112,35 @@ pub fn App() -> impl IntoElement {
             cancellable.set(false);
         });
     };
-    #[cfg(any(
-        target_arch = "wasm32",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "linux",
-        target_os = "windows"
-    ))]
-    let actions = actions.child(
-        button()
-            .disabled(move || busy.get())
-            .on_press(move || create(false))
-            .px_3()
-            .py_2()
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted)
-            .active(|s| s.opacity(0.6))
-            .disabled_style(|s| s.opacity(0.4))
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(icons::icon("add"))
-            .child(text("Create ZIP…")),
-    );
-    #[cfg(target_os = "android")]
-    let actions = actions.child(
-        button()
-            .disabled(move || busy.get() || snapshot.with(|bytes| bytes.is_empty()))
-            .on_press(move || {
-                if busy.get_untracked() {
-                    return;
-                }
-                let bytes = snapshot.get_untracked();
-                let kind = format.get_untracked();
-                busy.set(true);
-                activity.set("Saving archive…".into());
-                spawn(async move {
-                    match android::save_archive(bytes, kind).await {
-                        Ok(Some(name)) => status.set(format!("Saved archive: {name}")),
-                        Ok(None) => status.set("Save cancelled.".into()),
-                        Err(error) => status.set(format!("Could not save archive: {error}")),
-                    }
-                    busy.set(false);
-                });
-            })
-            .px_3()
-            .py_2()
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted)
-            .active(|s| s.opacity(0.6))
-            .disabled_style(|s| s.opacity(0.4))
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(icons::icon("save"))
-            .child(text(move || match format.get() {
-                ArchiveFormat::Zip => "Save ZIP…",
-                ArchiveFormat::Tar => "Save TAR…",
-                ArchiveFormat::TarGzip => "Save TAR.GZ…",
-                ArchiveFormat::SevenZip => "Save 7Z…",
-            })),
-    );
-    #[cfg(target_arch = "wasm32")]
-    let actions = actions.child(
-        button()
-            .disabled(move || busy.get() || snapshot.with(|bytes| bytes.is_empty()))
-            .on_press(move || {
-                if busy.get_untracked() {
-                    return;
-                }
-                match browser::download(&snapshot.get_untracked(), format.get_untracked()) {
-                    Ok(()) => status.set("Archive download requested.".into()),
-                    Err(error) => status.set(format!("Could not download archive: {error}")),
-                }
-            })
-            .px_3()
-            .py_2()
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted)
-            .active(|s| s.opacity(0.6))
-            .disabled_style(|s| s.opacity(0.4))
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(icons::icon("save"))
-            .child(text(move || match format.get() {
-                ArchiveFormat::Zip => "Download ZIP",
-                ArchiveFormat::Tar => "Download TAR",
-                ArchiveFormat::TarGzip => "Download TAR.GZ",
-                ArchiveFormat::SevenZip => "Download 7Z",
-            })),
-    );
-    #[cfg(target_arch = "wasm32")]
-    let actions = actions.child(
-        button()
-            .disabled(move || !cancellable.get())
-            .on_press(move || {
-                if cancellable.get_untracked() && browser::cancel() {
-                    cancellable.set(false);
-                    status.set(cancel_message.get_untracked());
-                    activity.set("Cancelling…".into());
-                }
-            })
-            .px_3()
-            .py_2()
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted)
-            .active(|s| s.opacity(0.6))
-            .disabled_style(|s| s.opacity(0.4))
-            .child(text("Cancel")),
-    );
-    #[cfg(target_arch = "wasm32")]
-    let can_extract = browser::can_extract();
-    #[cfg(target_arch = "wasm32")]
-    let actions = actions.child(
-        button()
-            .disabled(move || busy.get() || selected.with(BTreeSet::is_empty) || !can_extract)
-            .on_press(move || {
-                if busy.get_untracked() || !can_extract || selected.with(BTreeSet::is_empty) {
-                    return;
-                }
-                let bytes = snapshot.get_untracked();
-                let paths = selected.with(|paths| paths.iter().cloned().collect::<Vec<_>>());
-                busy.set(true);
-                cancellable.set(true);
-                cancel_message.set("Extraction cancellation requested.".into());
-                activity.set("Choose an export directory…".into());
-                spawn(async move {
-                    match browser::extract_archive(&bytes, &paths, move |message| {
-                        activity.set(message)
-                    })
-                    .await
-                    {
-                        Ok(Some(report)) => status.set(report),
-                        Ok(None) => status.set("Extraction cancelled.".into()),
-                        Err(error) => status.set(format!("Could not extract archive: {error}")),
-                    }
-                    busy.set(false);
-                    cancellable.set(false);
-                });
-            })
-            .px_3()
-            .py_2()
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted)
-            .active(|s| s.opacity(0.6))
-            .disabled_style(|s| s.opacity(0.4))
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(icons::icon("extract"))
-            .child(text("Extract selected…")),
-    );
-    #[cfg(target_arch = "wasm32")]
-    let actions = if can_extract {
-        actions
-    } else {
-        actions.child(text("Directory export is unavailable in this browser."))
-    };
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    let actions = actions.child(
-        button()
-            .disabled(move || busy.get())
-            .on_press(move || create(true))
-            .px_3()
-            .py_2()
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted)
-            .active(|s| s.opacity(0.6))
-            .disabled_style(|s| s.opacity(0.4))
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(icons::icon("add"))
-            .child(text("Create folder ZIP…")),
-    );
-    #[cfg(any(
-        target_os = "android",
-        target_os = "macos",
-        target_os = "linux",
-        target_os = "windows"
-    ))]
-    let actions = actions.child(
-        button()
-            .disabled(move || busy.get() || selected.with(BTreeSet::is_empty))
-            .on_press(move || {
-                if busy.get_untracked() || selected.with(BTreeSet::is_empty) {
-                    return;
-                }
-                let bytes = snapshot.get_untracked();
-                let paths = selected.with(|paths| paths.iter().cloned().collect::<Vec<_>>());
-                busy.set(true);
-                activity.set("Extracting archive…".to_owned());
-                spawn(async move {
-                    #[cfg(target_os = "android")]
-                    match extract_android_archive(bytes, paths).await {
-                        Ok(Some(report)) => status.set(report),
-                        Ok(None) => status.set("Extraction cancelled.".into()),
-                        Err(error) => status.set(format!("Could not extract archive: {error}")),
-                    }
-                    #[cfg(not(target_os = "android"))]
-                    match extract_archive(bytes, paths).await {
-                        Ok(Some(count)) => status.set(format!("Extracted {count} entries")),
-                        Ok(None) => {}
-                        Err(error) => status.set(format!("Could not extract archive: {error}")),
-                    }
-                    busy.set(false);
-                });
-            })
-            .px_3()
-            .py_2()
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted)
-            .active(|s| s.opacity(0.6))
-            .disabled_style(|s| s.opacity(0.4))
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(icons::icon("extract"))
-            .child(text("Extract selected…")),
-    );
-    let actions = actions.child(
-        button()
-            .disabled(move || busy.get() || snapshot.with(|bytes| bytes.is_empty()))
-            .on_press(move || {
+
+    let mut all = vec![
+        desktop_shortcut(
+            Command::new(CommandId::Open, "Open archive…", move || !busy.get(), open).icon("open"),
+            "mod+o",
+        ),
+        desktop_shortcut(
+            Command::new(
+                CommandId::CloseArchive,
+                "Close archive",
+                move || !busy.get() && !snapshot.with(|bytes| bytes.is_empty()),
+                move || {
+                    snapshot.set(Arc::new(Vec::new()));
+                    entries.set(Vec::new());
+                    selected.set(BTreeSet::new());
+                    path.set(String::new());
+                    format.set(ArchiveFormat::Zip);
+                    navigation.set(navigation::BrowserState::default());
+                    archive_version.update(|version| *version = version.wrapping_add(1));
+                    status.set("Open an archive to view its contents.".into());
+                },
+            ),
+            "mod+w",
+        ),
+        Command::new(
+            CommandId::Test,
+            "Test archive",
+            move || !busy.get() && !snapshot.with(|bytes| bytes.is_empty()),
+            move || {
                 if busy.get_untracked() || snapshot.with(|bytes| bytes.is_empty()) {
                     return;
                 }
@@ -393,34 +172,417 @@ pub fn App() -> impl IntoElement {
                     cancellable.set(false);
                     busy.set(false);
                 });
-            })
-            .px_3()
-            .py_2()
-            .border_1()
-            .border_color(move || theme().border)
-            .bg(move || theme().muted)
-            .active(|s| s.opacity(0.6))
-            .disabled_style(|s| s.opacity(0.4))
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(icons::icon("test"))
-            .child(text("Test archive")),
+            },
+        )
+        .icon("test"),
+        keyboard_shortcut(
+            Command::new(
+                CommandId::SelectAll,
+                "Select all",
+                move || !busy.get() && !controls.visible.with(Vec::is_empty),
+                move || {
+                    let paths = entries.with(|items| {
+                        controls.visible.with(|rows| {
+                            rows.iter()
+                                .flat_map(|row| navigation::selection_paths(row, items))
+                                .collect()
+                        })
+                    });
+                    selected.set(paths);
+                },
+            ),
+            "mod+a",
+        ),
+        keyboard_shortcut(
+            Command::new(
+                CommandId::ClearSelection,
+                "Clear selection",
+                move || !busy.get() && !selected.with(BTreeSet::is_empty),
+                move || selected.set(BTreeSet::new()),
+            ),
+            "mod+shift+a",
+        ),
+        keyboard_shortcut(
+            Command::new(
+                CommandId::Back,
+                "Back",
+                move || !busy.get() && navigation.with(navigation::BrowserState::can_back),
+                move || {
+                    navigation.update(|state| {
+                        state.back();
+                    })
+                },
+            )
+            .icon("back"),
+            "alt+left",
+        ),
+        keyboard_shortcut(
+            Command::new(
+                CommandId::Forward,
+                "Forward",
+                move || !busy.get() && navigation.with(navigation::BrowserState::can_forward),
+                move || {
+                    navigation.update(|state| {
+                        state.forward();
+                    })
+                },
+            )
+            .icon("forward"),
+            "alt+right",
+        ),
+        keyboard_shortcut(
+            Command::new(
+                CommandId::Up,
+                "Up",
+                move || !busy.get() && !navigation.with(|state| state.current().is_empty()),
+                move || {
+                    navigation.update(|state| {
+                        state.up();
+                    })
+                },
+            )
+            .icon("up"),
+            "alt+up",
+        ),
+        Command::new(
+            CommandId::Root,
+            "Archive root",
+            move || !busy.get() && !navigation.with(|state| state.current().is_empty()),
+            move || {
+                navigation.update(|state| {
+                    state.root();
+                })
+            },
+        ),
+        desktop_shortcut(
+            Command::new(
+                CommandId::FocusPath,
+                "Go to path",
+                move || !busy.get(),
+                move || {
+                    controls.input.focus();
+                    controls.input.set_selection(
+                        0,
+                        controls
+                            .draft
+                            .with(|text| text.encode_utf16().count() as u32),
+                    );
+                },
+            ),
+            "mod+l",
+        ),
+        Command::new(
+            CommandId::ToggleFlat,
+            "All entries",
+            move || !busy.get(),
+            move || controls.flat.update(|value| *value = !*value),
+        )
+        .checked(move || controls.flat.get()),
+        Command::new(
+            CommandId::SortName,
+            "Sort by name",
+            move || !busy.get(),
+            move || {
+                controls.sort.update(|value| {
+                    *value = if *value == navigation::Sort::NameAsc {
+                        navigation::Sort::NameDesc
+                    } else {
+                        navigation::Sort::NameAsc
+                    }
+                })
+            },
+        )
+        .checked(move || {
+            matches!(
+                controls.sort.get(),
+                navigation::Sort::NameAsc | navigation::Sort::NameDesc
+            )
+        }),
+        Command::new(
+            CommandId::SortSize,
+            "Sort by size",
+            move || !busy.get(),
+            move || {
+                controls.sort.update(|value| {
+                    *value = if *value == navigation::Sort::SizeAsc {
+                        navigation::Sort::SizeDesc
+                    } else {
+                        navigation::Sort::SizeAsc
+                    }
+                })
+            },
+        )
+        .checked(move || {
+            matches!(
+                controls.sort.get(),
+                navigation::Sort::SizeAsc | navigation::Sort::SizeDesc
+            )
+        }),
+    ];
+    all.push(Command::new(
+        CommandId::About,
+        "About PeaZip",
+        move || !busy.get(),
+        move || {
+            let answer = nsh_base::alert_dialog()
+                .title("About PeaZip")
+                .description(concat!(
+                    "PeaZip Rust edition ",
+                    env!("CARGO_PKG_VERSION"),
+                    "\nRead: ZIP, TAR, TAR.GZ, 7z\nCreate: ZIP\nLGPL-3.0-or-later"
+                ))
+                .action("close", "Close")
+                .show();
+            spawn(async move {
+                let _ = answer.await;
+                #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                controls.content.focus();
+            });
+        },
+    ));
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
+    all.push(desktop_shortcut(
+        Command::new(
+            CommandId::CreateZip,
+            "Create ZIP…",
+            move || !busy.get(),
+            move || create(false),
+        )
+        .icon("add"),
+        "mod+n",
+    ));
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    all.push(
+        Command::new(
+            CommandId::CreateFolderZip,
+            "Create folder ZIP…",
+            move || !busy.get(),
+            move || create(true),
+        )
+        .icon("add"),
     );
-    view()
+    #[cfg(target_os = "android")]
+    all.push(
+        Command::new(
+            CommandId::SaveArchive,
+            "Save archive…",
+            move || !busy.get() && !snapshot.with(|bytes| bytes.is_empty()),
+            move || {
+                if busy.get_untracked() {
+                    return;
+                }
+                let bytes = snapshot.get_untracked();
+                let kind = format.get_untracked();
+                busy.set(true);
+                activity.set("Saving archive…".into());
+                spawn(async move {
+                    match android::save_archive(bytes, kind).await {
+                        Ok(Some(name)) => status.set(format!("Saved archive: {name}")),
+                        Ok(None) => status.set("Save cancelled.".into()),
+                        Err(error) => status.set(format!("Could not save archive: {error}")),
+                    }
+                    busy.set(false);
+                });
+            },
+        )
+        .icon("save"),
+    );
+    #[cfg(target_arch = "wasm32")]
+    {
+        all.push(
+            Command::new(
+                CommandId::SaveArchive,
+                "Download archive",
+                move || !busy.get() && !snapshot.with(|bytes| bytes.is_empty()),
+                move || {
+                    if busy.get_untracked() {
+                        return;
+                    }
+                    match browser::download(&snapshot.get_untracked(), format.get_untracked()) {
+                        Ok(()) => status.set("Archive download requested.".into()),
+                        Err(error) => status.set(format!("Could not download archive: {error}")),
+                    }
+                },
+            )
+            .icon("save"),
+        );
+        all.push(Command::new(
+            CommandId::Cancel,
+            "Cancel",
+            move || cancellable.get(),
+            move || {
+                if cancellable.get_untracked() && browser::cancel() {
+                    cancellable.set(false);
+                    status.set(cancel_message.get_untracked());
+                    activity.set("Cancelling…".into());
+                }
+            },
+        ));
+    }
+    #[cfg(target_arch = "wasm32")]
+    let can_extract = browser::can_extract();
+    #[cfg(target_arch = "wasm32")]
+    all.push(
+        Command::new(
+            CommandId::Extract,
+            "Extract selected…",
+            move || !busy.get() && !selected.with(BTreeSet::is_empty) && can_extract,
+            move || {
+                if busy.get_untracked() || !can_extract || selected.with(BTreeSet::is_empty) {
+                    return;
+                }
+                let bytes = snapshot.get_untracked();
+                let paths = selected.with(|paths| paths.iter().cloned().collect::<Vec<_>>());
+                busy.set(true);
+                cancellable.set(true);
+                cancel_message.set("Extraction cancellation requested.".into());
+                activity.set("Choose an export directory…".into());
+                spawn(async move {
+                    match browser::extract_archive(&bytes, &paths, move |message| {
+                        activity.set(message)
+                    })
+                    .await
+                    {
+                        Ok(Some(report)) => status.set(report),
+                        Ok(None) => status.set("Extraction cancelled.".into()),
+                        Err(error) => status.set(format!("Could not extract archive: {error}")),
+                    }
+                    busy.set(false);
+                    cancellable.set(false);
+                });
+            },
+        )
+        .icon("extract"),
+    );
+    #[cfg(any(
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
+    all.push(desktop_shortcut(
+        Command::new(
+            CommandId::Extract,
+            "Extract selected…",
+            move || !busy.get() && !selected.with(BTreeSet::is_empty),
+            move || {
+                if busy.get_untracked() || selected.with(BTreeSet::is_empty) {
+                    return;
+                }
+                let bytes = snapshot.get_untracked();
+                let paths = selected.with(|paths| paths.iter().cloned().collect::<Vec<_>>());
+                busy.set(true);
+                activity.set("Extracting archive…".to_owned());
+                spawn(async move {
+                    #[cfg(target_os = "android")]
+                    match extract_android_archive(bytes, paths).await {
+                        Ok(Some(report)) => status.set(report),
+                        Ok(None) => status.set("Extraction cancelled.".into()),
+                        Err(error) => status.set(format!("Could not extract archive: {error}")),
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    match extract_archive(bytes, paths).await {
+                        Ok(Some(count)) => status.set(format!("Extracted {count} entries")),
+                        Ok(None) => {}
+                        Err(error) => status.set(format!("Could not extract archive: {error}")),
+                    }
+                    busy.set(false);
+                });
+            },
+        )
+        .icon("extract"),
+        "mod+enter",
+    ));
+    let commands = Commands::new(all);
+    for command in commands.iter() {
+        if let Some(key) = command.shortcut {
+            let command = command.clone();
+            let when = if matches!(command.id, CommandId::Open | CommandId::FocusPath) {
+                nsh_core::keymap::When::Always
+            } else {
+                nsh_core::keymap::When::NotEditing
+            };
+            on_key_with(
+                key,
+                KeyOptions {
+                    when,
+                    ..Default::default()
+                },
+                move |_| {
+                    if active_menu.get_untracked().is_none() {
+                        command.invoke();
+                    }
+                },
+            );
+        }
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    menus::install_native(commands.clone(), controls.content);
+    let mut actions = toolbar()
+        .flex_wrap()
+        .items_center()
+        .gap_3()
+        .p_2()
+        .border_b_1()
+        .border_color(move || theme().border);
+    for id in [
+        CommandId::Open,
+        CommandId::CreateZip,
+        CommandId::SaveArchive,
+        CommandId::Cancel,
+        CommandId::CreateFolderZip,
+        CommandId::Extract,
+        CommandId::Test,
+    ] {
+        if let Some(command) = commands.get(id) {
+            let label = command.label;
+            actions = actions.child(action_button(&command).child(text(move || {
+                if id == CommandId::SaveArchive {
+                    let kind = match format.get() {
+                        ArchiveFormat::Zip => "ZIP",
+                        ArchiveFormat::Tar => "TAR",
+                        ArchiveFormat::TarGzip => "TAR.GZ",
+                        ArchiveFormat::SevenZip => "7Z",
+                    };
+                    if cfg!(target_arch = "wasm32") {
+                        format!("Download {kind}")
+                    } else {
+                        format!("Save {kind}…")
+                    }
+                } else {
+                    label.to_owned()
+                }
+            })));
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    if !can_extract {
+        actions = actions.child(text("Directory export is unavailable in this browser."));
+    }
+    let root = view()
         .flex_1()
         .p_safe_area()
         .bg(move || theme().background)
-        .text_color(move || theme().foreground)
-        .child(actions)
-        .child(explorer::explorer(
+        .text_color(move || theme().foreground);
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let root = root.child(menus::menu_bar(commands.clone(), active_menu));
+    root.child(actions)
+        .child(explorer::explorer(explorer::Explorer {
             entries,
             selected,
             busy,
-            path,
+            name: path,
             navigation,
             archive_version,
-        ))
+            controls,
+            commands,
+        }))
         .child(
             text(move || {
                 if busy.get() {
@@ -433,6 +595,49 @@ pub fn App() -> impl IntoElement {
             .border_t_1()
             .border_color(move || theme().border),
         )
+}
+
+fn action_button(command: &Command) -> nsh_base::ButtonElement {
+    let button = commands::button(command)
+        .px_3()
+        .py_2()
+        .border_1()
+        .border_color(move || theme().border)
+        .bg(move || theme().muted)
+        .active(|style| style.opacity(0.6))
+        .disabled_style(|style| style.opacity(0.4))
+        .flex_row()
+        .items_center()
+        .gap_2();
+    match command.icon {
+        Some(icon) => button.child(icons::icon(icon)),
+        None => button,
+    }
+}
+
+fn keyboard_shortcut(command: Command, key: &'static str) -> Command {
+    if cfg!(any(
+        target_arch = "wasm32",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    )) {
+        command.shortcut(key)
+    } else {
+        command
+    }
+}
+
+fn desktop_shortcut(command: Command, key: &'static str) -> Command {
+    if cfg!(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    )) {
+        command.shortcut(key)
+    } else {
+        command
+    }
 }
 
 #[cfg(target_os = "android")]

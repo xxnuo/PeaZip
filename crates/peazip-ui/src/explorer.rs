@@ -1,4 +1,5 @@
-use crate::navigation::{self, BrowserState, Sort};
+use crate::commands::{self, CommandId, Commands};
+use crate::navigation::{self, BrowserRow, BrowserState, Sort};
 use nsh_base::{button, checkbox, input, theme, toolbar};
 use nsh_core::{
     element::{AutoCapitalize, Position, SubmitBehavior},
@@ -7,20 +8,78 @@ use nsh_core::{
 use peazip_core::Entry;
 use std::collections::BTreeSet;
 
-pub(crate) fn explorer(
-    entries: Signal<Vec<Entry>>,
-    selected: Signal<BTreeSet<String>>,
-    busy: Signal<bool>,
-    name: Signal<String>,
-    navigation: Signal<BrowserState>,
-    archive_version: Signal<u64>,
-) -> impl IntoElement {
-    let flat = signal(false);
-    let sort = signal(Sort::NameAsc);
-    let draft = signal("/".to_owned());
+#[derive(Clone, Copy)]
+pub(crate) struct Controls {
+    pub flat: Signal<bool>,
+    pub sort: Signal<Sort>,
+    pub draft: Signal<String>,
+    pub input: ElementRef,
+    pub content: ElementRef,
+    pub visible: Memo<Vec<BrowserRow>>,
+}
+
+impl Controls {
+    pub fn new(entries: Signal<Vec<Entry>>, navigation: Signal<BrowserState>) -> Self {
+        let flat = signal(false);
+        let sort = signal(Sort::NameAsc);
+        let visible = computed(move || {
+            entries.with(|items| {
+                navigation
+                    .with(|state| navigation::rows(items, state.current(), flat.get(), sort.get()))
+            })
+        });
+        Self {
+            flat,
+            sort,
+            draft: signal("/".into()),
+            input: element_ref(),
+            content: element_ref(),
+            visible,
+        }
+    }
+}
+
+pub(crate) struct Explorer {
+    pub entries: Signal<Vec<Entry>>,
+    pub selected: Signal<BTreeSet<String>>,
+    pub busy: Signal<bool>,
+    pub name: Signal<String>,
+    pub navigation: Signal<BrowserState>,
+    pub archive_version: Signal<u64>,
+    pub controls: Controls,
+    pub commands: Commands,
+}
+
+pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
+    let Explorer {
+        entries,
+        selected,
+        busy,
+        name,
+        navigation,
+        archive_version,
+        controls,
+        commands,
+    } = context;
+    let Controls {
+        flat,
+        sort: _,
+        draft,
+        input: path_input,
+        content,
+        visible,
+    } = controls;
+    let back = commands.get(CommandId::Back).unwrap();
+    let forward = commands.get(CommandId::Forward).unwrap();
+    let up = commands.get(CommandId::Up).unwrap();
+    let root = commands.get(CommandId::Root).unwrap();
+    let select_all = commands.get(CommandId::SelectAll).unwrap();
+    let clear_selection = commands.get(CommandId::ClearSelection).unwrap();
+    let toggle_flat = commands.get(CommandId::ToggleFlat).unwrap();
+    let sort_name = commands.get(CommandId::SortName).unwrap();
+    let sort_size = commands.get(CommandId::SortSize).unwrap();
     let error = signal(String::new());
     let wide = signal(false);
-    let path_input = element_ref();
     effect(move || {
         let _ = archive_version.get();
         draft.set(navigation.with(|state| {
@@ -32,12 +91,7 @@ pub(crate) fn explorer(
         }));
         error.set(String::new());
         path_input.blur();
-    });
-    let visible = computed(move || {
-        entries.with(|items| {
-            navigation
-                .with(|state| navigation::rows(items, state.current(), flat.get(), sort.get()))
-        })
+        content.focus();
     });
     let folders = computed(move || {
         entries.with(|items| {
@@ -72,21 +126,17 @@ pub(crate) fn explorer(
         .on_layout(move |bounds: &Bounds<Points>| wide.set(bounds.size.width.0 >= 760.0))
         .child(text(move || name.get()).number_of_lines(1).px_3().py_1().border_b_1().border_color(move || theme().border))
         .child(toolbar().flex_row().flex_wrap().gap_2().px_2().py_1().border_b_1().border_color(move || theme().border)
-            .child(button().disabled(move || busy.get() || !navigation.with(BrowserState::can_back)).on_press(move || { navigation.update(|state| { state.back(); }); }).px_2().py_1().flex_row().items_center().gap_1().child(crate::icons::icon("back")).child(text("Back")))
-            .child(button().disabled(move || busy.get() || !navigation.with(BrowserState::can_forward)).on_press(move || { navigation.update(|state| { state.forward(); }); }).px_2().py_1().flex_row().items_center().gap_1().child(crate::icons::icon("forward")).child(text("Forward")))
-            .child(button().disabled(move || busy.get() || navigation.with(|state| state.current().is_empty())).on_press(move || { navigation.update(|state| { state.up(); }); }).px_2().py_1().flex_row().items_center().gap_1().child(crate::icons::icon("up")).child(text("Up")))
-            .child(button().disabled(move || busy.get() || navigation.with(|state| state.current().is_empty())).on_press(move || { navigation.update(|state| { state.root(); }); }).px_2().py_1().child(text("Archive root")))
+            .child(commands::button(&back).px_2().py_1().flex_row().items_center().gap_1().child(crate::icons::icon("back")).child(text("Back")))
+            .child(commands::button(&forward).px_2().py_1().flex_row().items_center().gap_1().child(crate::icons::icon("forward")).child(text("Forward")))
+            .child(commands::button(&up).px_2().py_1().flex_row().items_center().gap_1().child(crate::icons::icon("up")).child(text("Up")))
+            .child(commands::button(&root).px_2().py_1().child(text("Archive root")))
             .child(input().element_ref(&path_input).submit_behavior(SubmitBehavior::Submit).auto_capitalize(AutoCapitalize::None).auto_correct(false).value(move || draft.get()).on_change(move |value: &str| draft.set(value.to_owned())).on_submit(move |_: &str| enter(draft.get_untracked())).label("Archive path").placeholder("Archive path").disabled(move || busy.get()).flex_1().min_w(px(110.0)).border_1().border_color(move || theme().border).px_2().py_1())
             .child(button().disabled(move || busy.get()).on_press(move || enter(draft.get_untracked())).px_2().py_1().child(text("Go"))))
         .child(when(move || !error.with(String::is_empty), move || text(move || error.get()).px_3().py_1().text_color(move || theme().destructive)))
         .child(toolbar().flex_row().flex_wrap().gap_3().px_3().py_1().border_b_1().border_color(move || theme().border)
-            .child(button().disabled(move || busy.get()).on_press(move || flat.update(|value| *value = !*value)).child(text(move || if flat.get() { "Folder view" } else { "All entries" })))
-            .child(button().disabled(move || busy.get() || visible.with(Vec::is_empty)).on_press(move || {
-                if busy.get_untracked() {return;}
-                let paths=entries.with(|items| visible.with(|rows| rows.iter().flat_map(|row| navigation::selection_paths(row,items)).collect()));
-                selected.set(paths);
-            }).child(text("Select all")))
-            .child(button().disabled(move || busy.get() || selected.with(BTreeSet::is_empty)).on_press(move || { if !busy.get_untracked() { selected.set(BTreeSet::new()); } }).child(text("Clear selection")))
+            .child(commands::button(&toggle_flat).child(text(move || if flat.get() { "Folder view" } else { "All entries" })))
+            .child(commands::button(&select_all).child(text("Select all")))
+            .child(commands::button(&clear_selection).child(text("Clear selection")))
             .child(text(move || format!("{} selected",selected.with(BTreeSet::len)))))
         .child(view().flex_row().flex_1().min_h(px(0.0))
             .child(when(move || wide.get() && !flat.get(), move || view().w(px(180.0)).min_h(px(0.0)).border_r_1().border_color(move || theme().border)
@@ -99,11 +149,11 @@ pub(crate) fn explorer(
                         .on_press(move || {if let Some(row)=row(){ enter(row.path); }}).px_3().py_2()
                         .child(text(move || row().map(|row|row.name).unwrap_or_default()).number_of_lines(1))
                 }).estimated_item_size(px(32.0)).flex_1())))
-            .child(view().flex_1().min_w(px(0.0)).min_h(px(0.0))
+            .child(view().element_ref(&content).focusable(true).role(AccessibilityRole::Group).label("Archive contents").flex_1().min_w(px(0.0)).min_h(px(0.0))
                 .child(view().flex_row().px_3().py_1().bg(move || theme().muted).border_b_1().border_color(move || theme().border)
-                    .child(button().disabled(move || busy.get()).on_press(move || sort.update(|value| *value=if *value==Sort::NameAsc {Sort::NameDesc}else{Sort::NameAsc})).flex_1().child(text("Name")))
+                    .child(commands::button(&sort_name).flex_1().child(text("Name")))
                     .child(when(move || wide.get(), move || text("Type").w(px(85.0))))
-                    .child(button().disabled(move || busy.get()).on_press(move || sort.update(|value| *value=if *value==Sort::SizeAsc {Sort::SizeDesc}else{Sort::SizeAsc})).w(px(110.0)).child(text("Size (bytes)")))
+                    .child(commands::button(&sort_size).w(px(110.0)).child(text("Size (bytes)")))
                     .child(view().w(px(36.0))))
                 .child(virtual_list(move || visible.with(Vec::len), move |at: Position| {
                     let row=move || visible.with(|rows| rows.get(at.index()).cloned());
