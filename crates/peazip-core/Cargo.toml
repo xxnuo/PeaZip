@@ -6,4 +6,5 @@ license = "LGPL-3.0-or-later"
 publish = false
 
 [dependencies]
-zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# The bounded central-directory reader is currently an unstable API.
+zip = { version = "=9.4.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }

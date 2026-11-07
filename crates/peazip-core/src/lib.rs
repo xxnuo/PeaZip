@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+use zip::read::Config;
+use zip::unstable::read::ZipIterable;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +98,9 @@ fn path_key(path: &str, is_dir: bool, limits: Limits) -> Result<String, Error> {
         limits.max_path_bytes as u64,
         "path bytes",
     )?;
+    if is_dir && !path.ends_with('/') {
+        return Err(Error::UnsafePath(path.into()));
+    }
     let key = if is_dir {
         path.strip_suffix('/').unwrap_or(path)
     } else {
@@ -150,10 +155,9 @@ pub fn list_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
         limits.max_archive_bytes,
         "archive bytes",
     )?;
-    let archive = ZipArchive::new(Cursor::new(bytes))?;
-    if archive.has_duplicate_names() {
-        return Err(Error::DuplicatePath("central directory".into()));
-    }
+    // Check the count before allocating a complete central-directory index.
+    let mut archive = ZipIterable::try_new(Cursor::new(bytes), Config::default())?
+        .enforce_header_consistency(true);
     check(
         archive.len() as u64,
         limits.max_entries as u64,
@@ -162,8 +166,8 @@ pub fn list_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
     let mut paths = BTreeMap::new();
     let mut total = 0;
     let mut entries = Vec::new();
-    for i in 0..archive.len() {
-        let file = archive.by_index_data(i)?;
+    for file in archive.files()? {
+        let file = file?;
         let path = file.name()?.into_owned();
         let dir = file.is_dir();
         let key = path_key(&path, dir, limits)?;

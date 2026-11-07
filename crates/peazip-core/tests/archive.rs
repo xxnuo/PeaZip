@@ -205,3 +205,94 @@ fn rejects_conflicts_in_external_archives_in_both_orders() {
         assert!(extract_zip(&bytes, Limits::default()).is_err());
     }
 }
+
+#[test]
+fn rejects_entry_count_before_parsing_directory_records() {
+    let mut bytes = duplicate_zip();
+    let end = bytes.len() - 22;
+    let central = u32::from_le_bytes(bytes[end + 16..end + 20].try_into().unwrap()) as usize;
+    // Corrupt the first record's filename encoding. A full-index reader fails here;
+    // the bounded reader must reject the declared count without decoding it.
+    bytes[central + 8..central + 10].copy_from_slice(&0x800u16.to_le_bytes());
+    bytes[central + 46] = 0xff;
+    assert!(matches!(
+        list_zip(
+            &bytes,
+            Limits {
+                max_entries: 1,
+                ..Limits::default()
+            }
+        ),
+        Err(Error::Limit("entry count"))
+    ));
+}
+
+#[test]
+fn directories_have_canonical_names_and_allow_children_in_either_order() {
+    let noncanonical = MemoryEntry {
+        path: "folder".into(),
+        is_dir: true,
+        data: vec![],
+    };
+    assert!(matches!(
+        create_zip(&[noncanonical], Limits::default()),
+        Err(Error::UnsafePath(_))
+    ));
+    for input in [
+        vec![entry("folder/", b""), entry("folder/file", b"hello")],
+        vec![entry("folder/file", b"hello"), entry("folder/", b"")],
+    ] {
+        let bytes = create_zip(&input, Limits::default()).unwrap();
+        assert_eq!(extract_zip(&bytes, Limits::default()).unwrap(), input);
+    }
+    let input = [entry("folder/", b"")];
+    let limits = Limits {
+        max_path_bytes: 7,
+        ..Limits::default()
+    };
+    assert!(create_zip(&input, limits).is_ok());
+    assert!(
+        create_zip(
+            &input,
+            Limits {
+                max_path_bytes: 6,
+                ..limits
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn rejects_bad_crc_even_for_stored_empty_files_and_directories() {
+    for (name, data) in [
+        ("file", &b"hello"[..]),
+        ("empty", &b""[..]),
+        ("dir/", &b""[..]),
+    ] {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        if name.ends_with('/') {
+            writer.add_directory(name, options).unwrap();
+        } else {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        let mut bytes = writer.finish().unwrap().into_inner();
+        let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        bytes[14..18].copy_from_slice(&1u32.to_le_bytes());
+        bytes[central + 16..central + 20].copy_from_slice(&1u32.to_le_bytes());
+        assert!(extract_zip(&bytes, Limits::default()).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn rejects_declared_sizes_above_and_below_actual_size() {
+    for size in [0u32, 1000] {
+        let mut bytes = raw_zip("file", b"hello world", false);
+        let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        bytes[22..26].copy_from_slice(&size.to_le_bytes());
+        bytes[central + 24..central + 28].copy_from_slice(&size.to_le_bytes());
+        assert!(extract_zip(&bytes, Limits::default()).is_err(), "{size}");
+    }
+}
