@@ -1,0 +1,11 @@
+{
+  "peazip": {
+    "repository": "https://github.com/peazip/PeaZip.git",
+    "ref": "upstream/sources",
+    "revision": "367c68278a7b0e7741fd8fe3106f34d6cfcb656f"
+  },
+  "nsh": {
+    "repository": "https://github.com/longbridge/nsh.git",
+    "revision": "701bdcee9512e0f6aed39042d1fe24564dcd0b43"
+  }
+}

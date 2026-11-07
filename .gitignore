@@ -10,3 +10,5 @@ use/*/
 *.or
 *.so
 *.ppu
+/target/
+__pycache__/
