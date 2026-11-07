@@ -54,6 +54,51 @@ fn roundtrip_files_directories_unicode_and_empty() {
 }
 
 #[test]
+fn roundtrip_repeated_data_with_stored_fallback() {
+    let input = vec![
+        entry("zeros", &vec![0; 1024 * 1024]),
+        entry("folder/", b""),
+        entry("folder/file", b"hello ZIP"),
+    ];
+    for ratio in [200, 1] {
+        let limits = Limits {
+            max_compression_ratio: ratio,
+            ..Limits::default()
+        };
+        let bytes = create_zip(&input, limits).unwrap();
+        let listed = list_zip(&bytes, limits).unwrap();
+        assert_eq!(listed[0].size, 1024 * 1024);
+        assert_eq!(listed[0].compressed_size, listed[0].size);
+        assert_eq!(extract_zip(&bytes, limits).unwrap(), input);
+    }
+}
+
+#[test]
+fn stored_fallback_enforces_output_size_including_zip_headers() {
+    let input = vec![entry("zeros", &vec![0; 1024 * 1024])];
+    let bytes = create_zip(&input, Limits::default()).unwrap();
+    let limits = Limits {
+        max_archive_bytes: bytes.len() as u64,
+        ..Limits::default()
+    };
+    let exact = create_zip(&input, limits).unwrap();
+    assert_eq!(exact.len() as u64, limits.max_archive_bytes);
+    assert_eq!(extract_zip(&exact, limits).unwrap(), input);
+    for max_archive_bytes in [1024 * 1024, limits.max_archive_bytes - 1] {
+        assert!(
+            create_zip(
+                &input,
+                Limits {
+                    max_archive_bytes,
+                    ..limits
+                }
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn rejects_unsafe_paths_on_read_and_write() {
     for path in [
         "../escape",

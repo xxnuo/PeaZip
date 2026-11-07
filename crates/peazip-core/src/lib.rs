@@ -272,20 +272,29 @@ pub fn create_zip(entries: &[MemoryEntry], limits: Limits) -> Result<Vec<u8>, Er
             .ok_or(Error::Limit("total bytes"))?;
         check(total, limits.max_total_bytes, "total bytes")?;
     }
-    let mut writer = ZipWriter::new(BoundedWriter {
-        cursor: Cursor::new(Vec::new()),
-        max: limits.max_archive_bytes,
-    });
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    for entry in entries {
-        if entry.is_dir {
-            writer.add_directory(&entry.path, options)?;
-        } else {
-            writer.start_file(&entry.path, options)?;
-            writer.write_all(&entry.data)?;
+    for method in [CompressionMethod::Deflated, CompressionMethod::Stored] {
+        let mut writer = ZipWriter::new(BoundedWriter {
+            cursor: Cursor::new(Vec::new()),
+            max: limits.max_archive_bytes,
+        });
+        let options = SimpleFileOptions::default().compression_method(method);
+        for entry in entries {
+            if entry.is_dir {
+                writer.add_directory(&entry.path, options)?;
+            } else {
+                writer.start_file(&entry.path, options)?;
+                writer.write_all(&entry.data)?;
+            }
+        }
+        let bytes = writer.finish()?.cursor.into_inner();
+        match list_zip(&bytes, limits) {
+            // Retry trusted input without compression so it passes the same read limits.
+            Err(Error::Limit("compression ratio")) if method == CompressionMethod::Deflated => {}
+            result => {
+                result?;
+                return Ok(bytes);
+            }
         }
     }
-    let bytes = writer.finish()?.cursor.into_inner();
-    list_zip(&bytes, limits)?;
-    Ok(bytes)
+    unreachable!("Stored output returns its validation result")
 }
