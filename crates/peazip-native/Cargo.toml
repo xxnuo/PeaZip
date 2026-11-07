@@ -6,6 +6,8 @@ license = "LGPL-3.0-or-later"
 publish = false
 
 [dependencies]
+cap-fs-ext = "=4.0.3"
+cap-std = "=4.0.3"
 peazip-core = { path = "../peazip-core" }
 tempfile = "3"
 

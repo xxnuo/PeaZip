@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub use peazip_core::{Entry, Error, Limits};
 use peazip_core::{MemoryEntry, create_zip, list_zip};
@@ -55,6 +56,35 @@ pub fn read_archive_bytes(path: &Path, limits: Limits) -> Result<Vec<u8>, Error>
     Ok(bytes)
 }
 
+fn open_source(parent: &cap_std::fs::Dir, name: &str) -> Result<File, Error> {
+    use cap_fs_ext::{
+        FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt, OpenOptionsSyncExt,
+    };
+    let metadata = parent.symlink_metadata(name)?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(Error::UnsupportedEntry(name.into()));
+    }
+    let mut options = cap_std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .follow(FollowSymlinks::No)
+        .maybe_dir(true)
+        .nonblock(true);
+    let file = parent.open_with(name, &options)?.into_std();
+    let metadata = file.metadata()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(Error::UnsupportedEntry(name.into()));
+        }
+    }
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(Error::UnsupportedEntry(name.into()));
+    }
+    Ok(file)
+}
+
 pub fn create_zip_from_paths(
     paths: &[PathBuf],
     destination: &Path,
@@ -74,6 +104,8 @@ pub fn create_zip_from_paths(
     let mut names = BTreeSet::new();
     let mut entries = Vec::new();
     let mut total = 0u64;
+    let mut pending = Vec::new();
+    let mut discovered = paths.len();
     for path in paths {
         if path.to_str().is_none() {
             return Err(Error::UnsafePath(path.to_string_lossy().into_owned()));
@@ -88,31 +120,74 @@ pub fn create_zip_from_paths(
         if !names.insert(name.to_lowercase()) {
             return Err(Error::DuplicatePath(name.into()));
         }
-        let mut file = open_regular(path)?;
-        let remaining = limits.max_total_bytes.saturating_sub(total);
-        let budget = limits.max_entry_bytes.min(remaining);
-        if file.metadata()?.len() > budget {
-            return Err(Error::Limit("source bytes"));
+        // Only the selected root's parent is ambient/trusted. Every subsequent
+        // open uses one component relative to an already opened directory.
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let parent = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
+        pending.push((Arc::new(parent), name.to_owned(), name.to_owned()));
+        while let Some((parent, component, mut name)) = pending.pop() {
+            let mut file = open_source(&parent, &component)?;
+            drop(parent);
+            let metadata = file.metadata()?;
+            if metadata.is_dir() {
+                name.push('/');
+                if name.len() > limits.max_path_bytes {
+                    return Err(Error::Limit("path bytes"));
+                }
+                let dir = Arc::new(cap_std::fs::Dir::from_std_file(file));
+                for child in dir.entries()? {
+                    let child = child?;
+                    if discovered >= limits.max_entries {
+                        return Err(Error::Limit("entry count"));
+                    }
+                    discovered += 1;
+                    let component = child.file_name();
+                    let component = component.to_str().ok_or_else(|| {
+                        Error::UnsafePath(component.to_string_lossy().into_owned())
+                    })?;
+                    if name.len().saturating_add(component.len()) > limits.max_path_bytes {
+                        return Err(Error::Limit("path bytes"));
+                    }
+                    pending.push((
+                        Arc::clone(&dir),
+                        component.to_owned(),
+                        format!("{name}{component}"),
+                    ));
+                }
+                entries.push(MemoryEntry {
+                    path: name,
+                    is_dir: true,
+                    data: Vec::new(),
+                });
+            } else {
+                let budget = limits
+                    .max_entry_bytes
+                    .min(limits.max_total_bytes.saturating_sub(total));
+                if metadata.len() > budget {
+                    return Err(Error::Limit("source bytes"));
+                }
+                let mut data = Vec::new();
+                Read::by_ref(&mut file)
+                    .take(budget)
+                    .read_to_end(&mut data)?;
+                if file.read(&mut [0])? != 0 {
+                    return Err(Error::Limit("source bytes"));
+                }
+                total = total
+                    .checked_add(data.len() as u64)
+                    .ok_or(Error::Limit("total bytes"))?;
+                entries.push(MemoryEntry {
+                    path: name,
+                    is_dir: false,
+                    data,
+                });
+            }
         }
-        let mut data = Vec::new();
-        Read::by_ref(&mut file)
-            .take(budget)
-            .read_to_end(&mut data)?;
-        // Probe separately so even a concurrently growing file cannot allocate
-        // beyond the remaining entry/total budget.
-        let mut extra = [0];
-        if file.read(&mut extra)? != 0 {
-            return Err(Error::Limit("source bytes"));
-        }
-        total = total
-            .checked_add(data.len() as u64)
-            .ok_or(Error::Limit("total bytes"))?;
-        entries.push(MemoryEntry {
-            path: name.into(),
-            is_dir: false,
-            data,
-        });
     }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
     let bytes = create_zip(&entries, limits)?;
     let listed = list_zip(&bytes, limits)?;
     publish(&bytes, destination)?;
@@ -145,6 +220,38 @@ fn publish(bytes: &[u8], destination: &Path) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn replaced_directory_never_redirects_handle_relative_reads() {
+        use super::*;
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret"), b"outside").unwrap();
+        let root = base.path().join("root");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("safe"), b"inside").unwrap();
+        let parent =
+            cap_std::fs::Dir::open_ambient_dir(base.path(), cap_std::ambient_authority()).unwrap();
+        let held = cap_std::fs::Dir::from_std_file(open_source(&parent, "root").unwrap());
+        fs::rename(&root, base.path().join("moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &root).unwrap();
+        assert!(open_source(&parent, "root").is_err());
+        assert!(open_source(&held, "secret").is_err());
+        let mut data = String::new();
+        open_source(&held, "safe")
+            .unwrap()
+            .read_to_string(&mut data)
+            .unwrap();
+        assert_eq!(data, "inside");
+        fs::remove_file(base.path().join("moved/safe")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret"),
+            base.path().join("moved/safe"),
+        )
+        .unwrap();
+        assert!(open_source(&held, "safe").is_err());
+    }
+
     #[test]
     fn publication_collision_cleans_temporary_and_preserves_target() {
         let dir = tempfile::tempdir().unwrap();

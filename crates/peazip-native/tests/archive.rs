@@ -16,11 +16,25 @@ fn real_roundtrip_preserves_sources() {
     let target = dir.path().join("output.zip");
     let listed =
         create_zip_from_paths(&[source.clone(), empty], &target, Limits::default()).unwrap();
-    assert_eq!(listed[0].path, "中文.bin");
+    assert!(listed.iter().any(|entry| entry.path == "中文.bin"));
     let extracted =
         peazip_core::extract_zip(&fs::read(target).unwrap(), Limits::default()).unwrap();
-    assert_eq!(extracted[0].data, data);
-    assert!(extracted[1].data.is_empty());
+    assert_eq!(
+        extracted
+            .iter()
+            .find(|entry| entry.path == "中文.bin")
+            .unwrap()
+            .data,
+        data
+    );
+    assert!(
+        extracted
+            .iter()
+            .find(|entry| entry.path == "empty")
+            .unwrap()
+            .data
+            .is_empty()
+    );
     assert_eq!(fs::read(source).unwrap(), data);
     assert_eq!(children(dir.path()), 3);
 }
@@ -31,11 +45,7 @@ fn invalid_and_limits_leave_no_output_or_temporary() {
     let source = dir.path().join("source");
     fs::write(&source, b"12345").unwrap();
     let target = dir.path().join("out.zip");
-    for paths in [
-        vec![],
-        vec![dir.path().to_path_buf()],
-        vec![dir.path().join("missing")],
-    ] {
+    for paths in [vec![], vec![dir.path().join("missing")]] {
         assert!(create_zip_from_paths(&paths, &target, Limits::default()).is_err());
         assert_eq!(children(dir.path()), 1);
     }
@@ -466,4 +476,146 @@ fn archive_reads_reject_links_and_fifo_without_blocking() {
     }
     assert_eq!(fs::read(source).unwrap(), b"original");
     assert_eq!(children(dir.path()), 4);
+}
+
+#[test]
+fn recursive_mixed_unicode_empty_and_deterministic_inside_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let tree = dir.path().join("目录");
+    fs::create_dir_all(tree.join("nested/空目录")).unwrap();
+    fs::write(tree.join("nested/中文.txt"), b"payload").unwrap();
+    fs::write(tree.join("z"), []).unwrap();
+    let single = dir.path().join("single");
+    fs::write(&single, b"single").unwrap();
+    let first = dir.path().join("first.zip");
+    let paths = [tree.clone(), single.clone()];
+    let listed = create_zip_from_paths(&paths, &first, Limits::default()).unwrap();
+    assert_eq!(
+        listed.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
+        [
+            "single",
+            "目录/",
+            "目录/nested/",
+            "目录/nested/中文.txt",
+            "目录/nested/空目录/",
+            "目录/z"
+        ]
+    );
+    let inside = tree.join("inside.zip");
+    create_zip_from_paths(&[single, tree.clone()], &inside, Limits::default()).unwrap();
+    assert_eq!(fs::read(first).unwrap(), fs::read(inside).unwrap());
+    assert_eq!(fs::read(tree.join("nested/中文.txt")).unwrap(), b"payload");
+    assert!(tree.join("nested/空目录").is_dir());
+}
+
+#[test]
+fn recursive_quotas_and_duplicate_selections_leave_no_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let tree = dir.path().join("tree");
+    fs::create_dir_all(tree.join("nested/empty")).unwrap();
+    fs::write(tree.join("nested/data"), b"12345").unwrap();
+    fs::write(tree.join("second"), b"67890").unwrap();
+    let out = dir.path().join("out.zip");
+    for limits in [
+        Limits {
+            max_entries: 3,
+            ..Limits::default()
+        },
+        Limits {
+            max_path_bytes: 10,
+            ..Limits::default()
+        },
+        Limits {
+            max_entry_bytes: 4,
+            ..Limits::default()
+        },
+        Limits {
+            max_total_bytes: 9,
+            ..Limits::default()
+        },
+    ] {
+        assert!(create_zip_from_paths(std::slice::from_ref(&tree), &out, limits).is_err());
+        assert_eq!(children(dir.path()), 1);
+    }
+    assert!(matches!(
+        create_zip_from_paths(&[tree.clone(), tree], &out, Limits::default()),
+        Err(peazip_native::Error::DuplicatePath(_))
+    ));
+    assert_eq!(children(dir.path()), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_links_cycles_and_special_files_are_rejected() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let tree = dir.path().join("tree");
+    fs::create_dir_all(tree.join("nested")).unwrap();
+    let out = dir.path().join("out.zip");
+    let bad = tree.join("nested/bad");
+    for target in [
+        tree.clone(),
+        dir.path().join("missing"),
+        dir.path().to_path_buf(),
+    ] {
+        symlink(target, &bad).unwrap();
+        assert!(
+            create_zip_from_paths(std::slice::from_ref(&tree), &out, Limits::default()).is_err()
+        );
+        assert_eq!(children(dir.path()), 1);
+        fs::remove_file(&bad).unwrap();
+    }
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&bad)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(create_zip_from_paths(&[tree], &out, Limits::default()).is_err());
+    assert_eq!(children(dir.path()), 1);
+}
+
+#[test]
+fn wide_directory_does_not_open_all_files_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let tree = dir.path().join("tree");
+    fs::create_dir(&tree).unwrap();
+    for i in 0..512 {
+        fs::write(tree.join(format!("file-{i:04}")), b"small").unwrap();
+    }
+    let out = dir.path().join("out.zip");
+    let listed = create_zip_from_paths(&[tree], &out, Limits::default()).unwrap();
+    assert_eq!(listed.len(), 513);
+    assert_eq!(listed.iter().filter(|entry| entry.size == 5).count(), 512);
+}
+
+#[test]
+fn many_selected_roots_use_bounded_handles() {
+    #[cfg(unix)]
+    if std::env::var_os("PEAZIP_ROOTS_FD_CHILD").is_none() {
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("ulimit -n 64 && exec \"$1\" --exact many_selected_roots_use_bounded_handles --nocapture")
+            .arg("peazip-fd-test")
+            .arg(std::env::current_exe().unwrap())
+            .env("PEAZIP_ROOTS_FD_CHILD", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let paths: Vec<_> = (0..512)
+        .map(|i| {
+            let path = dir.path().join(format!("file-{i:04}"));
+            fs::write(&path, b"small").unwrap();
+            path
+        })
+        .collect();
+    let out = dir.path().join("out.zip");
+    let listed = create_zip_from_paths(&paths, &out, Limits::default()).unwrap();
+    assert_eq!(listed.len(), 512);
+    assert!(listed.iter().all(|entry| !entry.is_dir && entry.size == 5));
+    assert!(paths.iter().all(|path| fs::read(path).unwrap() == b"small"));
 }
