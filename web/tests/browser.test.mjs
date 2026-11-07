@@ -309,3 +309,192 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
   assert.equal(downloads.length, 1);
   t.diagnostic(`${workers.length} real archive workers observed and released; cancel/oversize started none`);
 });
+
+async function creationPage(t) {
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage({ acceptDownloads: true });
+  const errors = [], downloads = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('download', (download) => downloads.push(download));
+  t.after(() => assert.deepEqual(errors, []));
+  await page.addInitScript(() => {
+    window.archiveWorkers = [];
+    const NativeWorker = window.Worker;
+    window.Worker = class extends NativeWorker {
+      constructor(...args) {
+        super(...args);
+        const record = { messages: [], terminated: false };
+        window.archiveWorkers.push(record);
+        this.addEventListener('message', ({ data }) => {
+          record.messages.push(data.progress ? { progress: data.progress } : { code: data.code });
+        });
+        const terminate = this.terminate.bind(this);
+        this.terminate = () => { record.terminated = true; terminate(); };
+        const descriptor = Object.getOwnPropertyDescriptor(NativeWorker.prototype, 'onmessage');
+        Object.defineProperty(this, 'onmessage', {
+          set(handler) { record.handler = handler; descriptor.set.call(this, handler); },
+          get() { return descriptor.get.call(this); },
+        });
+      }
+    };
+    window.creationStages = [];
+    new MutationObserver(() => {
+      const text = document.body?.innerText ?? '';
+      for (const stage of text.match(/Reading files: \d+\/\d+|Compressing ZIP…/g) ?? []) {
+        if (window.creationStages.at(-1) !== stage) window.creationStages.push(stage);
+      }
+    }).observe(document, { subtree: true, childList: true, characterData: true });
+  });
+  await page.goto(await serve(t));
+  const button = (name) => page.getByRole('button', { name, exact: true });
+  async function choose(name, files) {
+    const pending = page.waitForEvent('filechooser');
+    await button(name).click();
+    await (await pending).setFiles(files);
+  }
+  await expect(button('Create ZIP…')).toBeEnabled();
+  return { page, button, choose, downloads };
+}
+
+test('Cancel during real worker WASM loading preserves snapshot; retry ignores stale callbacks', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, downloads } = await creationPage(t);
+  const cancel = button('Cancel');
+  await expect(cancel).toBeDisabled();
+  await choose('Create ZIP…', [{ name: 'original.txt', mimeType: 'text/plain', buffer: Buffer.from('original snapshot') }]);
+  await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
+  const original = page.getByRole('checkbox', { name: 'original.txt', exact: true });
+  await original.click();
+  async function snapshot() {
+    const pending = page.waitForEvent('download');
+    await button('Download ZIP').click();
+    const stream = await (await pending).createReadStream();
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  }
+  const before = await snapshot();
+  const downloadsBefore = downloads.length;
+  let release, intercepted = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async (route) => {
+    intercepted = true;
+    await gate;
+    await route.continue().catch(() => {});
+  });
+  try {
+    await choose('Create ZIP…', [{ name: 'cancelled.txt', mimeType: 'text/plain', buffer: Buffer.from('cancel me') }]);
+    await expect.poll(() => intercepted).toBe(true);
+    await expect(cancel).toBeEnabled();
+    for (const name of ['Create ZIP…', 'Open ZIP…', 'Download ZIP', 'Select all', 'Clear selection']) await expect(button(name)).toBeDisabled();
+    await cancel.click();
+    await expect(page.getByText('Creation cancelled.', { exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.archiveWorkers[1].terminated)).toBe(true);
+    assert.deepEqual(await page.evaluate(() => window.archiveWorkers[1].messages), [], 'cancel reached WASM initialization before file reading');
+    await expect(original).toBeChecked();
+    await expect(cancel).toBeDisabled();
+    await expect(button('Create ZIP…')).toBeEnabled();
+    assert.equal(downloads.length, downloadsBefore, 'cancellation must not download');
+    assert.deepEqual(await snapshot(), before, 'cancel must preserve exact original archive bytes');
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+  await choose('Create ZIP…', [{ name: 'retry.txt', mimeType: 'text/plain', buffer: Buffer.from('retry succeeds') }]);
+  await expect(page.getByRole('checkbox', { name: 'retry.txt', exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: 'retry.txt', exact: true }).click();
+  const retry = await snapshot();
+  // Only this stale-callback check injects messages; progress tests observe real Worker messages.
+  await page.evaluate(() => {
+    const old = window.archiveWorkers[1].handler;
+    old({ data: { progress: { phase: 'read', done: 1, total: 9 } } });
+    old({ data: { code: 1, bytes: new Uint8Array([0, 1, 2]) } });
+  });
+  await expect(page.getByText('ZIP download requested.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'retry.txt', exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'retry.txt', exact: true })).toBeChecked();
+  assert.deepEqual(await snapshot(), retry, 'stale success cannot overwrite retry snapshot');
+  await expect(cancel).toBeDisabled();
+  t.diagnostic('Real worker WASM request held before initialization; Cancel terminated it, preserved ZIP bytes/selection, and retry survived stale callbacks.');
+});
+
+test('Real worker reports bounded read counts then compression and UI shows actual phases', { timeout: 180_000 }, async (t) => {
+  const { page, button, choose, downloads } = await creationPage(t);
+  const directory = await mkdtemp(resolve(tmpdir(), 'peazip-progress-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { randomBytes } = await import('node:crypto');
+  const paths = [];
+  for (let index = 0; index < 3; index++) {
+    const path = resolve(directory, `random-${index}.bin`);
+    await writeFile(path, randomBytes(8 * 1024 * 1024));
+    paths.push(path);
+  }
+  await choose('Create ZIP…', paths);
+  await expect(page.getByText('Created ZIP: 3 entries', { exact: true })).toBeVisible({ timeout: 120_000 });
+  const messages = await page.evaluate(() => window.archiveWorkers[0].messages);
+  assert.deepEqual(messages, [
+    { progress: { phase: 'read', done: 1, total: 3 } },
+    { progress: { phase: 'read', done: 2, total: 3 } },
+    { progress: { phase: 'read', done: 3, total: 3 } },
+    { progress: { phase: 'compress', done: 3, total: 3 } },
+    { code: 1 },
+  ]);
+  const stages = await page.evaluate(() => window.creationStages);
+  assert.ok(stages.some((stage) => /^Reading files: [1-3]\/3$/.test(stage)), JSON.stringify(stages));
+  assert.ok(stages.includes('Compressing ZIP…'), JSON.stringify(stages));
+  assert.ok(stages.findIndex((stage) => stage.startsWith('Reading files:')) < stages.indexOf('Compressing ZIP…'));
+  await expect(button('Cancel')).toBeDisabled();
+  assert.equal(downloads.length, 0);
+
+  const selected = page.getByRole('checkbox', { name: 'random-0.bin', exact: true });
+  await selected.click();
+  async function snapshot() {
+    const pending = page.waitForEvent('download');
+    await button('Download ZIP').click();
+    const stream = await (await pending).createReadStream();
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  }
+  const before = await snapshot();
+  const downloadsBefore = downloads.length;
+  await choose('Create ZIP…', paths);
+  await expect(page.getByText('Compressing ZIP…', { exact: true })).toBeVisible();
+  await button('Cancel').click();
+  await expect(page.getByText('Creation cancelled.', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.archiveWorkers[1].terminated)).toBe(true);
+  await expect.poll(() => page.workers().length).toBe(0);
+  const cancelled = await page.evaluate(() => window.archiveWorkers[1].messages);
+  assert.deepEqual(cancelled, messages.slice(0, -1), 'real compression must be interrupted before any success result');
+  assert.equal(downloads.length, downloadsBefore, 'CPU cancellation must not download');
+  await expect(selected).toBeChecked();
+  await expect(button('Cancel')).toBeDisabled();
+  await expect(button('Create ZIP…')).toBeEnabled();
+  assert.deepEqual(await snapshot(), before, 'CPU cancellation must preserve exact prior ZIP bytes');
+  await expect(selected).toBeChecked();
+  await choose('Create ZIP…', paths);
+  await expect(page.getByText('Created ZIP: 3 entries', { exact: true })).toBeVisible({ timeout: 120_000 });
+  await expect(selected).not.toBeChecked();
+  assert.deepEqual(await page.evaluate(() => window.archiveWorkers[2].messages), messages, 'retry must finish actual compression');
+  assert.equal(downloads.length, downloadsBefore + 1, 'retry must not automatically download');
+  t.diagnostic(`Real CPU cancellation: ${JSON.stringify(cancelled)}; worker terminated without success; prior ZIP bytes/selection preserved; same 24 MiB retry succeeded.`);
+
+  const count = 251;
+  await choose('Create ZIP…', Array.from({ length: count }, (_, index) => ({
+    name: `empty-${index}.txt`, mimeType: 'text/plain', buffer: Buffer.alloc(0),
+  })));
+  await expect(page.getByText(`Created ZIP: ${count} entries`, { exact: true })).toBeVisible();
+  const throttled = await page.evaluate(() => window.archiveWorkers[3].messages);
+  const reads = throttled.filter((message) => message.progress?.phase === 'read').map(({ progress }) => progress);
+  assert.ok(reads.length > 0 && reads.length <= 100);
+  assert.equal(reads.at(-1).done, count);
+  for (let index = 0; index < reads.length; index++) {
+    assert.equal(reads[index].total, count);
+    assert.ok(reads[index].done > (reads[index - 1]?.done ?? 0));
+    assert.ok(reads[index].done <= count);
+  }
+  assert.deepEqual(throttled.slice(-2), [{ progress: { phase: 'compress', done: count, total: count } }, { code: 1 }]);
+  assert.ok(throttled.slice(0, -2).every((message) => message.progress?.phase === 'read'));
+  assert.equal(downloads.length, downloadsBefore + 1);
+  t.diagnostic(`Unmodified worker: 24 MiB real compression; UI phases ${JSON.stringify(stages)}; ${count} files emitted ${reads.length} read messages, then compress, then success.`);
+});

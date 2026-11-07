@@ -21,6 +21,8 @@ pub fn App() -> impl IntoElement {
     let path = signal(String::new());
     let status = signal("Open a ZIP archive to view its contents.".to_owned());
     let busy = signal(false);
+    #[cfg(target_arch = "wasm32")]
+    let cancellable = signal(false);
     let activity = signal("Opening ZIP…".to_owned());
     let selected = signal(BTreeSet::<String>::new());
     let open = move || {
@@ -75,9 +77,11 @@ pub fn App() -> impl IntoElement {
             return;
         }
         busy.set(true);
+        #[cfg(target_arch = "wasm32")]
+        cancellable.set(true);
         activity.set("Creating ZIP…".to_owned());
         spawn(async move {
-            match create_archive(folders).await {
+            match create_archive(folders, activity).await {
                 Ok(Some((name, (bytes, rows)))) => {
                     snapshot.set(bytes);
                     status.set(format!("Created ZIP: {} entries", rows.len()));
@@ -89,6 +93,8 @@ pub fn App() -> impl IntoElement {
                 Err(error) => status.set(format!("Could not create ZIP: {error}")),
             }
             busy.set(false);
+            #[cfg(target_arch = "wasm32")]
+            cancellable.set(false);
         });
     };
     #[cfg(any(
@@ -131,6 +137,25 @@ pub fn App() -> impl IntoElement {
             .active(|s| s.opacity(0.6))
             .disabled_style(|s| s.opacity(0.4))
             .child(text("Download ZIP")),
+    );
+    #[cfg(target_arch = "wasm32")]
+    let actions = actions.child(
+        button()
+            .disabled(move || !cancellable.get())
+            .on_press(move || {
+                if cancellable.get_untracked() && browser::cancel() {
+                    cancellable.set(false);
+                    status.set("Creation cancelled.".into());
+                }
+            })
+            .px_3()
+            .py_2()
+            .border_1()
+            .border_color(move || theme().border)
+            .bg(move || theme().muted)
+            .active(|s| s.opacity(0.6))
+            .disabled_style(|s| s.opacity(0.4))
+            .child(text("Cancel")),
     );
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let actions = actions.child(
@@ -318,7 +343,10 @@ pub fn App() -> impl IntoElement {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-async fn create_archive(folders: bool) -> Result<Option<(String, LoadedArchive)>, String> {
+async fn create_archive(
+    folders: bool,
+    _activity: Signal<String>,
+) -> Result<Option<(String, LoadedArchive)>, String> {
     use nsh_core::file_dialog::{FileFilter, OpenDialog, SaveDialog};
     let dialog = if folders {
         OpenDialog::folders()
@@ -358,8 +386,11 @@ async fn create_archive(folders: bool) -> Result<Option<(String, LoadedArchive)>
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn create_archive(_folders: bool) -> Result<Option<(String, LoadedArchive)>, String> {
-    let Some(bytes) = browser::create_zip().await? else {
+async fn create_archive(
+    _folders: bool,
+    activity: Signal<String>,
+) -> Result<Option<(String, LoadedArchive)>, String> {
+    let Some(bytes) = browser::create_zip(move |message| activity.set(message)).await? else {
         return Ok(None);
     };
     Ok(Some(("Archive.zip".into(), load_archive(Arc::new(bytes))?)))

@@ -46,7 +46,16 @@ function create() {
       packetSize(files); // Reject oversized selections before reading any file bytes.
       const worker = new Worker(new URL('./archive-worker.js', import.meta.url), { type: 'module' });
       job.worker = worker;
-      worker.onmessage = ({ data }) => reply(data.code, data.bytes, job);
+      worker.onmessage = ({ data }) => {
+        if (job !== active) return;
+        if (data.progress) {
+          const { phase, done, total } = data.progress;
+          if (!Number.isInteger(done) || !Number.isInteger(total)) return;
+          if (phase === 'read' || phase === 'compress') wasm.pc_progress(phase === 'read' ? 0 : 1, done, total);
+        } else {
+          reply(data.code, data.bytes, job);
+        }
+      };
       worker.onerror = (event) => { event.preventDefault(); fail(new Error('Archive worker failed.'), job); };
       worker.onmessageerror = () => fail(new Error('Archive worker returned an invalid response.'), job);
       worker.postMessage(files);
@@ -77,7 +86,11 @@ function download(ptr, length) {
 }
 
 export function __nsh_imports() {
-  return { peazip: { pc_create_start: create, pc_download: download } };
+  return { peazip: { pc_create_start: create, pc_download: download, pc_cancel: () => {
+    if (!active) return 0;
+    reply(2);
+    return 1;
+  } } };
 }
 
 export function __nsh_finalize(instance) {

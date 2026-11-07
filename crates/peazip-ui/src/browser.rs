@@ -1,10 +1,15 @@
 use std::cell::RefCell;
 
-use futures_channel::oneshot;
+use futures_channel::mpsc;
+use futures_util::StreamExt;
 
 type Reply = Result<Option<Vec<u8>>, String>;
+enum Update {
+    Progress(String),
+    Finished(Reply),
+}
 struct Pending {
-    sender: oneshot::Sender<Reply>,
+    sender: mpsc::UnboundedSender<Update>,
     bytes: Vec<u8>,
 }
 
@@ -15,11 +20,12 @@ thread_local! {
 #[link(wasm_import_module = "peazip")]
 unsafe extern "C" {
     fn pc_create_start() -> u32;
+    fn pc_cancel() -> u32;
     fn pc_download(ptr: *const u8, len: usize) -> u32;
 }
 
-pub async fn create_zip() -> Reply {
-    let (sender, receiver) = oneshot::channel();
+pub async fn create_zip(mut progress: impl FnMut(String) + 'static) -> Reply {
+    let (sender, mut receiver) = mpsc::unbounded();
     PENDING.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_some() {
@@ -38,9 +44,37 @@ pub async fn create_zip() -> Reply {
         });
         return Err("Browser archive worker is unavailable.".into());
     }
-    receiver
-        .await
-        .map_err(|_| "Browser archive operation ended unexpectedly.".to_owned())?
+    // Signal writes must run while the nsh executor has entered its reactive runtime,
+    // never directly inside a JavaScript-to-Wasm progress callback.
+    while let Some(update) = receiver.next().await {
+        match update {
+            Update::Progress(message) => progress(message),
+            Update::Finished(reply) => return reply,
+        }
+    }
+    Err("Browser archive operation ended unexpectedly.".into())
+}
+
+pub fn cancel() -> bool {
+    // The host terminates the worker before completing the pending request as cancelled.
+    unsafe { pc_cancel() == 1 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pc_progress(phase: u32, done: u32, total: u32) {
+    if total == 0 || total as usize > peazip_core::Limits::default().max_entries || done > total {
+        return;
+    }
+    let message = match phase {
+        0 => format!("Reading files: {done}/{total}"),
+        1 if done == total => "Compressing ZIP…".to_owned(),
+        _ => return,
+    };
+    PENDING.with(|slot| {
+        if let Some(pending) = slot.borrow().as_ref() {
+            let _ = pending.sender.unbounded_send(Update::Progress(message));
+        }
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -67,7 +101,7 @@ pub extern "C" fn pc_response_end(code: u32) {
             2 => Ok(None),
             _ => Err(String::from_utf8_lossy(&pending.bytes).into_owned()),
         };
-        let _ = pending.sender.send(result);
+        let _ = pending.sender.unbounded_send(Update::Finished(result));
     }
 }
 

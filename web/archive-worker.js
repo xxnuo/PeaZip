@@ -12,6 +12,8 @@ self.onmessage = async ({ data: files }) => {
     let at = pointer;
     view.setUint32(at, files.length, true);
     at += 4;
+    let done = 0;
+    const interval = Math.max(1, Math.ceil(files.length / 100));
     for (const file of files) {
       const name = new TextEncoder().encode(file.name);
       const content = new Uint8Array(await file.arrayBuffer());
@@ -23,7 +25,12 @@ self.onmessage = async ({ data: files }) => {
       at += name.length;
       bytes.set(content, at);
       at += content.length;
+      done++;
+      if (done % interval === 0 || done === files.length) {
+        self.postMessage({ progress: { phase: 'read', done, total: files.length } });
+      }
     }
+    self.postMessage({ progress: { phase: 'compress', done, total: files.length } });
     const ok = wasm.pw_create() === 1;
     const length = wasm.pw_output_len() >>> 0;
     if (length > MAX_ARCHIVE) throw new Error('Worker output exceeds the archive limit.');
