@@ -12,3 +12,5 @@ use/*/
 *.ppu
 /target/
 __pycache__/
+/web/node_modules/
+/web/test-results/

@@ -1,0 +1,15 @@
+[package]
+name = "peazip-web"
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-3.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+peazip-ui = { path = "../peazip-ui" }
+nsh-core = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
+nsh-base = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
+nsh-platform-web = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>PeaZip</title>
+  <link rel="icon" href="data:,">
+  <style>
+    html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { font-family: system-ui, sans-serif; background: Canvas; color: CanvasText; }
+    #status { position: absolute; inset: 1rem; z-index: 1; height: fit-content; }
+  </style>
+</head>
+<body>
+  <p id="status" role="status">Loading PeaZip…</p>
+  <main id="app" aria-label="PeaZip archive manager"></main>
+  <script type="module">
+    const status = document.querySelector("#status");
+    let failed = false;
+    function report(error) {
+      failed = true;
+      status.hidden = false;
+      status.textContent = `Unable to run PeaZip: ${error.message ?? error}`;
+      console.error(error);
+    }
+    try {
+      const { createPlayer } = await import("./nsh.js");
+      const player = await createPlayer(document.querySelector("#app"), {
+        wasm: new URL("./peazip.wasm", import.meta.url),
+        onError: report,
+      });
+      player.runRust();
+      if (!failed) status.hidden = true;
+      window.addEventListener("pagehide", () => player.stop(), { once: true });
+    } catch (error) {
+      report(error);
+    }
+  </script>
+</body>
+</html>
