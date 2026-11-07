@@ -124,10 +124,19 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 
 - 新增内容识别和通用 `list_archive` / `extract_archive` / `extract_selected_archive`，保留 ZIP 专用 API。未压缩 TAR 复用路径、重名/父子冲突、实际字节及隐式目录预算；支持 ustar、常见 PAX 本地 path/size、GNU 长名、UTF-8、空目录，去除标准前导 `./` 并省略根目录条目。
 - 使用锁定的 tar 0.4.46 原始头读取，不在限额前展开 GNU/PAX/sparse 内容；扩展头和根目录计入扫描预算，扩展数据计入字节预算。TAR 头有 checksum，**普通 payload 没有 CRC**，提取成功不能证明其内容未被修改。
-- 明确拒绝链接、特殊/稀疏文件（含 GNU、SCHILY、Solaris sparse 扩展），以及当前未实现的全局 path/size、重复 path/size 覆盖等变体。要求完整结束块、仅零尾部，不能将隐藏条目/拼接容器当作成功；这是严格兼容策略，部分标准工具可接受的尾部也会被拒绝。尚不读取压缩 TAR，也不创建新 TAR。
+- 明确拒绝链接、特殊/稀疏文件（含 GNU、SCHILY、Solaris sparse 扩展），以及当前未实现的全局 path/size、重复 path/size 覆盖等变体。要求完整结束块、仅零尾部，不能将隐藏条目/拼接容器当作成功；这是严格兼容策略，部分标准工具可接受的尾部也会被拒绝。此阶段不读取压缩 TAR（后续 GZIP 支持见下），也不创建新 TAR。
 - 有效首部 TAR 优先于 ZIP magic/SFX 探测，防止 PAX 头和 ZIP 尾部混合时隐藏 TAR 内容；无效 TAR checksum 不误拒普通 ZIP/MZ SFX。PAX 关键词长度和控制字符也受检查，避免未知扩展将巨大输入放大到错误消息。
 - UI 打开/提取采用通用接口；Web Worker、桌面原子目录发布和 Android SAF 复用同一解码结果。Web/Android 保存原归档按识别出的类型使用 `.zip` 或 `.tar` 与对应 MIME，不重新打包、不会把 TAR 标成 ZIP；创建操作仍只生成 ZIP。
 - 本轮验证：core 40 项测试，新增 native、headless UI、worker TAR 流程通过；系统 tar 与 Python tarfile 验证参考样本。浏览器 33 项通过，包含误命名 `.zip` 的 TAR 正确识别、下载字节不变和 OPFS 选中提取。Android 完整 ZIP+TAR smoke 已通过：真实 application/x-tar 保存/取消、字节完全一致及独立 tarfile 校验、真实 SAF 子树/Unicode/二进制/空目录、未选内容缺席、既有输出不变。设备记录 `target/android-smoke/be58e81d781d/console.log`。
 - 主机 JNI 检查已覆盖 ZIP/TAR 格式传输、非法代码拒绝和生命周期；格式与结构错误统一使用 archive 文案。Rust 回归/Clippy、格式检查保持通过。iOS 当前配置仍未发现完整 SDK；Docker 指向本地 OrbStack socket，但 daemon 未运行，未据此宣称 Linux 运行验收完成。
 
-下一步：补充 GZIP 压缩 TAR、更多归档格式与大文件流式处理，同时继续推进 iOS SDK/文件导出和 Windows/Linux 实际运行；补齐 Web 外部目录、桌面/移动端主动取消与进度、冲突策略及文件管理功能。Web/Android 打开归档仍走 nsh picker，创建使用独立有界入口；两者限制不可混为一谈。六平台实际运行、完整功能与发布验收仍是最终要求。
+- 新增 TAR.GZ / TGZ 内容识别与读取，复用已有纯 Rust flate2/zlib-rs；创建仍只支持 ZIP，不将普通单文件 GZIP 误认为 TAR。多个 gzip 成员作为同一 TAR 字节流连接，支持跨头部/文件边界；整个流的 CRC、ISIZE、可选 FHCRC 和尾部均验证后才返回列表或选中内容。
+- 解码前检查 32 MiB 输入上限，输出按总内容与 TAR 头部/对齐预算约束；GZIP 头单个最多 64 KiB、累计 1 MiB，成员最多 4096，不按 ISIZE 分配。压缩比按实际 DEFLATE 字节检查，空成员不增加预算；固定 10 KiB 余量允许标准空 TAR 的结束记录，不能无限放大。严格 TAR 路径/特殊文件/结束块策略保持有效。
+- `list_archive_with_format` 一次验证返回格式与列表，避免主机重复解压。Web 打开改由真实 Rust Worker 执行解码，返回有界元数据；主线程不再次探测 GZIP。列表阶段支持 Cancel，错误或取消保留原快照和选择，结束后释放 Worker；文件 picker 读取阶段仍受 nsh 自身限制。
+- Web 下载与 Android 保存使用 `Archive.tar.gz` / `application/gzip` 并保留原字节，文件筛选支持 `.gz`、`.tgz`；原 TAR/ZIP 的格式与保存语义保持一致。
+
+- 本轮 Rust workspace 103 次测试执行通过（含低句柄子进程重复），core 55 项；主机/wasm/Android target Clippy 与格式检查通过。浏览器 36 项通过，覆盖真实列表 Worker、TAR.GZ MIME/原字节下载、CRC 失败保留快照、OPFS 子树提取和 Cancel/pagehide 后重试及旧回调隔离。pagehide 仍为合成事件，OPFS 仍不替代外部目录权限验收。主机 Android 检查包括 27 项 JNI、86 项导出策略、13 项资产、11 项有界读取及生命周期，覆盖三种保存格式。
+
+- Android 36 全量 ZIP/TAR/TAR.GZ smoke 通过，记录 `target/android-smoke/016b44ede8fc`；最终 APK 重建后 TAR.GZ 定向复验通过，记录 `target/android-smoke/e4a54df9cfd4`。真实 `application/gzip` 保存/取消、原字节和独立 gzip/tarfile 核对、SAF 子树提取、空目录和未选内容缺席、CRC 拒绝前后快照/选择/既有输出均已检查，PID 稳定且无应用 fatal。专用模拟器测试文件已清理；仍仅覆盖本机 Documents provider，未新增 iOS 或 Windows/Linux 实际运行证据。
+
+下一步：补充更多归档格式与大文件流式处理，同时继续推进 iOS SDK/文件导出和 Windows/Linux 实际运行；补齐 Web 外部目录、桌面/移动端主动取消与进度、冲突策略及文件管理功能。Web/Android 打开归档仍走 nsh picker，创建使用独立有界入口；两者限制不可混为一谈。六平台实际运行、完整功能与发布验收仍是最终要求。

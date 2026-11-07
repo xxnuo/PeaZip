@@ -2299,6 +2299,7 @@ dependencies = [
 name = "peazip-core"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "tar",
  "zip 9.4.1",
 ]

@@ -148,7 +148,9 @@ test('Chromium creates, downloads and reopens ZIP using a real Rust worker', { t
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('download', (download) => downloads.push(download));
-  page.on('worker', (worker) => workers.push({ worker, closed: once(worker, 'close') }));
+  page.on('worker', (worker) => {
+    if (new URL(worker.url()).searchParams.get('operation') !== 'list') workers.push({ worker, closed: once(worker, 'close') });
+  });
   t.after(() => assert.deepEqual(errors, []));
   await page.goto(await serve(t));
   const create = page.getByRole('button', { name: 'Create ZIP…', exact: true });
@@ -324,6 +326,7 @@ async function creationPage(t) {
     window.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
+        if (new URL(args[0], location.href).searchParams.get('operation') === 'list') return;
         const record = { messages: [], terminated: false };
         window.archiveWorkers.push(record);
         this.addEventListener('message', ({ data }) => {
@@ -509,12 +512,23 @@ async function extractionPage(t, available = true) {
   t.after(() => assert.deepEqual(errors, []));
   await page.addInitScript(({ available }) => {
     window.extractionWorkers = [];
+    window.listWorkers = [];
+    window.listWorkerHandlers = [];
     const NativeWorker = window.Worker;
     window.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
         const record = { terminated: false, codes: [] };
-        window.extractionWorkers.push(record);
+        const isList = new URL(args[0], location.href).searchParams.get('operation') === 'list';
+        const records = isList ? window.listWorkers : window.extractionWorkers;
+        const index = records.push(record) - 1;
+        if (isList) {
+          const descriptor = Object.getOwnPropertyDescriptor(NativeWorker.prototype, 'onmessage');
+          Object.defineProperty(this, 'onmessage', {
+            set(handler) { window.listWorkerHandlers[index] = handler; descriptor.set.call(this, handler); },
+            get() { return descriptor.get.call(this); },
+          });
+        }
         this.addEventListener('message', ({ data }) => {
           if (!data.progress) record.codes.push(data.code);
         });
@@ -573,6 +587,151 @@ async function extractionPage(t, available = true) {
 }
 
 const sentinelTree = { 'sentinel.txt': Array.from(Buffer.from('leave me unchanged')) };
+
+async function downloadArchive(page, button) {
+  const pending = page.waitForEvent('download');
+  await button.click();
+  const artifact = await pending;
+  const chunks = [];
+  for await (const chunk of await artifact.createReadStream()) chunks.push(chunk);
+  return { name: artifact.suggestedFilename(), bytes: Buffer.concat(chunks) };
+}
+
+test('TAR gzip uses a real listing worker, preserves snapshots on bad CRC, downloads unchanged and extracts', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree, downloads } = await extractionPage(t);
+  const bytes = await readFile(new URL('../../tests/fixtures/sample.tar.gz', import.meta.url));
+  async function pick(buffer, name) {
+    const pending = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await pending).setFiles({ name, mimeType: 'application/zip', buffer });
+  }
+  let release, intercepted = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async (route) => {
+    intercepted = true;
+    await gate;
+    await route.continue().catch(() => {});
+  });
+  const wasm = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/worker-core_bg.wasm'));
+  try {
+    await pick(bytes, 'misnamed.zip');
+    await expect.poll(() => intercepted).toBe(true);
+    await expect(button('Open archive…')).toBeDisabled();
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    assert.equal(await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(true)))), true);
+    await expect.poll(() => page.evaluate(() => window.listWorkers)).toEqual([{ terminated: false, codes: [] }]);
+    assert.deepEqual(await page.evaluate(() => window.extractionWorkers), []);
+  } finally { release(); }
+  assert.equal((await wasm).ok(), true, 'listing must initialize the real Rust WASM in a Worker');
+  await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+  await page.unrouteAll({ behavior: 'wait' });
+  await expect.poll(() => page.evaluate(() => window.listWorkers)).toEqual([{ terminated: true, codes: [1] }]);
+  await expect.poll(() => page.workers().length).toBe(0);
+  await expect(button('Download TAR.GZ')).toBeEnabled();
+  await expect(button('Download ZIP')).toHaveCount(0);
+  await expect(button('Download TAR')).toHaveCount(0);
+  const selected = page.getByRole('checkbox', { name: 'docs/', exact: true });
+  await selected.click();
+  await page.evaluate(() => {
+    const create = URL.createObjectURL;
+    window.downloadTypes = [];
+    URL.createObjectURL = (blob) => { window.downloadTypes.push(blob.type); return create(blob); };
+  });
+  const snapshot = await downloadArchive(page, button('Download TAR.GZ'));
+  assert.equal(snapshot.name, 'Archive.tar.gz');
+  assert.deepEqual(snapshot.bytes, bytes);
+  assert.deepEqual(await page.evaluate(() => window.downloadTypes), ['application/gzip']);
+
+  const corrupt = Buffer.from(bytes);
+  corrupt[corrupt.length - 8] ^= 1;
+  await pick(corrupt, 'bad-crc.tar.gz');
+  await expect(page.getByText(/^Could not open archive:.*gzip.*checksum/)).toBeVisible();
+  await expect(button('Open archive…')).toBeEnabled();
+  await expect(selected).toBeChecked();
+  await expect(page.getByText('misnamed.zip', { exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox')).toHaveCount(5);
+  await expect.poll(() => page.evaluate(() => window.listWorkers)).toEqual([
+    { terminated: true, codes: [1] }, { terminated: true, codes: [0] },
+  ]);
+  assert.deepEqual(await tree(), sentinelTree, 'bad gzip CRC must fail before any output is created');
+  assert.deepEqual(await downloadArchive(page, button('Download TAR.GZ')), snapshot, 'bad CRC must preserve exact prior archive bytes and format');
+
+  await pick(bytes, 'retry.tar.gz');
+  await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+  await expect(page.getByText('retry.tar.gz', { exact: true })).toBeVisible();
+  await expect(selected).not.toBeChecked();
+  await selected.click();
+  await button('Extract selected…').click();
+  const report = page.getByText(/^Extracted 4 entries to PeaZip-/);
+  await expect(report).toBeVisible();
+  const folder = (await report.innerText()).split(' to ')[1];
+  assert.deepEqual(await tree(), { ...sentinelTree, [folder]: {
+    docs: { '你好.txt': Array.from(Buffer.from('tar 你好\n')), empty: {}, nested: { 'data.bin': [0, 127, 255] } },
+  } });
+  await expect.poll(() => page.evaluate(() => window.extractionWorkers)).toEqual([{ terminated: true, codes: [1] }]);
+  await expect.poll(() => page.evaluate(() => window.listWorkers)).toEqual([
+    { terminated: true, codes: [1] }, { terminated: true, codes: [0] }, { terminated: true, codes: [1] },
+  ]);
+  await expect.poll(() => page.workers().length).toBe(0);
+  assert.equal(downloads.length, 2, 'opening and extraction must not download automatically');
+});
+
+for (const cancellation of ['Cancel', 'pagehide']) {
+  test(`${cancellation} stops a real listing worker and stale callbacks cannot replace a later gzip snapshot`, { timeout: 120_000 }, async (t) => {
+    const { page, button, choose, tree } = await extractionPage(t);
+    await choose();
+    const selected = page.getByRole('checkbox', { name: '你好.txt', exact: true });
+    await selected.click();
+    const original = await downloadArchive(page, button('Download ZIP'));
+    const bytes = await readFile(new URL('../../tests/fixtures/sample.tar.gz', import.meta.url));
+    let release, intercepted = false;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route('**/worker-core_bg.wasm', async (route) => {
+      intercepted = true;
+      await gate;
+      await route.continue().catch(() => {});
+    });
+    async function pick() {
+      const pending = page.waitForEvent('filechooser');
+      await button('Open archive…').click();
+      await (await pending).setFiles({ name: 'retry.tar.gz', mimeType: 'application/gzip', buffer: bytes });
+    }
+    try {
+      await pick();
+      await expect.poll(() => intercepted).toBe(true);
+      await expect(button('Open archive…')).toBeDisabled();
+      await expect(button('Cancel')).toBeEnabled();
+      if (cancellation === 'Cancel') {
+        await button('Cancel').click();
+        await expect(page.getByText('Opening cancelled.', { exact: true })).toBeVisible();
+      } else {
+        await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+      }
+      await expect(button('Open archive…')).toBeEnabled();
+      await expect.poll(() => page.evaluate(() => window.listWorkers[1])).toEqual({ terminated: true, codes: [] });
+      await expect.poll(() => page.workers().length).toBe(0);
+      await expect(selected).toBeChecked();
+      assert.deepEqual(await downloadArchive(page, button('Download ZIP')), original);
+      assert.deepEqual(await tree(), sentinelTree);
+    } finally {
+      release();
+      await page.unrouteAll({ behavior: 'wait' });
+    }
+    await pick();
+    await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+    const retry = await downloadArchive(page, button('Download TAR.GZ'));
+    await page.evaluate(() => {
+      const old = window.listWorkerHandlers[1];
+      old({ data: { progress: { phase: 'extract', done: 0, total: 1 } } });
+      old({ data: { code: 1, bytes: new Uint8Array([0, 1, 2]) } });
+      old({ data: { code: 0, bytes: new TextEncoder().encode('stale error') } });
+    });
+    await expect(page.getByText('retry.tar.gz', { exact: true })).toBeVisible();
+    await expect(page.getByRole('checkbox')).toHaveCount(5);
+    assert.deepEqual(await downloadArchive(page, button('Download TAR.GZ')), retry);
+    await expect.poll(() => page.evaluate(() => window.listWorkers[2])).toEqual({ terminated: true, codes: [1] });
+  });
+}
 
 test('TAR is detected by content, downloaded unchanged and extracted by the Rust worker', { timeout: 120_000 }, async (t) => {
   const { page, button, tree, downloads } = await extractionPage(t);

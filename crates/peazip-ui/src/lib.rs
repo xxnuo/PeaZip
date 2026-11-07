@@ -38,7 +38,16 @@ pub fn App() -> impl IntoElement {
         busy.set(true);
         activity.set("Opening archive…".to_owned());
         spawn(async move {
-            match choose_archive().await {
+            #[cfg(target_arch = "wasm32")]
+            let opened = {
+                cancel_message.set("Opening cancelled.".into());
+                choose_archive(cancellable).await
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let opened = choose_archive().await;
+            #[cfg(target_arch = "wasm32")]
+            cancellable.set(false);
+            match opened {
                 Ok(Some((name, (bytes, rows, kind)))) => {
                     format.set(kind);
                     snapshot.set(bytes);
@@ -159,6 +168,7 @@ pub fn App() -> impl IntoElement {
             .child(text(move || match format.get() {
                 ArchiveFormat::Zip => "Save ZIP…",
                 ArchiveFormat::Tar => "Save TAR…",
+                ArchiveFormat::TarGzip => "Save TAR.GZ…",
             })),
     );
     #[cfg(target_arch = "wasm32")]
@@ -184,6 +194,7 @@ pub fn App() -> impl IntoElement {
             .child(text(move || match format.get() {
                 ArchiveFormat::Zip => "Download ZIP",
                 ArchiveFormat::Tar => "Download TAR",
+                ArchiveFormat::TarGzip => "Download TAR.GZ",
             })),
     );
     #[cfg(target_arch = "wasm32")]
@@ -552,7 +563,7 @@ async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
         OpenDialog::files()
             .title("Open archive")
             .button_label("Open")
-            .filter(FileFilter::new("Archives", ["zip", "tar"])),
+            .filter(FileFilter::new("Archives", ["zip", "tar", "gz", "tgz"])),
     )
     .await?;
     let Some(path) = paths.and_then(|paths| paths.into_iter().next()) else {
@@ -566,10 +577,13 @@ async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
+async fn choose_archive(
+    #[cfg(target_arch = "wasm32")] cancellable: Signal<bool>,
+) -> Result<Option<(String, LoadedArchive)>, String> {
     use nsh_core::{file_dialog::FileFilter, picker::FilePickRequest};
     let files = pick_files(
-        FilePickRequest::new(false, 1).filter(FileFilter::new("Archives", ["zip", "tar"])),
+        FilePickRequest::new(false, 1)
+            .filter(FileFilter::new("Archives", ["zip", "tar", "gz", "tgz"])),
     )
     .await;
     let Some(file) = files.into_iter().next() else {
@@ -586,7 +600,13 @@ async fn choose_archive() -> Result<Option<(String, LoadedArchive)>, String> {
         .await
         .map_err(|error| error.to_string())??;
     #[cfg(target_arch = "wasm32")]
-    let entries = load_archive(bytes)?;
+    let entries = {
+        cancellable.set(true);
+        let Some((format, rows)) = browser::list_archive(Arc::clone(&bytes)).await? else {
+            return Ok(None);
+        };
+        (bytes, rows, format)
+    };
     Ok(Some((file.name, entries)))
 }
 
@@ -598,9 +618,9 @@ fn read_archive(path: &std::path::Path) -> Result<LoadedArchive, String> {
 }
 
 fn load_archive(bytes: Arc<Vec<u8>>) -> Result<LoadedArchive, String> {
-    let rows = peazip_core::list_archive(&bytes, peazip_core::Limits::default())
-        .map_err(|error| error.to_string())?;
-    let format = peazip_core::detect_format(&bytes).map_err(|error| error.to_string())?;
+    let (format, rows) =
+        peazip_core::list_archive_with_format(&bytes, peazip_core::Limits::default())
+            .map_err(|error| error.to_string())?;
     Ok((bytes, rows, format))
 }
 

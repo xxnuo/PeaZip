@@ -7,7 +7,15 @@ fn children(path: &Path) -> usize {
 
 #[test]
 fn generic_extraction_restores_tar_tree_without_overwriting() {
-    let archive = include_bytes!("../../../tests/fixtures/sample.tar");
+    for archive in [
+        include_bytes!("../../../tests/fixtures/sample.tar").as_slice(),
+        include_bytes!("../../../tests/fixtures/sample.tar.gz").as_slice(),
+    ] {
+        check_tar_extraction(archive);
+    }
+}
+
+fn check_tar_extraction(archive: &[u8]) {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("restored");
     let count = peazip_native::extract_archive_to_directory(
@@ -42,7 +50,12 @@ fn generic_extraction_restores_tar_tree_without_overwriting() {
         "tar 你好\n".as_bytes()
     );
     let mut corrupt = archive.to_vec();
-    corrupt[0] ^= 1;
+    let offset = if archive.starts_with(&[0x1f, 0x8b]) {
+        archive.len() - 8
+    } else {
+        0
+    };
+    corrupt[offset] ^= 1;
     assert!(
         peazip_native::extract_archive_to_directory(
             &corrupt,

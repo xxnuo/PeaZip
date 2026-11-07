@@ -3,6 +3,24 @@ import init from './worker-core.js';
 
 self.onmessage = async ({ data: files }) => {
   try {
+    if (files?.operation === 'list') {
+      const packet = files.packet;
+      if (!(packet instanceof ArrayBuffer) || !packet.byteLength || packet.byteLength > MAX_ARCHIVE) {
+        throw new Error('Invalid listing request.');
+      }
+      const wasm = await init({ module_or_path: new URL('./worker-core_bg.wasm', import.meta.url) });
+      const pointer = wasm.pw_input_resize(packet.byteLength) >>> 0;
+      if (!pointer) throw new Error('Archive request is too large.');
+      new Uint8Array(wasm.memory.buffer, pointer, packet.byteLength).set(new Uint8Array(packet));
+      const ok = wasm.pw_list() === 1;
+      const length = wasm.pw_output_len() >>> 0;
+      if (length > Math.min(MAX_ARCHIVE, 5 + MAX_ENTRIES * (24 + MAX_PATH))) {
+        throw new Error('Worker output exceeds the metadata limit.');
+      }
+      const result = new Uint8Array(wasm.memory.buffer, wasm.pw_output_ptr() >>> 0, length).slice();
+      self.postMessage({ code: ok ? 1 : 0, bytes: result }, [result.buffer]);
+      return;
+    }
     if (files?.operation === 'extract') {
       const packet = files.packet;
       const maxRequest = MAX_ARCHIVE + MAX_ENTRIES * (4 + MAX_PATH) + 8;

@@ -3,6 +3,44 @@ use peazip_core::{Limits, MemoryEntry};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024 + 4096 * (8 + 1024) + 4;
 pub const MAX_EXTRACT_REQUEST_BYTES: usize = 32 * 1024 * 1024 + 4096 * (4 + 1024) + 8;
 pub const MAX_EXTRACT_OUTPUT_BYTES: usize = 64 * 1024 * 1024 + 4096 * (12 + 1024) + 4;
+pub const MAX_LIST_OUTPUT_BYTES: usize = 5 + 4096 * (24 + 1024);
+
+pub fn list_from_request(archive: &[u8]) -> Result<Vec<u8>, String> {
+    let limits = Limits::default();
+    if archive.len() as u64 > limits.max_archive_bytes {
+        return Err("archive byte limit exceeded".into());
+    }
+    // The core finishes validation (including the gzip trailer) before we publish metadata.
+    let (format, entries) = peazip_core::list_archive_with_format(archive, limits)
+        .map_err(|error| error.to_string())?;
+    let size = 5 + entries
+        .iter()
+        .map(|entry| 24 + entry.path.len())
+        .sum::<usize>();
+    if entries.len() > limits.max_entries
+        || entries
+            .iter()
+            .any(|entry| entry.path.is_empty() || entry.path.len() > limits.max_path_bytes)
+        || size > MAX_LIST_OUTPUT_BYTES
+    {
+        return Err("metadata byte limit exceeded".into());
+    }
+    let mut output = Vec::with_capacity(size);
+    output.push(match format {
+        peazip_core::ArchiveFormat::Zip => 0,
+        peazip_core::ArchiveFormat::Tar => 1,
+        peazip_core::ArchiveFormat::TarGzip => 2,
+    });
+    output.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for entry in entries {
+        output.extend_from_slice(&u32::from(entry.is_dir).to_le_bytes());
+        output.extend_from_slice(&(entry.path.len() as u32).to_le_bytes());
+        output.extend_from_slice(entry.path.as_bytes());
+        output.extend_from_slice(&entry.size.to_le_bytes());
+        output.extend_from_slice(&entry.compressed_size.to_le_bytes());
+    }
+    Ok(output)
+}
 
 pub fn extract_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
     if packet.len() > MAX_EXTRACT_REQUEST_BYTES {
@@ -109,7 +147,7 @@ pub fn create_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use super::{MAX_REQUEST_BYTES, create_from_request, extract_from_request};
+    use super::{MAX_REQUEST_BYTES, create_from_request, extract_from_request, list_from_request};
     use std::cell::RefCell;
 
     thread_local! {
@@ -137,6 +175,11 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn pw_extract() -> u32 {
         run(extract_from_request)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn pw_list() -> u32 {
+        run(list_from_request)
     }
 
     fn run(operation: fn(&[u8]) -> Result<Vec<u8>, String>) -> u32 {

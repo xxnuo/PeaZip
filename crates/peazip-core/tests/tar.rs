@@ -56,9 +56,15 @@ fn pax_pair(key: &str, value: &[u8]) -> Vec<u8> {
 }
 
 fn assert_rejected(bytes: &[u8]) {
-    assert!(list_archive(bytes, DEFAULT).is_err());
-    assert!(extract_archive(bytes, DEFAULT).is_err());
-    assert!(extract_selected_archive(bytes, &[], DEFAULT).is_err());
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    let gzip = encoder.finish().unwrap();
+    for bytes in [bytes, &gzip] {
+        assert!(list_archive(bytes, DEFAULT).is_err());
+        assert!(extract_archive(bytes, DEFAULT).is_err());
+        assert!(extract_selected_archive(bytes, &[], DEFAULT).is_err());
+    }
 }
 
 #[test]

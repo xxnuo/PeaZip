@@ -5,12 +5,14 @@ use zip::read::Config;
 use zip::unstable::read::ZipIterable;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
+mod gzip;
 mod tar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
     Zip,
     Tar,
+    TarGzip,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +47,7 @@ pub enum Error {
     UnknownEntry(String),
     InvalidArchive(zip::result::ZipError),
     InvalidTar(io::Error),
+    InvalidGzip(io::Error),
     UnsupportedFormat,
     Io(io::Error),
 }
@@ -61,6 +64,7 @@ impl std::fmt::Display for Error {
             Self::UnknownEntry(path) => write!(f, "archive entry not found: {path:?}"),
             Self::InvalidArchive(e) => write!(f, "invalid ZIP: {e}"),
             Self::InvalidTar(e) => write!(f, "invalid TAR: {e}"),
+            Self::InvalidGzip(e) => write!(f, "invalid gzip: {e}"),
             Self::UnsupportedFormat => write!(f, "unsupported archive format"),
             Self::Io(e) => write!(f, "archive I/O error: {e}"),
         }
@@ -70,7 +74,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidArchive(e) => Some(e),
-            Self::Io(e) | Self::InvalidTar(e) => Some(e),
+            Self::Io(e) | Self::InvalidTar(e) | Self::InvalidGzip(e) => Some(e),
             _ => None,
         }
     }
@@ -173,10 +177,23 @@ fn sizes(size: u64, compressed: u64, total: &mut u64, limits: Limits) -> Result<
 }
 
 pub fn detect_format(bytes: &[u8]) -> Result<ArchiveFormat, Error> {
+    let format = detect_candidate(bytes)?;
+    if format == ArchiveFormat::TarGzip {
+        // Detection has no caller-supplied limits; validate gzip/TAR with the defaults.
+        let limits = Limits::default();
+        tar::list(&gzip::decode(bytes, limits)?, limits)?;
+    }
+    Ok(format)
+}
+
+fn detect_candidate(bytes: &[u8]) -> Result<ArchiveFormat, Error> {
     // Prefer a TAR header at offset zero over a ZIP embedded in its payload or tail.
     let tar = tar::recognizes(bytes);
     if matches!(&tar, Ok(true)) {
         return Ok(ArchiveFormat::Tar);
+    }
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return Ok(ArchiveFormat::TarGzip);
     }
     // A bad TAR checksum can be ZIP payload; a complete TAR end marker is not an SFX stub.
     if bytes.starts_with(b"PK\x03\x04")
@@ -191,15 +208,25 @@ pub fn detect_format(bytes: &[u8]) -> Result<ArchiveFormat, Error> {
 }
 
 pub fn list_archive(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
+    list_archive_with_format(bytes, limits).map(|(_, entries)| entries)
+}
+
+pub fn list_archive_with_format(
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<(ArchiveFormat, Vec<Entry>), Error> {
     check(
         bytes.len() as u64,
         limits.max_archive_bytes,
         "archive bytes",
     )?;
-    match detect_format(bytes)? {
+    let format = detect_candidate(bytes)?;
+    let entries = match format {
         ArchiveFormat::Zip => list_zip(bytes, limits),
         ArchiveFormat::Tar => tar::list(bytes, limits),
-    }
+        ArchiveFormat::TarGzip => tar::list(&gzip::decode(bytes, limits)?, limits),
+    }?;
+    Ok((format, entries))
 }
 
 pub fn extract_archive(bytes: &[u8], limits: Limits) -> Result<Vec<MemoryEntry>, Error> {
@@ -224,9 +251,10 @@ fn extract_matching_archive(
         limits.max_archive_bytes,
         "archive bytes",
     )?;
-    match detect_format(bytes)? {
+    match detect_candidate(bytes)? {
         ArchiveFormat::Zip => extract_matching(bytes, selected, limits),
         ArchiveFormat::Tar => tar::extract(bytes, selected, limits),
+        ArchiveFormat::TarGzip => tar::extract(&gzip::decode(bytes, limits)?, selected, limits),
     }
 }
 

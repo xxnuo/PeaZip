@@ -74,6 +74,27 @@ function progress(data, job) {
   if (Object.hasOwn(phases, phase)) wasm.pc_progress(phases[phase], done, total);
 }
 
+function list(ptr, length) {
+  if (active || !wasm || typeof Worker === 'undefined') return 0;
+  const job = { worker: null, phase: 'list' };
+  active = job;
+  try {
+    if (!Number.isInteger(length) || length < 1 || length > MAX_ARCHIVE) throw new Error('Invalid listing request size.');
+    const packet = new Uint8Array(wasm.memory.buffer, ptr >>> 0, length).slice();
+    const worker = new Worker(new URL('./archive-worker.js?operation=list', import.meta.url), { type: 'module' });
+    job.worker = worker;
+    worker.onmessage = ({ data }) => {
+      if (active !== job) return;
+      if (!(data.bytes instanceof Uint8Array)) { fail(new Error('Archive worker returned an invalid response.'), job); return; }
+      reply(data.code, data.bytes, job);
+    };
+    worker.onerror = (event) => { event.preventDefault(); fail(new Error('Archive worker failed.'), job); };
+    worker.onmessageerror = () => fail(new Error('Archive worker returned an invalid response.'), job);
+    worker.postMessage({ operation: 'list', packet: packet.buffer }, [packet.buffer]);
+  } catch (error) { fail(error, job); }
+  return 1;
+}
+
 function extract(ptr, length) {
   if (active || !wasm || typeof Worker === 'undefined' || typeof window.showDirectoryPicker !== 'function') return 0;
   const job = { worker: null, phase: 'pick', controller: new AbortController(), outputName: null };
@@ -123,8 +144,12 @@ function cancel() {
 
 function download(ptr, length, format) {
   if (!wasm || !length || length > MAX_ARCHIVE) return 0;
-    const kind = { 0: { name: 'Archive.zip', mime: 'application/zip' }, 1: { name: 'Archive.tar', mime: 'application/x-tar' } }[format];
-    if (!kind) return 0;
+  const kind = {
+    0: { name: 'Archive.zip', mime: 'application/zip' },
+    1: { name: 'Archive.tar', mime: 'application/x-tar' },
+    2: { name: 'Archive.tar.gz', mime: 'application/gzip' },
+  }[format];
+  if (!kind) return 0;
   let url;
   let link;
   try {
@@ -145,6 +170,7 @@ function download(ptr, length, format) {
 
 export function __nsh_imports() {
   return { peazip: { pc_create_start: create, pc_download: download, pc_cancel: cancel,
+    pc_list_start: list,
     pc_extract_start: extract, pc_can_extract: () => typeof window.showDirectoryPicker === 'function' ? 1 : 0,
   } };
 }
