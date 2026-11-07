@@ -28,7 +28,7 @@ def build(debug=False):
     shutil.copyfile(target / "wasm32-unknown-unknown" / ("debug" if debug else "web") / "peazip_web.wasm", output / "peazip.wasm")
     shutil.copyfile(host / "nsh.js", output / "nsh.js")
     shutil.copyfile(ROOT / "web" / "index.html", output / "index.html")
-    for name in ["archive-bridge.js", "archive-worker.js", "archive-limits.js"]:
+    for name in ["archive-bridge.js", "archive-worker.js", "archive-limits.js", "directory-export.js"]:
         shutil.copyfile(ROOT / "web" / name, output / name)
     worker = target / "wasm32-unknown-unknown" / ("debug" if debug else "web") / "peazip_worker.wasm"
     bindgen_version = next(package["version"] for package in metadata["packages"] if package["name"] == "wasm-bindgen")

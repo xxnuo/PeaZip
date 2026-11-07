@@ -23,6 +23,8 @@ pub fn App() -> impl IntoElement {
     let busy = signal(false);
     #[cfg(target_arch = "wasm32")]
     let cancellable = signal(false);
+    #[cfg(target_arch = "wasm32")]
+    let cancel_message = signal("Creation cancelled.".to_owned());
     let activity = signal("Opening ZIP…".to_owned());
     let selected = signal(BTreeSet::<String>::new());
     let open = move || {
@@ -79,6 +81,8 @@ pub fn App() -> impl IntoElement {
         busy.set(true);
         #[cfg(target_arch = "wasm32")]
         cancellable.set(true);
+        #[cfg(target_arch = "wasm32")]
+        cancel_message.set("Creation cancelled.".into());
         activity.set("Creating ZIP…".to_owned());
         spawn(async move {
             match create_archive(folders, activity).await {
@@ -145,7 +149,8 @@ pub fn App() -> impl IntoElement {
             .on_press(move || {
                 if cancellable.get_untracked() && browser::cancel() {
                     cancellable.set(false);
-                    status.set("Creation cancelled.".into());
+                    status.set(cancel_message.get_untracked());
+                    activity.set("Cancelling…".into());
                 }
             })
             .px_3()
@@ -157,6 +162,49 @@ pub fn App() -> impl IntoElement {
             .disabled_style(|s| s.opacity(0.4))
             .child(text("Cancel")),
     );
+    #[cfg(target_arch = "wasm32")]
+    let can_extract = browser::can_extract();
+    #[cfg(target_arch = "wasm32")]
+    let actions = actions.child(
+        button()
+            .disabled(move || busy.get() || selected.with(BTreeSet::is_empty) || !can_extract)
+            .on_press(move || {
+                if busy.get_untracked() || !can_extract || selected.with(BTreeSet::is_empty) {
+                    return;
+                }
+                let bytes = snapshot.get_untracked();
+                let paths = selected.with(|paths| paths.iter().cloned().collect::<Vec<_>>());
+                busy.set(true);
+                cancellable.set(true);
+                cancel_message.set("Extraction cancellation requested.".into());
+                activity.set("Choose an export directory…".into());
+                spawn(async move {
+                    match browser::extract_zip(&bytes, &paths, move |message| activity.set(message))
+                        .await
+                    {
+                        Ok(Some(report)) => status.set(report),
+                        Ok(None) => status.set("Extraction cancelled.".into()),
+                        Err(error) => status.set(format!("Could not extract ZIP: {error}")),
+                    }
+                    busy.set(false);
+                    cancellable.set(false);
+                });
+            })
+            .px_3()
+            .py_2()
+            .border_1()
+            .border_color(move || theme().border)
+            .bg(move || theme().muted)
+            .active(|s| s.opacity(0.6))
+            .disabled_style(|s| s.opacity(0.4))
+            .child(text("Extract selected…")),
+    );
+    #[cfg(target_arch = "wasm32")]
+    let actions = if can_extract {
+        actions
+    } else {
+        actions.child(text("Directory export is unavailable in this browser."))
+    };
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let actions = actions.child(
         button()

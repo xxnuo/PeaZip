@@ -1,8 +1,31 @@
-import { packetSize, MAX_ARCHIVE } from './archive-limits.js';
+import { packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH, MAX_TOTAL } from './archive-limits.js';
 import init from './worker-core.js';
 
 self.onmessage = async ({ data: files }) => {
   try {
+    if (files?.operation === 'extract') {
+      const packet = files.packet;
+      const maxRequest = MAX_ARCHIVE + MAX_ENTRIES * (4 + MAX_PATH) + 8;
+      if (!(packet instanceof ArrayBuffer) || packet.byteLength < 8 || packet.byteLength > maxRequest) {
+        throw new Error('Invalid extraction request.');
+      }
+      const selectedCount = new DataView(packet).getUint32(0, true);
+      if (!selectedCount || selectedCount > MAX_ENTRIES) throw new Error('Invalid selection count.');
+      const wasm = await init({ module_or_path: new URL('./worker-core_bg.wasm', import.meta.url) });
+      const pointer = wasm.pw_input_resize(packet.byteLength) >>> 0;
+      if (!pointer) throw new Error('Archive request is too large.');
+      new Uint8Array(wasm.memory.buffer, pointer, packet.byteLength).set(new Uint8Array(packet));
+      self.postMessage({ progress: { phase: 'extract', done: 0, total: selectedCount } });
+      const ok = wasm.pw_extract() === 1;
+      const length = wasm.pw_output_len() >>> 0;
+      if (length > MAX_TOTAL + MAX_ENTRIES * (12 + MAX_PATH) + 4) {
+        throw new Error('Worker output exceeds the extraction limit.');
+      }
+      const result = new Uint8Array(wasm.memory.buffer, wasm.pw_output_ptr() >>> 0, length).slice();
+      self.postMessage({ code: ok ? 1 : 0, bytes: result }, [result.buffer]);
+      return;
+    }
+    if (!Array.isArray(files)) throw new Error('Invalid archive request.');
     const size = packetSize(files);
     const wasm = await init({ module_or_path: new URL('./worker-core_bg.wasm', import.meta.url) });
     const pointer = wasm.pw_input_resize(size) >>> 0;

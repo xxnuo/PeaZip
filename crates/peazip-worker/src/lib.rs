@@ -1,6 +1,57 @@
 use peazip_core::{Limits, MemoryEntry};
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024 + 4096 * (8 + 1024) + 4;
+pub const MAX_EXTRACT_REQUEST_BYTES: usize = 32 * 1024 * 1024 + 4096 * (4 + 1024) + 8;
+pub const MAX_EXTRACT_OUTPUT_BYTES: usize = 64 * 1024 * 1024 + 4096 * (12 + 1024) + 4;
+
+pub fn extract_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
+    if packet.len() > MAX_EXTRACT_REQUEST_BYTES {
+        return Err("request byte limit exceeded".into());
+    }
+    let limits = Limits::default();
+    let mut remaining = packet;
+    let count = read_u32(&mut remaining)?;
+    if count == 0 || count > limits.max_entries {
+        return Err("selected count limit exceeded".into());
+    }
+    let mut selected = Vec::with_capacity(count);
+    for _ in 0..count {
+        let len = read_u32(&mut remaining)?;
+        if len == 0 || len > limits.max_path_bytes {
+            return Err("path byte limit exceeded".into());
+        }
+        let path =
+            std::str::from_utf8(take(&mut remaining, len)?).map_err(|_| "invalid UTF-8 path")?;
+        selected.push(path.to_owned());
+    }
+    let len = read_u32(&mut remaining)?;
+    if len as u64 > limits.max_archive_bytes {
+        return Err("archive byte limit exceeded".into());
+    }
+    let zip = take(&mut remaining, len)?;
+    if !remaining.is_empty() {
+        return Err("trailing request bytes".into());
+    }
+    let entries = peazip_core::extract_selected_zip(zip, &selected, limits)
+        .map_err(|error| error.to_string())?;
+    let size = 4 + entries
+        .iter()
+        .map(|entry| 12 + entry.path.len() + entry.data.len())
+        .sum::<usize>();
+    if size > MAX_EXTRACT_OUTPUT_BYTES {
+        return Err("output byte limit exceeded".into());
+    }
+    let mut output = Vec::with_capacity(size);
+    output.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for entry in entries {
+        output.extend_from_slice(&u32::from(entry.is_dir).to_le_bytes());
+        output.extend_from_slice(&(entry.path.len() as u32).to_le_bytes());
+        output.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
+        output.extend_from_slice(entry.path.as_bytes());
+        output.extend_from_slice(&entry.data);
+    }
+    Ok(output)
+}
 
 fn take<'a>(packet: &mut &'a [u8], len: usize) -> Result<&'a [u8], String> {
     let (value, rest) = packet.split_at_checked(len).ok_or("truncated request")?;
@@ -58,7 +109,7 @@ pub fn create_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use super::{MAX_REQUEST_BYTES, create_from_request};
+    use super::{MAX_REQUEST_BYTES, create_from_request, extract_from_request};
     use std::cell::RefCell;
 
     thread_local! {
@@ -80,9 +131,18 @@ mod wasm {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn pw_create() -> u32 {
+        run(create_from_request)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn pw_extract() -> u32 {
+        run(extract_from_request)
+    }
+
+    fn run(operation: fn(&[u8]) -> Result<Vec<u8>, String>) -> u32 {
         OUTPUT.with_borrow_mut(|output| *output = Vec::new());
         let input = INPUT.with_borrow_mut(std::mem::take);
-        let result = create_from_request(&input);
+        let result = operation(&input);
         drop(input);
         let (status, bytes) = match result {
             Ok(bytes) => (1, bytes),

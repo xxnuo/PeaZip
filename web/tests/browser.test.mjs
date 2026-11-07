@@ -72,7 +72,7 @@ test('Chromium runs WASM: open ZIP, select entries, recover from invalid ZIP', {
   await expect(all).toBeDisabled();
   await expect(clear).toBeDisabled();
   await expect(selected(0)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Extract selected…', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Extract selected…', exact: true })).toBeDisabled();
 
   async function choose(name) {
     const chooser = page.waitForEvent('filechooser');
@@ -497,4 +497,254 @@ test('Real worker reports bounded read counts then compression and UI shows actu
   assert.ok(throttled.slice(0, -2).every((message) => message.progress?.phase === 'read'));
   assert.equal(downloads.length, downloadsBefore + 1);
   t.diagnostic(`Unmodified worker: 24 MiB real compression; UI phases ${JSON.stringify(stages)}; ${count} files emitted ${reads.length} read messages, then compress, then success.`);
+});
+
+async function extractionPage(t, available = true) {
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [], downloads = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('download', (download) => downloads.push(download));
+  t.after(() => assert.deepEqual(errors, []));
+  await page.addInitScript(({ available }) => {
+    window.extractionWorkers = [];
+    const NativeWorker = window.Worker;
+    window.Worker = class extends NativeWorker {
+      constructor(...args) {
+        super(...args);
+        const record = { terminated: false, codes: [] };
+        window.extractionWorkers.push(record);
+        this.addEventListener('message', ({ data }) => {
+          if (!data.progress) record.codes.push(data.code);
+        });
+        const terminate = this.terminate.bind(this);
+        this.terminate = () => { record.terminated = true; terminate(); };
+      }
+    };
+    window.pickerCalls = [];
+    window.pickerFailure = null;
+    window.testDirectoryName = `peazip-browser-${crypto.randomUUID()}`;
+    // Only the picker is substituted: all handles and writes use real OPFS APIs.
+    window.showDirectoryPicker = available ? async (options) => {
+      window.pickerCalls.push({ mode: options.mode, active: navigator.userActivation.isActive });
+      if (window.pickerFailure) throw new DOMException('Test picker rejection', window.pickerFailure);
+      return (await navigator.storage.getDirectory()).getDirectoryHandle(window.testDirectoryName, { create: true });
+    } : undefined;
+  }, { available });
+  await page.goto(await serve(t));
+  const button = (name) => page.getByRole('button', { name, exact: true });
+  await expect(button('Open ZIP…')).toBeEnabled();
+  await expect(button('Extract selected…')).toBeDisabled();
+  await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const directory = await root.getDirectoryHandle(window.testDirectoryName, { create: true });
+    const file = await directory.getFileHandle('sentinel.txt', { create: true });
+    const writer = await file.createWritable();
+    await writer.write('leave me unchanged');
+    await writer.close();
+  });
+  t.after(async () => {
+    if (!page.isClosed()) await page.evaluate(async () => {
+      await (await navigator.storage.getDirectory()).removeEntry(window.testDirectoryName, { recursive: true });
+    });
+  });
+  async function choose(files = fixture('sample.zip')) {
+    const pending = page.waitForEvent('filechooser');
+    await button('Open ZIP…').click();
+    await (await pending).setFiles(files);
+    await expect(page.getByText('3 entries', { exact: true })).toBeVisible();
+    await expect(button('Open ZIP…')).toBeEnabled();
+  }
+  async function tree() {
+    return page.evaluate(async () => {
+      async function read(directory) {
+        const result = {};
+        for await (const [name, handle] of directory.entries()) {
+          result[name] = handle.kind === 'directory' ? await read(handle) :
+            Array.from(new Uint8Array(await (await handle.getFile()).arrayBuffer()));
+        }
+        return result;
+      }
+      return read(await (await navigator.storage.getDirectory()).getDirectoryHandle(window.testDirectoryName));
+    });
+  }
+  return { page, button, choose, tree, downloads };
+}
+
+const sentinelTree = { 'sentinel.txt': Array.from(Buffer.from('leave me unchanged')) };
+
+test('Web extraction writes selected bytes and empty directories through real OPFS and Rust worker', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree, downloads } = await extractionPage(t);
+  await choose();
+  await page.getByRole('checkbox', { name: '你好.txt', exact: true }).click();
+  await page.getByRole('checkbox', { name: '空目录/', exact: true }).click();
+  await button('Extract selected…').click();
+  const report = page.getByText(/^Extracted 2 entries to PeaZip-[0-9a-f-]{36}$/);
+  await expect(report).toBeVisible();
+  const output = (await report.innerText()).split(' to ')[1];
+  assert.match(output, /^PeaZip-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.deepEqual(await tree(), {
+    ...sentinelTree,
+    [output]: { '你好.txt': Array.from(Buffer.from('你好\n')), '空目录': {} },
+  }, 'must write exact decompressed bytes and an empty directory, omit notes.txt, and preserve sentinel');
+  assert.deepEqual(await page.evaluate(() => window.pickerCalls), [{ mode: 'readwrite', active: true }]);
+  await expect.poll(() => page.evaluate(() => window.extractionWorkers)).toEqual([{ terminated: true, codes: [1] }]);
+  assert.equal(downloads.length, 0, 'directory extraction must not download a ZIP');
+  t.diagnostic('Real Chromium OPFS file APIs and Rust extraction worker verified; native external picker/permissions are not exercised.');
+});
+
+test('Web extraction handles picker cancellation and denial, CRC failure, then recovers', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree } = await extractionPage(t);
+  await choose();
+  const selected = page.getByRole('checkbox', { name: '你好.txt', exact: true });
+  await selected.click();
+  for (const failure of ['AbortError', 'NotAllowedError']) {
+    await page.evaluate((name) => { window.pickerFailure = name; }, failure);
+    await button('Extract selected…').click();
+    await expect(page.getByText(failure === 'AbortError' ? 'Extraction cancelled.' : /^Could not extract ZIP:.*Test picker rejection/)).toBeVisible();
+    await expect(button('Extract selected…')).toBeEnabled();
+    await expect(selected).toBeChecked();
+    assert.deepEqual(await tree(), sentinelTree);
+    assert.deepEqual(await page.evaluate(() => window.extractionWorkers), [], 'picker rejection must not start a worker');
+  }
+  await page.evaluate(() => { window.pickerFailure = null; });
+  const corrupt = Buffer.from(await readFile(fixture('sample.zip')));
+  assert.equal(corrupt.readUInt32LE(0), 0x04034b50);
+  const payload = 30 + corrupt.readUInt16LE(26) + corrupt.readUInt16LE(28);
+  corrupt[payload] ^= 1; // Keep headers and central directory intact so listing still succeeds.
+  await choose({ name: 'bad-crc.zip', mimeType: 'application/zip', buffer: corrupt });
+  await selected.click();
+  await button('Extract selected…').click();
+  await expect(page.getByText(/^Could not extract ZIP:/)).toBeVisible();
+  await expect(button('Extract selected…')).toBeEnabled();
+  await expect(selected).toBeChecked();
+  assert.deepEqual(await tree(), sentinelTree, 'CRC validation must finish before any output directory is created');
+  await expect.poll(() => page.evaluate(() => window.extractionWorkers)).toEqual([{ terminated: true, codes: [0] }]);
+  await choose();
+  await selected.click();
+  await button('Extract selected…').click();
+  await expect(page.getByText(/^Extracted 1 entries to PeaZip-/)).toBeVisible();
+  const result = await tree();
+  assert.deepEqual(result['sentinel.txt'], sentinelTree['sentinel.txt']);
+  assert.equal(Object.keys(result).length, 2);
+});
+
+test('Web extraction is disabled with an explanation when directory picker capability is unavailable', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree } = await extractionPage(t, false);
+  await choose();
+  await button('Select all').click();
+  await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+  await expect(button('Extract selected…')).toBeDisabled();
+  await expect(page.getByText('Directory export is unavailable in this browser.', { exact: true })).toBeVisible();
+  assert.deepEqual(await page.evaluate(() => window.pickerCalls), []);
+  assert.deepEqual(await page.evaluate(() => window.extractionWorkers), []);
+  assert.deepEqual(await tree(), sentinelTree);
+});
+
+test('Cancel extraction during real worker WASM loading preserves archive snapshot and selection', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree, downloads } = await extractionPage(t);
+  // A created archive also gives us a downloadable snapshot to compare byte for byte.
+  const pending = page.waitForEvent('filechooser');
+  await button('Create ZIP…').click();
+  await (await pending).setFiles(fixture('sample.zip'));
+  await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
+  const selected = page.getByRole('checkbox', { name: 'sample.zip', exact: true });
+  await selected.click();
+  async function snapshot() {
+    const pending = page.waitForEvent('download');
+    await button('Download ZIP').click();
+    const stream = await (await pending).createReadStream();
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  }
+  const before = await snapshot();
+  const downloadsBefore = downloads.length;
+  let release, intercepted = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async (route) => {
+    intercepted = true;
+    await gate;
+    await route.continue().catch(() => {});
+  });
+  try {
+    await button('Extract selected…').click();
+    await expect.poll(() => intercepted).toBe(true);
+    await expect(button('Cancel')).toBeEnabled();
+    for (const name of ['Create ZIP…', 'Open ZIP…', 'Download ZIP', 'Select all', 'Clear selection', 'Extract selected…']) await expect(button(name)).toBeDisabled();
+    await button('Cancel').click();
+    await expect(page.getByText('Extraction cancelled.', { exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.extractionWorkers[1])).toEqual({ terminated: true, codes: [] });
+    await expect.poll(() => page.workers().length).toBe(0);
+    await expect(selected).toBeChecked();
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+    await expect(button('Cancel')).toBeDisabled();
+    await expect(button('Extract selected…')).toBeEnabled();
+    assert.deepEqual(await tree(), sentinelTree);
+    assert.equal(downloads.length, downloadsBefore);
+    assert.deepEqual(await snapshot(), before, 'cancel must preserve exact archive bytes');
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+  await expect(selected).toBeChecked();
+  await button('Extract selected…').click();
+  await expect(page.getByText(/^Extracted 1 entries to PeaZip-/)).toBeVisible();
+  assert.deepEqual(await tree(), {
+    ...sentinelTree,
+    [(await page.getByText(/^Extracted 1 entries to PeaZip-/).innerText()).split(' to ')[1]]: {
+      'sample.zip': Array.from(await readFile(fixture('sample.zip'))),
+    },
+  });
+});
+
+test('Cancel during an OPFS write waits for abort and reports retained partial output', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree, downloads } = await extractionPage(t);
+  await choose();
+  const selected = page.getByRole('checkbox', { name: '你好.txt', exact: true });
+  await selected.click();
+  await page.evaluate(() => {
+    const picker = window.showDirectoryPicker;
+    function directory(handle) {
+      return {
+        getDirectoryHandle: async (...args) => directory(await handle.getDirectoryHandle(...args)),
+        getFileHandle: async (...args) => {
+          const file = await handle.getFileHandle(...args);
+          return { createWritable: async () => {
+            const writer = await file.createWritable();
+            let rejectWrite;
+            return {
+              // Hold the write for deterministic cancellation, retaining real OPFS handles/abort.
+              write: () => {
+                window.exportWriteStarted = true;
+                return new Promise((_, reject) => { rejectWrite = reject; });
+              },
+              close: () => writer.close(),
+              abort: async () => {
+                await writer.abort();
+                window.exportWriteAborted = true;
+                rejectWrite(new DOMException('Test write aborted', 'AbortError'));
+              },
+            };
+          } };
+        },
+      };
+    }
+    window.showDirectoryPicker = async (options) => directory(await picker(options));
+  });
+  await button('Extract selected…').click();
+  await expect.poll(() => page.evaluate(() => window.exportWriteStarted === true)).toBe(true);
+  await button('Cancel').click();
+  await expect(page.getByText(/^Could not extract ZIP: Cancelled:.*completed: 0.*possibly unfinished: 你好.txt.*output may remain/)).toBeVisible();
+  assert.equal(await page.evaluate(() => window.exportWriteAborted), true);
+  await expect(selected).toBeChecked();
+  await expect(button('Extract selected…')).toBeEnabled();
+  await expect(button('Cancel')).toBeDisabled();
+  const result = await tree();
+  const output = Object.keys(result).find((name) => name.startsWith('PeaZip-'));
+  assert.ok(output);
+  assert.deepEqual(result, { ...sentinelTree, [output]: { '你好.txt': [] } });
+  assert.equal(downloads.length, 0);
+  t.diagnostic('Write timing injected around real OPFS writable; abort and retained empty file verified, external directory picker not tested.');
 });

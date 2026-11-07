@@ -83,3 +83,147 @@ fn trailing_and_duplicates() {
         );
     }
 }
+
+fn extract_packet(paths: &[&[u8]], zip: &[u8]) -> Vec<u8> {
+    let mut bytes = (paths.len() as u32).to_le_bytes().to_vec();
+    for path in paths {
+        bytes.extend((path.len() as u32).to_le_bytes());
+        bytes.extend(*path);
+    }
+    bytes.extend((zip.len() as u32).to_le_bytes());
+    bytes.extend(zip);
+    bytes
+}
+
+fn decode_extract(mut bytes: &[u8]) -> Vec<peazip_core::MemoryEntry> {
+    fn number(bytes: &mut &[u8]) -> usize {
+        let (head, rest) = bytes.split_at(4);
+        *bytes = rest;
+        u32::from_le_bytes(head.try_into().unwrap()) as usize
+    }
+    let count = number(&mut bytes);
+    let mut entries = Vec::new();
+    for _ in 0..count {
+        let kind = number(&mut bytes);
+        assert!(kind <= 1);
+        let path_len = number(&mut bytes);
+        let data_len = number(&mut bytes);
+        let (path, rest) = bytes.split_at(path_len);
+        let (data, rest) = rest.split_at(data_len);
+        entries.push(peazip_core::MemoryEntry {
+            path: std::str::from_utf8(path).unwrap().into(),
+            is_dir: kind == 1,
+            data: data.into(),
+        });
+        bytes = rest;
+    }
+    assert!(bytes.is_empty());
+    entries
+}
+
+#[test]
+fn extract_subtree_empty_directories_and_actual_bytes() {
+    use peazip_core::{MemoryEntry, create_zip};
+    use peazip_worker::extract_from_request;
+    let entries: Vec<_> = [
+        ("目录/", b"".as_slice()),
+        ("目录/中文", &[0, 255, 128, 1]),
+        ("目录/nested/file", b"nested"),
+        ("目录/empty/", b""),
+        ("empty/", b""),
+        ("目录-other/file", b"excluded"),
+    ]
+    .into_iter()
+    .map(|(path, data)| MemoryEntry {
+        path: path.into(),
+        is_dir: path.ends_with('/'),
+        data: data.into(),
+    })
+    .collect();
+    let zip = create_zip(&entries, Limits::default()).unwrap();
+    let output = extract_from_request(&extract_packet(
+        &["目录/".as_bytes(), "目录/中文".as_bytes(), b"empty/"],
+        &zip,
+    ))
+    .unwrap();
+    assert_eq!(decode_extract(&output), entries[..5]);
+    assert_eq!(
+        decode_extract(&extract_from_request(&extract_packet(&[b"empty/"], &zip)).unwrap()),
+        entries[4..5]
+    );
+}
+
+#[test]
+fn extract_rejects_malformed_and_oversized_requests() {
+    use peazip_worker::{MAX_EXTRACT_REQUEST_BYTES, extract_from_request};
+    let zip = create_from_request(&packet(&[(b"a", b"abc")])).unwrap();
+    let valid = extract_packet(&[b"a"], &zip);
+    for end in 0..valid.len() {
+        assert!(extract_from_request(&valid[..end]).is_err(), "prefix {end}");
+    }
+    for count in [0u32, 4097, u32::MAX] {
+        assert!(extract_from_request(&count.to_le_bytes()).is_err());
+    }
+    for path in [
+        b"".as_slice(),
+        &[0xff],
+        b"../bad",
+        b"/absolute",
+        b"missing",
+        &vec![b'a'; 1025],
+    ] {
+        assert!(extract_from_request(&extract_packet(&[path], &zip)).is_err());
+    }
+    let mut trailing = valid.clone();
+    trailing.push(0);
+    assert!(
+        extract_from_request(&trailing)
+            .unwrap_err()
+            .contains("trailing")
+    );
+    let mut oversized = valid;
+    oversized[9..13].copy_from_slice(&(32 * 1024 * 1024 + 1u32).to_le_bytes());
+    assert!(
+        extract_from_request(&oversized)
+            .unwrap_err()
+            .contains("archive byte")
+    );
+    assert!(
+        extract_from_request(&vec![0; MAX_EXTRACT_REQUEST_BYTES + 1])
+            .unwrap_err()
+            .contains("request byte")
+    );
+    assert!(extract_from_request(&extract_packet(&[b"a"], b"not ZIP")).is_err());
+}
+
+#[test]
+fn extract_rejects_bad_archive_paths_and_crc_without_partial_results() {
+    use peazip_worker::extract_from_request;
+    let mut unsafe_zip = create_from_request(&packet(&[(b"safe", b"abc")])).unwrap();
+    for at in (0..unsafe_zip.len() - 3).collect::<Vec<_>>() {
+        if &unsafe_zip[at..at + 4] == b"safe" {
+            unsafe_zip[at..at + 4].copy_from_slice(b"../x");
+        }
+    }
+    assert!(
+        extract_from_request(&extract_packet(&[b"../x"], &unsafe_zip))
+            .unwrap_err()
+            .contains("unsafe")
+    );
+    let mut zip = create_from_request(&packet(&[(b"good", b"good"), (b"bad", b"bad!")])).unwrap();
+    let central = zip
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == b"PK\x01\x02")
+        .map(|(i, _)| i)
+        .nth(1)
+        .unwrap();
+    let local = u32::from_le_bytes(zip[central + 42..central + 46].try_into().unwrap()) as usize;
+    zip[local + 14..local + 18].fill(0);
+    zip[central + 16..central + 20].fill(0);
+    assert_eq!(
+        decode_extract(&extract_from_request(&extract_packet(&[b"good"], &zip)).unwrap())[0].data,
+        b"good"
+    );
+    assert!(extract_from_request(&extract_packet(&[b"good", b"bad"], &zip)).is_err());
+}
