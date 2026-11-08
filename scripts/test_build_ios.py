@@ -64,6 +64,8 @@ class IOSBuildTests(unittest.TestCase):
             self.assertEqual(info["CFBundleIdentifier"], "io.peazip.rust")
             self.assertEqual(info["CFBundleSupportedPlatforms"], [platform])
             self.assertEqual(info["UIDeviceFamily"], [1, 2])
+            self.assertTrue(info["UIFileSharingEnabled"])
+            self.assertTrue(info["LSSupportsOpeningDocumentsInPlace"])
             self.assertNotIn("ProvisioningProfile", info)
 
 

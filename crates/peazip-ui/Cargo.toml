@@ -22,6 +22,15 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jni = "0.21"
 futures-channel = "0.3"
 
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSObject", "NSNotification", "NSPathUtilities"] }
+objc2-ui-kit = { version = "0.3.2", default-features = false, features = ["std", "UIApplication", "UIView", "UIViewController"] }
+dispatch2 = "0.3.1"
+libc = "0.2"
+futures-channel = "0.3"
+tempfile = "3"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
 
@@ -32,6 +41,7 @@ nsh-platform-linux = { git = "https://github.com/longbridge/nsh.git", rev = "701
 nsh-platform-windows = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
 
 [dev-dependencies]
+libc = "0.2"
 tempfile = "3"
 nsh-engine = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }
 nsh-testing = { git = "https://github.com/longbridge/nsh.git", rev = "701bdcee9512e0f6aed39042d1fe24564dcd0b43", default-features = false }

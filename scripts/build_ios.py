@@ -86,6 +86,8 @@ def info_plist(sdk):
         "MinimumOSVersion": MINIMUM_OS,
         "UIDeviceFamily": [1, 2],
         "LSRequiresIPhoneOS": True,
+        "UIFileSharingEnabled": True,
+        "LSSupportsOpeningDocumentsInPlace": True,
         "UILaunchScreen": {},
         "UIApplicationSupportsMultipleScenes": False,
         "CADisableMinimumFrameDurationOnPhone": True,
@@ -134,7 +136,10 @@ def build(target, debug=False, developer_dir=None):
         shutil.copyfile(ROOT / "LICENSE", staged / "PeaZip-LICENSE")
         runtime = next(package for package in metadata["packages"] if package["name"] == "nsh-ios-app")
         shutil.copyfile(Path(runtime["manifest_path"]).parent.parent.parent / "LICENSE-APACHE", staged / "NSH-LICENSE-APACHE")
-        for name, source in archive_licenses(metadata):
+        for name, source in archive_licenses(metadata, roots=(
+            "peazip-core", "regex", "objc2", "objc2-foundation", "objc2-ui-kit",
+            "dispatch2", "futures-channel", "tempfile", "libc",
+        )):
             shutil.copyfile(source, staged / name)
         with (staged / "Info.plist").open("wb") as stream:
             plistlib.dump(info_plist(sdk), stream, sort_keys=True)

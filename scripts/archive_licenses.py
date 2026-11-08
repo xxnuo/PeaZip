@@ -1,11 +1,11 @@
 from pathlib import Path
 
 
-def archive_licenses(metadata):
+def archive_licenses(metadata, roots=("peazip-core", "regex")):
     packages = {package["id"]: package for package in metadata["packages"]}
     nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
     pending = [package["id"] for package in packages.values()
-               if package["name"] in ("peazip-core", "regex")]
+               if package["name"] in roots]
     selected = set()
     while pending:
         package_id = pending.pop()

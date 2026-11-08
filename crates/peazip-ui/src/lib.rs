@@ -10,6 +10,7 @@ mod commands;
 #[cfg(any(
     target_arch = "wasm32",
     target_os = "android",
+    target_os = "ios",
     target_os = "macos",
     target_os = "linux",
     target_os = "windows"
@@ -26,6 +27,8 @@ mod explorer;
 mod extract_dialog;
 mod icons;
 mod menus;
+#[cfg(any(target_os = "ios", test))]
+mod mobile_files;
 mod name_filter;
 mod navigation;
 
@@ -102,6 +105,12 @@ mod browser;
 
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_os = "ios")]
+mod ios;
+#[cfg(target_os = "android")]
+use android as mobile_archive;
+#[cfg(target_os = "ios")]
+use ios as mobile_archive;
 
 #[native_module("peazip/native")]
 fn native(registry: &mut Registry) {
@@ -172,6 +181,7 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -271,6 +281,7 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -755,6 +766,7 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -779,7 +791,7 @@ pub fn App() -> impl IntoElement {
         )
         .icon("add"),
     );
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     all.push(
         Command::new(
             CommandId::SaveArchive,
@@ -794,7 +806,7 @@ pub fn App() -> impl IntoElement {
                 busy.set(true);
                 activity.set("Saving archive…".into());
                 spawn(async move {
-                    match android::save_archive(bytes, kind).await {
+                    match mobile_archive::save_archive(bytes, kind).await {
                         Ok(Some(name)) => status.set(format!("Saved archive: {name}")),
                         Ok(None) => status.set("Save cancelled.".into()),
                         Err(error) => status.set(format!("Could not save archive: {error}")),
@@ -1157,6 +1169,7 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -1340,6 +1353,7 @@ fn archive_label(format: ArchiveFormat) -> &'static str {
 #[cfg(any(
     target_arch = "wasm32",
     target_os = "android",
+    target_os = "ios",
     target_os = "macos",
     target_os = "linux",
     target_os = "windows"
@@ -1530,14 +1544,14 @@ async fn create_archive(
     }))
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 async fn create_archive(
     _folders: bool,
     activity: Signal<String>,
     options: peazip_core::CreateOptions,
 ) -> Result<Option<OpenedArchive>, String> {
     options.validate().map_err(|error| error.to_string())?;
-    let Some(files) = android::pick_files().await? else {
+    let Some(files) = mobile_archive::pick_files().await? else {
         return Ok(None);
     };
     activity.set(format!("Creating {}…", archive_label(options.format())));

@@ -31,6 +31,8 @@ class ArchiveLicensesTest(unittest.TestCase):
                                          'tar-1-LICENSE', 'flate2-1-LICENSE',
                                          'codec-1-LICENSE', 'codec-2-LICENSE'})
             self.assertEqual(files['codec-2-LICENSE'].read_text(), 'codec2')
+            self.assertEqual(set(dict(archive_licenses(metadata, roots=('flate2',)))),
+                             {'flate2-1-LICENSE', 'codec-2-LICENSE'})
 
 
 if __name__ == '__main__':
