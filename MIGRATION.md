@@ -226,8 +226,18 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - Web 使用独立版本化提取协议，保留旧入口；JS 在目录 picker 前验证路径模式，Worker 在 WASM 初始化前验证版本/路径模式，Rust 再重验，输出协议与取消/进度/旧任务隔离保持不变。Android 在 Rust 后台完成解码与映射后再请求 SAF；native 保持新目录的临时写入与不覆盖发布。Web/SAF 继续沿用既有 provider/并发边界，不宣称跨进程原子 no-replace。
 - 新增四格式共 16 个正常层级、重名、目录-only、恶意路径样本，`uv run python crates/peazip-core/tests/fixtures/generate_extract.py` 用标准库及系统 7z 生成，7z 恶意路径仅修改等长 UTF-16 名称并重算头 CRC，不在磁盘建立越界路径。测试覆盖 ZIP/TAR/TAR.GZ/7z 的路径保留、flatten、大小写重名、未选恶意路径不能被洗白、CRC 失败、资源限额和输出不覆盖。
 - 原版提取面板新增四张普通/without-path 的 1024×600/1440×900 参考图，复用官方 11.4.0 GTK2 二进制；Cancel 后归档与预置输出哨兵不变。来源/步骤/哈希见 `tests/ui-baseline/peazip-11.4.0-linux-gtk2/provenance.json`，未断言发行二进制来自精确源码 commit。
-- 固定源码 `367c682…` 的 `peach.pas:60478` 在无选择时采用 displayed 范围，当前表单明确提供 All/Selected，尚无 displayed/高级过滤。`peach.pas:51675` 将 Extract/without-path 映射为 7z x/e；当前 Full paths 指新目标内的安全相对目录树，不是原版高级 Full (-spf2) 或 Absolute (-spf) 模式。`peach.pas:51630` 的跳过/重命名/覆盖/询问等冲突策略、已有目录合并、多归档输入、密码、Advanced/Console 与完整面板布局仍待迁移，不将本功能单元计作阶段 2a 完成。
+- 固定源码 `367c682…` 的 `peach.pas:60478` 在无选择时采用 displayed 范围，该阶段先提供 All/Selected；displayed 在后续 UI-EXTRACT-02 补齐，高级过滤仍待迁移。`peach.pas:51675` 将 Extract/without-path 映射为 7z x/e；当前 Full paths 指新目标内的安全相对目录树，不是原版高级 Full (-spf2) 或 Absolute (-spf) 模式。`peach.pas:51630` 的跳过/重命名/覆盖/询问等冲突策略、已有目录合并、多归档输入、密码、Advanced/Console 与完整面板布局仍待迁移，不将本功能单元计作阶段 2a 完成。
 - 验证：主机工作区 226 次测试执行、完整 Web 83 项、主机/WASM/Android target Clippy 与格式检查通过；最终禁用态样式重建后，6 项提取浏览器流程再次通过。真实 WASM/OPFS 检查 All 无选择、Selected、Full/FilesOnly、空目录与零字节文件、重名及目录-only 错误无输出、Full 重试和 user activation；OPFS 仍不替代外部目录授权验收。1024/1440 桌面及 360/430 触屏亮暗主题截图已检查，沿用现有 nsh Group/modal 的可访问性能力边界。
 - 最终 Linux GTK/X11 新选项流程完整通过，`target/linux-extract-options/final.log` 覆盖 All/Selected × Full/FilesOnly 的实际 7z 数据、空目录策略、同名拒绝、原快照/选择/输出不变和同目标 Full 重试；ZIP 碰撞样本逐文件核对。原菜单/快捷键/导航/Test/Extract/Close 兼容 smoke 同样通过，记录 `archive-compat.log`。最终脚本和应用源哈希已核对一致，脚本接入 Linux CI；远程 CI 尚未执行。
 - 最终 APK 在 Android 36 专用模拟器完整通过真实 DocumentsUI/SAF ZIP 流程，证据 `target/android-smoke/cdd3cd412688`、`extract-options-run.log`；tested.apk 与本地产物 SHA256 一致。Cancel/Back 无 picker，全部/所选/无目录输出包含 Unicode、二进制与空文件，逐路径/字节核对且既有输出不变；重名在 SAF 前拒绝，Full 重试成功，PID 稳定无应用 fatal。仅覆盖本机 Documents provider，未扩展到所有 provider 或设备版本。
 - Windows GNU 最终 check/release 与 PE/loader/hash 检查通过，记录 `target/windows-build/extract-options`，生产源哈希与待提交内容一致；未增加 Windows 实际运行声明，iOS 本轮未新增构建/运行证据。汇总源哈希与测试记录在 `target/extract-options-evidence.json`。
+
+## 当前显示范围解压（UI-EXTRACT-02）
+
+- 补齐固定原版 `peach.pas:60478` 的无选择 displayed 默认行为：有选择仍默认 Selected，无选择默认 Displayed，All 始终为明确可选范围。表单显示当前归档目录或 All entries view，以及所选/显示范围/整个归档的条目数。
+- Displayed 来自当前完整逻辑列表，不是虚拟滚动窗口中的少数已绘制行；目录覆盖后代，隐式目录只展开为真实条目，排序不改变范围。文件夹模式不包含同级或近似前缀目录，平铺模式覆盖整个归档；目标仍保留归档内完整相对路径，FilesOnly 策略沿用既有规则。
+- 表单打开时将 displayed 路径集和位置说明与字节快照一起冻结。操作不改写原选择；无选择的空目录默认 Displayed 无可提取内容，Continue 禁用，不悄悄回退 All。用户可取消，或明确改为 All 后继续。
+- 工作区 231 次测试执行、Web 84 项、主机/WASM/Android target Clippy 与格式检查通过。新增范围测试覆盖目录边界、四种排序、隐式目录、空视图、平铺范围、删除源文件后仍使用快照、选择保持和显式 All；实际 Web Worker/OPFS 验证子目录、隐式子目录与空视图切换，桌面/触屏亮暗主题截图已检查。
+- Linux 最终 GTK 流程通过，记录 `target/linux-displayed-extract/final.log`；真实 7z 字节核对确认 docs 范围不包含 other.txt，空视图阻止确认、显式 All 可用，平铺 Displayed 包含全归档；原路径方式和同名冲突重试继续通过。应用/脚本哈希与待提交内容一致。
+- Android 36 本机 Documents provider 实机完整通过，记录 `target/android-smoke/1dca19266819`、`displayed-extract-options-run.log`；docs Displayed 导出 4 个真实后代，平铺 Displayed 导出全归档 7 项，空目录取消/显式 All 正常，原选择及既有输出保持。最终 tested.apk 与本地产物哈希一致，PID 稳定无应用 fatal；专用测试文件和模拟器已清理。
+- Windows GNU check/release 与 PE/loader/hash 检查通过，产物 `target/windows-build/displayed-scope`；未验证 Windows 运行，iOS 本轮未增加验证。证据汇总 `target/displayed-evidence.json`。高级过滤、冲突处理和原版完整提取面板等既有缺口继续保留，未将这一交互补齐视为整个迁移完成。

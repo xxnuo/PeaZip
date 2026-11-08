@@ -1716,7 +1716,7 @@ test('Extraction dialog supports All without selecting rows and Files only with 
   for (const cancel of ['Cancel', 'Escape']) {
     await button('Extract…').click();
     const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
-    await expect(modal.getByRole('radio', { name: 'All entries', exact: true })).toBeChecked();
+    await expect(modal.getByRole('radio', { name: 'Displayed entries', exact: true })).toBeChecked();
     await expect(modal.getByRole('radio', { name: 'Selected entries', exact: true })).toBeDisabled();
     if (cancel === 'Escape') await page.keyboard.press('Escape');
     else await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -1725,6 +1725,7 @@ test('Extraction dialog supports All without selecting rows and Files only with 
   assert.deepEqual(await page.evaluate(() => window.pickerCalls), []);
   assert.deepEqual(await tree(), sentinelTree);
   await button('Extract…').click();
+  await page.getByRole('radio', { name: 'All entries', exact: true }).click();
   const full = await finishExtraction(page, button);
   const fullTree = { docs: { '你好.txt': Array.from(Buffer.from('hello 中文')) }, other: { 'data.bin': Array.from(Buffer.from('binary text')) }, empty: {} };
   assert.deepEqual(await tree(), { ...sentinelTree, [full]: fullTree });
@@ -1755,6 +1756,57 @@ test('Extraction dialog supports All without selecting rows and Files only with 
   const empty = await finishExtraction(page, button);
   assert.deepEqual(await tree(), { ...flatTree, [empty]: { empty: {} } });
   assert.ok((await page.evaluate(() => window.pickerCalls)).every(call => call.active));
+});
+
+test('Displayed extraction follows the current folder, handles implicit directories and never falls back from an empty view', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree } = await extractionPage(t);
+  const picker = page.waitForEvent('filechooser');
+  await button('Open archive…').click();
+  await (await picker).setFiles(fileURLToPath(new URL('../../tests/fixtures/sample.tar', import.meta.url)));
+  await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+  await button('Folder view').click();
+  const path = page.getByRole('textbox', { name: 'Archive path', exact: true });
+  const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
+  async function go(directory, row) {
+    await path.fill(directory);
+    await path.press('Enter');
+    await expect(path).toHaveValue(directory);
+    if (row) await expect(page.getByRole('checkbox', { name: row, exact: true })).toBeVisible();
+    else await expect(page.getByRole('checkbox')).toHaveCount(0);
+  }
+  await go('docs/', 'docs/你好.txt');
+  await button('Extract…').click();
+  await expect(modal.getByText('Current view: /docs/', { exact: true })).toBeVisible();
+  await expect(modal.getByRole('radio', { name: 'Displayed entries', exact: true })).toBeChecked();
+  const docs = await finishExtraction(page, button);
+  const docsTree = { docs: { '你好.txt': Array.from(Buffer.from('tar 你好\n')), empty: {}, nested: { 'data.bin': [0, 127, 255] } } };
+  let expected = { ...sentinelTree, [docs]: docsTree };
+  assert.deepEqual(await tree(), expected);
+  await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+  await go('docs/nested/', 'docs/nested/data.bin');
+  await button('Extract…').click();
+  const nested = await finishExtraction(page, button);
+  expected = { ...expected, [nested]: { docs: { nested: { 'data.bin': [0, 127, 255] } } } };
+  assert.deepEqual(await tree(), expected);
+  await go('docs/empty/');
+  await button('Extract…').click();
+  await expect(modal.getByRole('radio', { name: 'Displayed entries', exact: true })).toBeChecked();
+  await expect(modal.getByRole('radio', { name: 'Displayed entries', exact: true })).toBeDisabled();
+  await expect(modal.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+  assert.equal((await page.evaluate(() => window.pickerCalls)).length, 2);
+  await modal.getByRole('radio', { name: 'All entries', exact: true }).click();
+  const all = await finishExtraction(page, button);
+  const allTree = { ...docsTree, 'other.txt': Array.from(Buffer.from('not selected\n')) };
+  expected = { ...expected, [all]: allTree };
+  assert.deepEqual(await tree(), expected);
+  await button('All entries').click();
+  await expect(page.getByRole('checkbox')).toHaveCount(5);
+  await button('Extract…').click();
+  await expect(modal.getByText('All entries view', { exact: true })).toBeVisible();
+  await expect(modal.getByRole('radio', { name: 'Displayed entries', exact: true })).toBeChecked();
+  const flatView = await finishExtraction(page, button);
+  assert.deepEqual(await tree(), { ...expected, [flatView]: allTree });
+  await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
 });
 
 test('Files-only duplicate names fail before output and Full paths retry preserves archive selection', { timeout: 120_000 }, async (t) => {

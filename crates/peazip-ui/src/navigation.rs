@@ -206,6 +206,15 @@ pub(crate) fn selection_paths(row: &BrowserRow, entries: &[Entry]) -> Vec<String
         .collect()
 }
 
+pub(crate) fn displayed_paths(entries: &[Entry], rows: &[BrowserRow]) -> Vec<String> {
+    let roots = rows.iter().map(|row| row.path.clone()).collect();
+    entries
+        .iter()
+        .filter(|entry| covered(&entry.path, &roots))
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
 fn covered(path: &str, selected: &BTreeSet<String>) -> bool {
     selected.contains(path)
         || path
@@ -298,6 +307,38 @@ mod tests {
 
     fn paths(rows: &[BrowserRow]) -> Vec<&str> {
         rows.iter().map(|row| row.path.as_str()).collect()
+    }
+
+    #[test]
+    fn displayed_scope_expands_implicit_directories_without_siblings_or_duplicates() {
+        let entries = [
+            entry("docs/", 0),
+            entry("docs/empty/", 0),
+            entry("docs/deep/file", 3),
+            entry("docs/readme", 2),
+            entry("docs2/other", 1),
+            entry("outside", 4),
+        ];
+        for sort in [Sort::NameAsc, Sort::NameDesc, Sort::SizeAsc, Sort::SizeDesc] {
+            assert_eq!(
+                displayed_paths(&entries, &rows(&entries, "docs/", false, sort)),
+                ["docs/empty/", "docs/deep/file", "docs/readme"]
+            );
+            assert_eq!(
+                displayed_paths(&entries, &rows(&entries, "docs/", true, sort)),
+                entries
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert!(
+            displayed_paths(
+                &entries,
+                &rows(&entries, "docs/empty/", false, Sort::NameAsc)
+            )
+            .is_empty()
+        );
     }
 
     #[test]

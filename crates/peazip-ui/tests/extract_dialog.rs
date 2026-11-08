@@ -41,7 +41,7 @@ fn confirm(app: &mut Headless) {
 }
 
 #[test]
-fn no_selection_defaults_to_all_and_cancel_escape_do_not_open_a_picker() {
+fn no_selection_defaults_to_displayed_and_cancel_escape_do_not_open_a_picker() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("sample.tar");
     sample(&source);
@@ -49,7 +49,9 @@ fn no_selection_defaults_to_all_and_cancel_escape_do_not_open_a_picker() {
     assert!(app.screen().enabled("role:button[Extract…]").unwrap());
     let requests = app.screen().file_requests().len();
     open(&mut app);
-    assert!(radio(&app, "All entries"));
+    assert!(radio(&app, "Displayed entries"));
+    assert!(!radio(&app, "All entries"));
+    assert!(app.screen().shows("All entries view"));
     assert!(!radio(&app, "Selected entries"));
     assert!(
         !app.screen()
@@ -85,6 +87,7 @@ fn selected_scope_extracts_real_selected_bytes_and_keeps_the_selection() {
     let requests = app.screen().file_requests().len();
     open(&mut app);
     assert!(radio(&app, "Selected entries"));
+    assert!(!radio(&app, "Displayed entries"));
     assert!(!radio(&app, "All entries"));
     assert_eq!(app.screen().file_requests().len(), requests);
     confirm(&mut app);
@@ -106,9 +109,175 @@ fn all_scope_without_selection_extracts_every_file_and_empty_directory() {
     let output = temp.path().join("all");
     sample(&source);
     let mut app = load(&source, 5);
+    app.press("role:button[Folder view]").unwrap();
+    app.press("role:button[Open folder docs/]").unwrap();
     app.on_pick_save_path(Some(output.clone())).unwrap();
     open(&mut app);
+    assert!(radio(&app, "Displayed entries"));
+    app.press("role:radio[All entries]").unwrap();
     assert!(radio(&app, "All entries"));
+    confirm(&mut app);
+    app.wait_for("Extracted 5 entries").unwrap();
+    assert_eq!(
+        std::fs::read(output.join("docs/你好.txt")).unwrap(),
+        "tar 你好\n".as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(output.join("docs/nested/data.bin")).unwrap(),
+        [0, 127, 255]
+    );
+    assert_eq!(
+        std::fs::read(output.join("other.txt")).unwrap(),
+        b"not selected\n"
+    );
+    assert!(output.join("docs/empty").is_dir());
+    assert!(app.screen().shows("0 selected"));
+}
+
+#[test]
+fn displayed_folder_scope_excludes_siblings_keeps_selection_and_uses_the_frozen_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("sample.tar");
+    let output = temp.path().join("displayed");
+    sample(&source);
+    let mut app = load(&source, 5);
+    app.press("role:checkbox[other.txt]").unwrap();
+    app.press("role:button[Folder view]").unwrap();
+    app.press("role:button[Open folder docs/]").unwrap();
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    let requests = app.screen().file_requests().len();
+    open(&mut app);
+    assert!(radio(&app, "Selected entries"));
+    app.wait_for("Current view: /docs/").unwrap();
+    app.press("role:radio[Displayed entries]").unwrap();
+    assert_eq!(app.screen().file_requests().len(), requests);
+    std::fs::remove_file(&source).unwrap();
+    confirm(&mut app);
+    app.wait_for("Extracted 3 entries").unwrap();
+    assert_eq!(
+        std::fs::read(output.join("docs/你好.txt")).unwrap(),
+        "tar 你好\n".as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(output.join("docs/nested/data.bin")).unwrap(),
+        [0, 127, 255]
+    );
+    assert!(output.join("docs/empty").is_dir());
+    assert!(!output.join("other.txt").exists());
+    assert!(!source.exists());
+    assert!(app.screen().shows("1 selected"));
+    assert_eq!(
+        app.screen().input_text("Archive path").unwrap(),
+        Some("docs/")
+    );
+    app.press("role:button[Archive root]").unwrap();
+    assert_eq!(
+        app.screen()
+            .accessibility_state("role:checkbox[other.txt]")
+            .unwrap()
+            .checked,
+        Some(Checked::True)
+    );
+    assert_eq!(app.screen().file_requests().len(), requests + 1);
+}
+
+#[test]
+fn displayed_scope_expands_implicit_directory_rows_without_inventing_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("implicit.zip");
+    let output = temp.path().join("displayed");
+    let entries: Vec<_> = [
+        ("docs/deep/a.txt", b"a".as_slice()),
+        ("docs/deep/b.txt", b"b"),
+        ("docs/c.txt", b"c"),
+        ("other.txt", b"outside"),
+    ]
+    .into_iter()
+    .map(|(path, data)| MemoryEntry {
+        path: path.into(),
+        is_dir: false,
+        data: data.into(),
+    })
+    .collect();
+    std::fs::write(
+        &source,
+        peazip_core::create_zip(&entries, Limits::default()).unwrap(),
+    )
+    .unwrap();
+    let mut app = load(&source, 4);
+    app.press("role:button[Folder view]").unwrap();
+    app.press("role:button[Open folder docs/]").unwrap();
+    assert_eq!(app.screen().count("role:checkbox").unwrap(), 2);
+    assert!(app.screen().matches("role:checkbox[docs/deep/]").unwrap());
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    open(&mut app);
+    assert!(radio(&app, "Displayed entries"));
+    confirm(&mut app);
+    app.wait_for("Extracted 3 entries").unwrap();
+    for (name, bytes) in [
+        ("docs/deep/a.txt", b"a"),
+        ("docs/deep/b.txt", b"b"),
+        ("docs/c.txt", b"c"),
+    ] {
+        assert_eq!(std::fs::read(output.join(name)).unwrap(), bytes);
+    }
+    assert!(!output.join("other.txt").exists());
+    assert!(app.screen().shows("0 selected"));
+}
+
+#[test]
+fn empty_current_directory_defaults_to_displayed_and_requires_explicit_all() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("sample.tar");
+    let output = temp.path().join("all");
+    sample(&source);
+    let mut app = load(&source, 5);
+    app.press("role:button[Folder view]").unwrap();
+    app.press("role:button[Open folder docs/]").unwrap();
+    app.press("role:button[Open folder docs/empty/]").unwrap();
+    assert_eq!(app.screen().count("role:checkbox").unwrap(), 0);
+    assert!(app.screen().enabled("role:button[Extract…]").unwrap());
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    let requests = app.screen().file_requests().len();
+    open(&mut app);
+    assert!(radio(&app, "Displayed entries"));
+    assert!(!radio(&app, "All entries"));
+    assert!(!app.screen().enabled("role:button[Continue]").unwrap());
+    assert_eq!(app.screen().file_requests().len(), requests);
+    assert!(!output.exists());
+    app.wait_for("Current view: /docs/empty/").unwrap();
+    app.press("role:radio[All entries]").unwrap();
+    assert!(app.screen().enabled("role:button[Continue]").unwrap());
+    confirm(&mut app);
+    app.wait_for("Extracted 5 entries").unwrap();
+    assert_eq!(
+        std::fs::read(output.join("other.txt")).unwrap(),
+        b"not selected\n"
+    );
+    assert_eq!(
+        std::fs::read(output.join("docs/nested/data.bin")).unwrap(),
+        [0, 127, 255]
+    );
+    assert!(output.join("docs/empty").is_dir());
+    assert!(app.screen().shows("0 selected"));
+    assert_eq!(
+        app.screen().input_text("Archive path").unwrap(),
+        Some("docs/empty/")
+    );
+    assert_eq!(app.screen().file_requests().len(), requests + 1);
+}
+
+#[test]
+fn flat_view_displayed_scope_includes_all_files_and_empty_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("sample.tar");
+    let output = temp.path().join("flat-view");
+    sample(&source);
+    let mut app = load(&source, 5);
+    app.on_pick_save_path(Some(output.clone())).unwrap();
+    open(&mut app);
+    assert!(radio(&app, "Displayed entries"));
+    assert!(app.screen().shows("All entries view"));
     confirm(&mut app);
     app.wait_for("Extracted 5 entries").unwrap();
     assert_eq!(

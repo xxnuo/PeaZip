@@ -29,6 +29,20 @@ class ExtractOptionsSmoke(smoke_android.Smoke):
             and node.get("checkable") == "true" and node.get("checked") == str(checked).lower()
             and node.get("enabled") == str(enabled).lower() for node in tree.iter("node")))
 
+    def continue_state(self, enabled):
+        return self.wait(f"Continue enabled={enabled}", lambda tree: any(
+            self.match(node, "Continue") and node.get("class") == "android.widget.Button"
+            and node.get("enabled") == str(enabled).lower() for node in tree.iter("node")))
+
+    def unselected_rows(self, paths):
+        self.label("0 selected")
+        self.wait("current view has only the expected unselected rows", lambda tree:
+                  self.snapshot(tree)["rows"] == sorted((path, "false") for path in paths))
+
+    def dismissed(self):
+        self.wait("extract dialog dismissed", lambda tree: not any(
+            self.match(node, "Extract archive") for node in tree.iter("node")))
+
     def no_picker_marker(self, evidence):
         marker = f"extract-options-{self.token}-{evidence}"
         self.adb("shell", "log", "-p", "i", "-t", "PeaZipExtractOptions", marker)
@@ -134,21 +148,21 @@ class ExtractOptionsSmoke(smoke_android.Smoke):
         for dismissal in ("Cancel", "Back"):
             marker = self.no_picker_marker(dismissal)
             self.extract_dialog(paths=None)
-            self.radio("All entries", True)
+            self.radio("Displayed entries", True)
+            self.radio("All entries", False)
             self.radio("Selected entries", False, enabled=False)
             if dismissal == "Cancel":
                 self.tap("Cancel")
             else:
                 self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
-            self.wait("extract dialog dismissed", lambda tree: not any(
-                self.match(node, "Extract archive") for node in tree.iter("node")))
+            self.dismissed()
             self.no_picker(marker, dismissal.lower())
             self.preserved(name, before, f"cancel-{dismissal.lower()}")
             if self.export_snapshot(f"cancel-{dismissal.lower()}") != exports:
                 raise AssertionError("Modal cancellation changed previous exports")
             print(f"PASS Extract {dismissal}: no picker, snapshot/selection/output preserved", flush=True)
 
-        self.extract_dialog()
+        self.extract_dialog(scope="All entries")
         self.radio("All entries", True)
         exports = self.authorize(len(contents), contents, exports, "all-full")
         self.preserved(name, before, "all-keeps-selection-empty")
@@ -162,9 +176,65 @@ class ExtractOptionsSmoke(smoke_android.Smoke):
         self.preserved(name, selected, "selected-keeps-snapshot")
 
         self.extract_dialog(scope="All entries", paths=self.FILES_ONLY)
+        self.radio("All entries", True)
         flat = {path.rsplit("/", 1)[-1]: data for path, data in contents.items() if data is not None}
         exports = self.authorize(len(flat), flat, exports, "all-files-only")
         self.preserved(name, selected, "files-only-keeps-selection")
+
+        self.tap("Folder view")
+        self.tap("Open folder docs/")
+        self.tap("Clear selection")
+        self.unselected_rows(["docs/deep/", "docs/empty/", "docs/中文.txt"])
+        docs_before = self.snapshot(self.dump())
+        self.extract_dialog()
+        self.label("Current view: /docs/")
+        self.radio("Displayed entries", True)
+        self.radio("Selected entries", False, enabled=False)
+        self.radio("All entries", False)
+        docs = {path: data for path, data in contents.items()
+                if path.startswith("docs/") and path != "docs/"}
+        exports = self.authorize(len(docs), docs, exports, "displayed-docs-full")
+        self.preserved(name, docs_before, "displayed-docs-keeps-selection-empty")
+
+        self.tap("Open folder docs/empty/")
+        self.unselected_rows([])
+        empty_before = self.snapshot(self.dump())
+        marker = self.no_picker_marker("empty-displayed")
+        self.extract_dialog()
+        self.label("Current view: /docs/empty/")
+        self.radio("Displayed entries", True, enabled=False)
+        self.radio("Selected entries", False, enabled=False)
+        self.radio("All entries", False)
+        self.continue_state(False)
+        self.save("empty-displayed-disabled")
+        self.tap("Cancel")
+        self.dismissed()
+        self.preserved(name, empty_before, "empty-displayed-cancelled")
+        self.extract_dialog()
+        self.radio("Displayed entries", True, enabled=False)
+        self.continue_state(False)
+        self.tap("All entries")
+        self.radio("All entries", True)
+        self.continue_state(True)
+        self.save("empty-folder-explicit-all-enabled")
+        self.tap("Cancel")
+        self.dismissed()
+        self.no_picker(marker, "empty-displayed-no-picker")
+        self.preserved(name, empty_before, "empty-explicit-all-cancelled")
+        if self.export_snapshot("empty-displayed-no-output") != exports:
+            raise AssertionError("An empty displayed scope changed previous exports")
+        print("PASS empty folder: default Displayed disables Continue; Cancel preserves state; explicit All enables Continue", flush=True)
+
+        # The remembered folder is empty; flat Displayed must nevertheless cover the archive.
+        self.flat_view()
+        self.unselected_rows(contents)
+        flat_before = self.snapshot(self.dump())
+        self.extract_dialog()
+        self.label("All entries view")
+        self.radio("Displayed entries", True)
+        self.radio("All entries", False)
+        exports = self.authorize(len(contents), contents, exports, "displayed-flat-full")
+        self.preserved(name, flat_before, "displayed-flat-keeps-selection-empty")
 
         name, contents = self.fixture("extract-collisions")
         self.tap("a/")
@@ -192,8 +262,9 @@ class ExtractOptionsSmoke(smoke_android.Smoke):
         self.authorize(len(chosen), chosen, exports, "collision-full-retry")
         self.preserved(name, selected, "full-retry-keeps-selection")
         self.health()
-        print("PASS Extract options: modal Cancel/Back no picker; default All without selection; "
-              "default Selected; Full paths and FilesOnly actual SAF bytes including Unicode/empty files; "
+        print("PASS Extract options: modal Cancel/Back no picker; default Displayed without selection; "
+              "docs Displayed exports only actual descendants; empty Displayed disables Continue with safe Cancel/explicit All; "
+              "flat Displayed covers the archive; explicit All and default Selected; Full paths and FilesOnly actual SAF bytes including Unicode/empty files; "
               "FilesOnly omits directories; basename collision before SAF with no partial output; Full paths retry succeeds", flush=True)
 
 

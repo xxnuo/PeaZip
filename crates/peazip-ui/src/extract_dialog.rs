@@ -5,6 +5,7 @@ use peazip_core::{ExtractOptions, ExtractPaths};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtractScope {
     Selected,
+    Displayed,
     All,
 }
 
@@ -48,22 +49,39 @@ fn choice<T: Copy + PartialEq + 'static>(
         .child(text(label))
 }
 
+pub(crate) struct Summary {
+    pub name: String,
+    pub selected_count: usize,
+    pub total_count: usize,
+    pub displayed_count: usize,
+    pub displayed_location: String,
+}
+
 pub(crate) fn show(
-    name: String,
-    selected_count: usize,
-    total_count: usize,
+    summary: Summary,
     initial: ExtractOptions,
     confirm: impl Fn(ExtractScope, ExtractOptions) + Copy + 'static,
     cancel: impl Fn() + Copy + 'static,
 ) -> impl IntoElement {
+    let Summary {
+        name,
+        selected_count,
+        total_count,
+        displayed_count,
+        displayed_location,
+    } = summary;
     let scope = signal(if selected_count > 0 {
         ExtractScope::Selected
     } else {
-        ExtractScope::All
+        ExtractScope::Displayed
     });
     let paths = signal(initial.paths);
     let finished = signal(false);
-    let valid = move || total_count > 0 && (scope.get() == ExtractScope::All || selected_count > 0);
+    let valid = move || match scope.get() {
+        ExtractScope::Selected => selected_count > 0,
+        ExtractScope::Displayed => displayed_count > 0,
+        ExtractScope::All => total_count > 0,
+    };
     let dismiss = move || {
         if !finished.get_untracked() {
             finished.set(true);
@@ -91,11 +109,13 @@ pub(crate) fn show(
             .child(text("Extract archive").font_weight(FontWeight::SEMIBOLD).px_3().py_2().border_b_1().border_color(move || theme().border))
             .child(scroll().min_h(px(0.0)).flex_shrink(1.0).child(view().p_3().gap_3()
                 .child(view().gap_1().child(text("Archive").font_weight(FontWeight::SEMIBOLD)).child(text(name)))
-                .child(text(format!("{selected_count} selected; {total_count} archive entries")))
+                .child(text(displayed_location))
+                .child(text(format!("{selected_count} selected; {displayed_count} in displayed scope; {total_count} archive entries")))
                 .child(view().gap_1().role(AccessibilityRole::Group).label("Scope")
                     .child(text("Scope").font_weight(FontWeight::SEMIBOLD))
                     .child(radio_group()
                         .child(choice(scope, ExtractScope::Selected, "Selected entries", move || finished.get() || selected_count == 0))
+                        .child(choice(scope, ExtractScope::Displayed, "Displayed entries", move || finished.get() || displayed_count == 0))
                         .child(choice(scope, ExtractScope::All, "All entries", move || finished.get() || total_count == 0))))
                 .child(view().gap_1().role(AccessibilityRole::Group).label("Paths")
                     .child(text("Paths").font_weight(FontWeight::SEMIBOLD))

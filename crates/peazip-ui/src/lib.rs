@@ -48,6 +48,8 @@ struct ExtractionRequest {
     bytes: Arc<Vec<u8>>,
     selected: Vec<String>,
     all: Vec<String>,
+    displayed: Vec<String>,
+    displayed_location: String,
 }
 
 #[derive(Clone, Copy)]
@@ -717,6 +719,7 @@ pub fn App() -> impl IntoElement {
         let bytes = request.bytes;
         let paths = match scope {
             extract_dialog::ExtractScope::Selected => request.selected,
+            extract_dialog::ExtractScope::Displayed => request.displayed,
             extract_dialog::ExtractScope::All => request.all,
         };
         busy.set(true);
@@ -772,6 +775,16 @@ pub fn App() -> impl IntoElement {
                     bytes: snapshot.get_untracked(),
                     selected: selected.with(|paths| paths.iter().cloned().collect()),
                     all: entries.with(|rows| rows.iter().map(|row| row.path.clone()).collect()),
+                    displayed: entries.with(|items| {
+                        controls
+                            .visible
+                            .with(|rows| navigation::displayed_paths(items, rows))
+                    }),
+                    displayed_location: if controls.flat.get_untracked() {
+                        "All entries view".into()
+                    } else {
+                        navigation.with(|state| format!("Current view: /{}", state.current()))
+                    },
                 }));
                 extracting.set(true);
             },
@@ -1039,9 +1052,13 @@ pub fn App() -> impl IntoElement {
                 .get()
                 .expect("open extraction has a snapshot");
             extract_dialog::show(
-                request.name,
-                request.selected.len(),
-                request.all.len(),
+                extract_dialog::Summary {
+                    name: request.name,
+                    selected_count: request.selected.len(),
+                    total_count: request.all.len(),
+                    displayed_count: request.displayed.len(),
+                    displayed_location: request.displayed_location,
+                },
                 extract_options.get_untracked(),
                 move |scope, options| {
                     owner.run(|| {
