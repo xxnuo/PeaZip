@@ -266,3 +266,10 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 
 - 最终 APK Android 36 实机五组格式完整通过，记录 `target/android-smoke/870346a15498`、`packed-final.log`。ZIP/TAR/TGZ/solid 7z/non-solid COPY 7z 分别验证所有 Packed 数值、已知空文件零、目录/共享流未知、升降排序、窄屏列切换、选择保持及源字节不变；每组均通过真实 DocumentsUI/SAF 提取后逐路径和字节核对，既有输出哨兵保持。tested.apk 与本地产物 SHA256 一致，PID 稳定无应用 fatal；仅覆盖专用 API36 模拟器与本机 Documents provider。
 - 源码/产物和测试证据汇总 `target/packed-evidence.json`。测试设备/容器使用独立环境，保留缓存；不将本轮详细列表增量视为完整 PeaZip 界面或六平台迁移完成。
+
+## 类型排序（UI-LIST-02）
+
+- Layout 新增 Sort by type；宽屏归档和文件夹的 Type 列头可直接切换升降序，窄屏从菜单操作。目录始终优先，同类型按名称稳定排序；共享命令继续受 busy/modal 门禁约束，原生菜单执行后返回内容焦点。
+- 归档复用当前显示的 basename 扩展名类型标签（大小写统一、无扩展名为 File），本地目录复用已有 File/Link/Other 分类，不跟随链接，不新增 MIME 探测。排序只变更行顺序，不修改选择路径、快照 ID 或历史，也不触发 Packed 列模式。原版列头切换升降序参考固定 `peach.pas:67671`。
+- 主机工作区 265 次测试执行、完整浏览器 95 项通过，主机/WASM/Android target Clippy、格式检查及 Android APK 构建通过。浏览器新增 1024/360 两种宽度的菜单/列头升降序、名称 tie、父目录带点与无后缀、选择保持和实际 Worker/OPFS 提取字节核对；菜单关闭后截图再次生成，两个定向流程通过。证据 `target/type-sort-workspace-tests.log`、`type-sort-web-tests.log`、`type-sort-web-final.log`。
+- 本轮未新增 Linux/Android 实机、Windows/iOS 构建运行验收，不沿用旧证据宣称新功能已在所有目标运行。完整类型识别、时间/属性列、列宽调整和其余详细列表验收仍待完成。

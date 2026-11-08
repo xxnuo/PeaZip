@@ -628,6 +628,26 @@ pub fn App() -> impl IntoElement {
             )
         }),
         Command::new(
+            CommandId::SortType,
+            "Sort by type",
+            move || !busy.get(),
+            move || {
+                controls.sort.update(|sort| {
+                    *sort = if *sort == navigation::Sort::TypeAsc {
+                        navigation::Sort::TypeDesc
+                    } else {
+                        navigation::Sort::TypeAsc
+                    };
+                })
+            },
+        )
+        .checked(move || {
+            matches!(
+                controls.sort.get(),
+                navigation::Sort::TypeAsc | navigation::Sort::TypeDesc
+            )
+        }),
+        Command::new(
             CommandId::SortPacked,
             "Sort by packed size",
             move || !busy.get() && !file_view(),

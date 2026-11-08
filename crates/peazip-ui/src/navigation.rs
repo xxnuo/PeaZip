@@ -118,6 +118,8 @@ pub(crate) enum Sort {
     SizeDesc,
     PackedAsc,
     PackedDesc,
+    TypeAsc,
+    TypeDesc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,6 +216,8 @@ pub(crate) fn rows(entries: &[Entry], directory: &str, flat: bool, sort: Sort) -
             .then_with(|| match sort {
                 Sort::NameAsc => a.name.cmp(&b.name),
                 Sort::NameDesc => b.name.cmp(&a.name),
+                Sort::TypeAsc => a.kind_label().cmp(&b.kind_label()),
+                Sort::TypeDesc => b.kind_label().cmp(&a.kind_label()),
                 Sort::SizeAsc => a.size.cmp(&b.size),
                 Sort::SizeDesc => b.size.cmp(&a.size),
                 Sort::PackedAsc | Sort::PackedDesc => match (a.packed_size, b.packed_size) {
@@ -393,6 +397,25 @@ mod tests {
                 &rows(&entries, "docs/empty/", false, Sort::NameAsc)
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn type_sort_uses_displayed_labels_and_keeps_directories_first() {
+        let entries = [
+            entry("dir.txt/", 0),
+            entry("z.TXT", 1),
+            entry("a.txt", 1),
+            entry("plain", 1),
+            entry("dir.ext/file.bin", 1),
+        ];
+        assert_eq!(
+            paths(&rows(&entries, "", true, Sort::TypeAsc)),
+            ["dir.txt/", "dir.ext/file.bin", "plain", "a.txt", "z.TXT"]
+        );
+        assert_eq!(
+            paths(&rows(&entries, "", true, Sort::TypeDesc)),
+            ["dir.txt/", "a.txt", "z.TXT", "plain", "dir.ext/file.bin"]
         );
     }
 

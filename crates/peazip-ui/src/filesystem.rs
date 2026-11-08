@@ -201,6 +201,15 @@ impl Files {
     }
 }
 
+fn kind_label(kind: EntryKind) -> &'static str {
+    match kind {
+        EntryKind::Directory => "Folder",
+        EntryKind::File => "File",
+        EntryKind::Link => "Link",
+        EntryKind::Other => "Other",
+    }
+}
+
 fn ordered_entries(entries: &[DirectoryEntry], sort: Sort) -> Vec<usize> {
     let mut order: Vec<_> = (0..entries.len()).collect();
     order.sort_by(|&a, &b| {
@@ -212,6 +221,8 @@ fn ordered_entries(entries: &[DirectoryEntry], sort: Sort) -> Vec<usize> {
                     a.display_name.cmp(&b.display_name)
                 }
                 Sort::NameDesc => b.display_name.cmp(&a.display_name),
+                Sort::TypeAsc => kind_label(a.kind).cmp(kind_label(b.kind)),
+                Sort::TypeDesc => kind_label(b.kind).cmp(kind_label(a.kind)),
                 Sort::SizeAsc => a.size.cmp(&b.size),
                 Sort::SizeDesc => b.size.cmp(&a.size),
             })
@@ -281,6 +292,7 @@ pub fn browser(
     let invert = commands.get(CommandId::InvertSelection).unwrap();
     let sort_name = commands.get(CommandId::SortName).unwrap();
     let sort_size = commands.get(CommandId::SortSize).unwrap();
+    let sort_type = commands.get(CommandId::SortType).unwrap();
     view()
         .flex_1()
         .min_h(px(0.0))
@@ -408,7 +420,10 @@ pub fn browser(
                         .border_b_1()
                         .border_color(move || theme().border)
                         .child(commands::button(&sort_name).flex_1().child(text("Name")))
-                        .child(when(move || wide.get(), || text("Type").w(px(85.0))))
+                        .child(when(
+                            move || wide.get(),
+                            move || commands::button(&sort_type).child(text("Type")).w(px(85.0)),
+                        ))
                         .child(
                             commands::button(&sort_size)
                                 .w(px(110.0))
@@ -428,12 +443,7 @@ pub fn browser(
                                         id: entry.id,
                                         name: entry.display_name.clone(),
                                         directory: matches!(entry.kind, EntryKind::Directory),
-                                        kind: match entry.kind {
-                                            EntryKind::Directory => "Folder",
-                                            EntryKind::File => "File",
-                                            EntryKind::Link => "Link",
-                                            EntryKind::Other => "Other",
-                                        },
+                                        kind: kind_label(entry.kind),
                                         size: entry.size,
                                     })
                                 })

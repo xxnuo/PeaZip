@@ -25,6 +25,7 @@ pub enum CommandId {
     ToggleFlat,
     SortName,
     SortSize,
+    SortType,
     SortPacked,
     About,
 }

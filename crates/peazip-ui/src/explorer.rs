@@ -79,6 +79,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
     let toggle_flat = commands.get(CommandId::ToggleFlat).unwrap();
     let sort_name = commands.get(CommandId::SortName).unwrap();
     let sort_size = commands.get(CommandId::SortSize).unwrap();
+    let sort_type = commands.get(CommandId::SortType).unwrap();
     let sort_packed = commands.get(CommandId::SortPacked).unwrap();
     let error = signal(String::new());
     let wide = signal(false);
@@ -162,7 +163,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                 .child(view().flex_row().px_3().py_1().bg(move || theme().muted).border_b_1().border_color(move || theme().border)
                     .child(view().flex_row().flex_1().gap_2()
                         .child(commands::button(&sort_name).flex_1().child(text("Name")))
-                        .child(when(move || wide.get(), move || text("Type").w(px(85.0))))
+                        .child(when(move || wide.get(), move || commands::button(&sort_type).child(text("Type")).w(px(85.0))))
                         .child(when(show_size, move || commands::button(&sort_size).w(px(110.0)).child(text("Size (bytes)"))))
                         .child(when(show_packed, move || commands::button(&sort_packed).w(px(110.0)).child(text("Packed (bytes)")))))
                     .child(view().w(px(36.0))))

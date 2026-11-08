@@ -1688,6 +1688,35 @@ for (const [width, height, colorScheme] of [[1024, 600, 'light'], [1440, 900, 'd
   });
 }
 
+for (const width of [1024, 360]) {
+  test(`Type sorting uses the displayed type, retains selection and exports the same bytes at ${width}px`, { timeout: 120_000 }, async (t) => {
+    const { page, button, tree } = await extractionPage(t, true, { viewport: { width, height: 800 }, isMobile: width < 600, hasTouch: width < 600 });
+    const picker = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await picker).setFiles(await extractionFixture([['folder.bin/', ''], ['a.txt', 'first'], ['z.TXT', 'second'], ['dir.ext/plain', 'plain'], ['data.bin', 'binary']]));
+    await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+    await page.getByRole('checkbox', { name: 'a.txt', exact: true }).click();
+    await button('Layout').click();
+    await page.getByRole('menuitemcheckbox', { name: 'Sort by type', exact: true }).click();
+    const order = () => page.getByRole('checkbox').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+    await expect.poll(order).toEqual(['folder.bin/', 'data.bin', 'dir.ext/plain', 'a.txt', 'z.TXT']);
+    if (width >= 760) await button('Type').click();
+    else {
+      await button('Layout').click();
+      await page.getByRole('menuitemcheckbox', { name: 'Sort by type', exact: true }).click();
+    }
+    await expect.poll(order).toEqual(['folder.bin/', 'a.txt', 'z.TXT', 'dir.ext/plain', 'data.bin']);
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(page.getByRole('checkbox', { name: 'a.txt', exact: true })).toBeChecked();
+    const screenshot = fileURLToPath(new URL(`../../target/type-sort-${width}.png`, import.meta.url));
+    await page.screenshot({ path: screenshot });
+    await button('Extract…').click();
+    const output = await finishExtraction(page, button);
+    assert.deepEqual(await tree(), { ...sentinelTree, [output]: { 'a.txt': Array.from(Buffer.from('first')) } });
+    await expect(page.getByRole('checkbox', { name: 'a.txt', exact: true })).toBeChecked();
+  });
+}
+
 async function packedFixture() {
   const { stdout } = await promisify(execFile)('uv', ['run', 'python', '-c', `
 import base64, io, json, zipfile
