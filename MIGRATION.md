@@ -252,3 +252,17 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - Linux 最终 GTK smoke 完整通过，`target/linux-invert-selection/run3.log` / `verification.json` 验证 Edit 反选、Ctrl+I 有效集合恢复、地址栏编辑时不反选、源归档 SHA 不变，原菜单/导航/Test/解压与哨兵继续通过。选择计数 OCR 改为沿用窄区域读取，保留实际 checkbox 像素与真实输出检查。源码/脚本哈希与待提交内容一致。
 - Android 菜单 smoke 完整通过，记录 `target/android-smoke/a88448c6afe5`、`invert-menu-run.log`；全范围 none/all/none、子目录部分选择补集、隐式 nested 文件状态、源字节/快照/Downloads 不变均检查，PID 稳定无应用 fatal，tested.apk 与本地产物一致。测试文件和专用模拟器已清理；仍仅覆盖本机 API36 Documents provider。
 - Windows GNU check/release、PE/loader/hash 验证通过，产物 `target/windows-build/invert-selection`；未增加 Windows 运行或 iOS 验证声明。证据汇总 `target/invert-evidence.json`。范围选择、键盘列表导航、右键/拖放及完整原版选择面板等缺口继续保留。
+
+## 归档压缩大小列（UI-LIST-01）
+
+- 详细列表新增 Packed (bytes) 和共享 Layout/Sort by packed size，目录优先，已知零与未知明确区分，未知值升降均排最后；排序保留选择与归档导航。宽屏同时显示 Size/Packed，窄屏按 Packed 排序时切换数值列，按名称/大小排序恢复 Size；本地文件夹禁用 Packed 排序并恢复名称顺序。类型推断只读取 basename，避免父目录中的点被误当扩展名。
+- Entry 新增 `packed_size: Option<u64>`，保留历史 compressed_size 计量供既有逻辑使用。ZIP 对应独立压缩流；TAR 对应 512 字节对齐的数据区、不包含头部；TAR.GZ 共享流标未知。7z 无 stream 空文件为已知零，单文件 block 累计其全部 packed streams（含 BCJ2 四流），solid 多文件 block 的成员均标未知，不把首成员携带的整个块大小冒称为该文件大小。目录和隐式目录显示 —；未知文件有说明。
+- Worker 元数据升级为内部 `PZL2` 协议，独立传递 packed 值与 known 标记；拒绝旧包、未知 flags、目录 known、unknown 非零、超预算和尾随字节，JS/WASM/Rust 大小上限同步。原归档路径、内容验证及解压预算不变，配套 Web 资源须一起部署。
+- 新增可重建的 7z mixed-block 与单文件 BCJ2 样本，生成器 `crates/peazip-core/tests/fixtures/generate_packed.py`。核心测试与系统 ZIP/TAR/7z 数据对照，覆盖对齐边界、已知空文件、共享流、混合块、四 packed streams 和原限额；主机工作区 261 次执行、主机 Clippy 通过。UI 测试覆盖排序、列标签、格式差异、切换文件夹、选择与实际导出，协议测试覆盖有效值与拒绝边界。
+- Linux 最终 GTK/X11 流程通过，记录 `target/linux-packed/latest.log`、`verification.json`；ZIP 独立压缩大小、升降排序、1024/1440 宽屏及窄屏切列、TAR 对齐、TGZ/solid 7z 未知、源快照及选择保持和提取字节均核对。应用与最终脚本哈希一致。新增 `scripts/smoke_linux_packed.sh` 并接入 Linux CI，远程 CI 尚未执行。
+- Windows GNU check/release 与 PE/官方 loader/hash 检查通过，证据 `target/windows-build/packed-sizes`；未验证 Windows 实际运行。iOS 本轮未增加构建/运行声明。原版 Packed 列参考 `peach.lfm:346`；完整时间/属性/校验列、列宽调整及其他阶段 2a 验收继续保留为未完成。
+
+- 最终完整 Web 93 项通过，主机/WASM/Android target Clippy、格式与脚本语法检查通过。新增真实浏览器流程在 1024/1440 桌面和 360/430 触屏亮暗主题下验证 ZIP 数值/排序/切列，实际提取仍为所选原始字节；TAR、TGZ、solid/non-solid 7z 及空文件的已知/未知标签一致。旧列表断言改为按列的可访问名称定位，避免 Size/Packed 数值相同造成歧义。记录 `target/packed-web-tests.log`、`packed-workspace-tests.log`，各列截图已目视核查。
+
+- 最终 APK Android 36 实机五组格式完整通过，记录 `target/android-smoke/870346a15498`、`packed-final.log`。ZIP/TAR/TGZ/solid 7z/non-solid COPY 7z 分别验证所有 Packed 数值、已知空文件零、目录/共享流未知、升降排序、窄屏列切换、选择保持及源字节不变；每组均通过真实 DocumentsUI/SAF 提取后逐路径和字节核对，既有输出哨兵保持。tested.apk 与本地产物 SHA256 一致，PID 稳定无应用 fatal；仅覆盖专用 API36 模拟器与本机 Documents provider。
+- 源码/产物和测试证据汇总 `target/packed-evidence.json`。测试设备/容器使用独立环境，保留缓存；不将本轮详细列表增量视为完整 PeaZip 界面或六平台迁移完成。

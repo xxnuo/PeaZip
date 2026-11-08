@@ -5,7 +5,7 @@ pub const MAX_CREATE_V1_REQUEST_BYTES: usize = MAX_REQUEST_BYTES + 12;
 pub const MAX_EXTRACT_REQUEST_BYTES: usize = 32 * 1024 * 1024 + 4096 * (4 + 1024) + 8;
 pub const MAX_EXTRACT_V1_REQUEST_BYTES: usize = MAX_EXTRACT_REQUEST_BYTES + 8;
 pub const MAX_EXTRACT_OUTPUT_BYTES: usize = 64 * 1024 * 1024 + 4096 * (12 + 1024) + 4;
-pub const MAX_LIST_OUTPUT_BYTES: usize = 5 + 4096 * (24 + 1024);
+pub const MAX_LIST_OUTPUT_BYTES: usize = 9 + 4096 * (32 + 1024);
 pub const TEST_REPORT_BYTES: usize = 20;
 
 pub fn test_from_request(archive: &[u8]) -> Result<Vec<u8>, String> {
@@ -38,19 +38,24 @@ pub fn list_from_request(archive: &[u8]) -> Result<Vec<u8>, String> {
     // The core finishes validation (including the gzip trailer) before we publish metadata.
     let (format, entries) = peazip_core::list_archive_with_format(archive, limits)
         .map_err(|error| error.to_string())?;
-    let size = 5 + entries
+    let size = 9 + entries
         .iter()
-        .map(|entry| 24 + entry.path.len())
+        .map(|entry| 32 + entry.path.len())
         .sum::<usize>();
     if entries.len() > limits.max_entries
-        || entries
-            .iter()
-            .any(|entry| entry.path.is_empty() || entry.path.len() > limits.max_path_bytes)
+        || entries.iter().any(|entry| {
+            entry.path.is_empty()
+                || entry.path.len() > limits.max_path_bytes
+                || entry
+                    .packed_size
+                    .is_some_and(|packed| entry.is_dir || packed > limits.max_archive_bytes)
+        })
         || size > MAX_LIST_OUTPUT_BYTES
     {
         return Err("metadata byte limit exceeded".into());
     }
     let mut output = Vec::with_capacity(size);
+    output.extend_from_slice(b"PZL2");
     output.push(match format {
         peazip_core::ArchiveFormat::Zip => 0,
         peazip_core::ArchiveFormat::Tar => 1,
@@ -59,11 +64,13 @@ pub fn list_from_request(archive: &[u8]) -> Result<Vec<u8>, String> {
     });
     output.extend_from_slice(&(entries.len() as u32).to_le_bytes());
     for entry in entries {
-        output.extend_from_slice(&u32::from(entry.is_dir).to_le_bytes());
+        let kind = u32::from(entry.is_dir) | (u32::from(entry.packed_size.is_some()) << 1);
+        output.extend_from_slice(&kind.to_le_bytes());
         output.extend_from_slice(&(entry.path.len() as u32).to_le_bytes());
         output.extend_from_slice(entry.path.as_bytes());
         output.extend_from_slice(&entry.size.to_le_bytes());
         output.extend_from_slice(&entry.compressed_size.to_le_bytes());
+        output.extend_from_slice(&entry.packed_size.unwrap_or(0).to_le_bytes());
     }
     Ok(output)
 }

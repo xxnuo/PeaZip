@@ -328,6 +328,12 @@ fn empty_stream_crc_is_validated_before_any_selection() {
     ));
     assert_rejected(&bytes, Limits::default());
     let bytes = lzma2_stream(&[1, 0, 2], None, Some(&[crc(b"a"), 0, crc(b"bc")]));
+    assert!(
+        list_archive(&bytes, Limits::default())
+            .unwrap()
+            .iter()
+            .all(|entry| entry.packed_size.is_none())
+    );
     let output = extract_archive(&bytes, Limits::default()).unwrap();
     assert_eq!(output.len(), 3);
     assert_eq!(output[0].data, b"a");

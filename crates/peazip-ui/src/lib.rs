@@ -162,6 +162,17 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let files = filesystem::Files::new();
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    effect(move || {
+        if files.active.get()
+            && matches!(
+                controls.sort.get(),
+                navigation::Sort::PackedAsc | navigation::Sort::PackedDesc
+            )
+        {
+            controls.sort.set(navigation::Sort::NameAsc);
+        }
+    });
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let disk = desktop_browsing::Browser {
         files,
         archive,
@@ -614,6 +625,26 @@ pub fn App() -> impl IntoElement {
             matches!(
                 controls.sort.get(),
                 navigation::Sort::SizeAsc | navigation::Sort::SizeDesc
+            )
+        }),
+        Command::new(
+            CommandId::SortPacked,
+            "Sort by packed size",
+            move || !busy.get() && !file_view(),
+            move || {
+                controls.sort.update(|sort| {
+                    *sort = if *sort == navigation::Sort::PackedAsc {
+                        navigation::Sort::PackedDesc
+                    } else {
+                        navigation::Sort::PackedAsc
+                    };
+                })
+            },
+        )
+        .checked(move || {
+            matches!(
+                controls.sort.get(),
+                navigation::Sort::PackedAsc | navigation::Sort::PackedDesc
             )
         }),
     ];

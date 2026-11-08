@@ -208,7 +208,9 @@ fn ordered_entries(entries: &[DirectoryEntry], sort: Sort) -> Vec<usize> {
         matches!(b.kind, EntryKind::Directory)
             .cmp(&matches!(a.kind, EntryKind::Directory))
             .then_with(|| match sort {
-                Sort::NameAsc => a.display_name.cmp(&b.display_name),
+                Sort::NameAsc | Sort::PackedAsc | Sort::PackedDesc => {
+                    a.display_name.cmp(&b.display_name)
+                }
                 Sort::NameDesc => b.display_name.cmp(&a.display_name),
                 Sort::SizeAsc => a.size.cmp(&b.size),
                 Sort::SizeDesc => b.size.cmp(&a.size),

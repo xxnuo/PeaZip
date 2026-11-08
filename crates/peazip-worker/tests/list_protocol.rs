@@ -13,14 +13,33 @@ const GZIP: &[u8] = include_bytes!("../../../tests/fixtures/sample.tar.gz");
 const SEVEN_ZIP: &[u8] = include_bytes!("../../../tests/fixtures/sample.7z");
 
 fn metadata(entries: &[(&[u8], u32, u64, u64)]) -> Vec<u8> {
-    let mut bytes = vec![0];
+    metadata_with_packed(
+        &entries
+            .iter()
+            .map(|&(path, kind, size, compressed)| {
+                (
+                    path,
+                    kind,
+                    size,
+                    compressed,
+                    if kind & 2 != 0 { compressed } else { 0 },
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn metadata_with_packed(entries: &[(&[u8], u32, u64, u64, u64)]) -> Vec<u8> {
+    let mut bytes = b"PZL2".to_vec();
+    bytes.push(0);
     bytes.extend((entries.len() as u32).to_le_bytes());
-    for (path, kind, size, compressed) in entries {
+    for (path, kind, size, compressed, packed) in entries {
         bytes.extend(kind.to_le_bytes());
         bytes.extend((path.len() as u32).to_le_bytes());
         bytes.extend(*path);
         bytes.extend(size.to_le_bytes());
         bytes.extend(compressed.to_le_bytes());
+        bytes.extend(packed.to_le_bytes());
     }
     bytes
 }
@@ -66,6 +85,14 @@ fn lists_zip_tar_gzip_and_7z_with_browser_decoder() {
         assert_eq!(browser::decode_list(&output).unwrap().0, format);
         assert!(output.len() <= MAX_LIST_OUTPUT_BYTES);
     }
+    let tar_entries = decode_entries(&list_from_request(TAR).unwrap()).unwrap();
+    for entry in tar_entries {
+        assert_eq!(entry.compressed_size, entry.size);
+        assert_eq!(
+            entry.packed_size,
+            if entry.is_dir { None } else { Some(512) }
+        );
+    }
     let entries = decode_entries(&list_from_request(GZIP).unwrap()).unwrap();
     assert!(
         entries
@@ -82,7 +109,8 @@ fn lists_zip_tar_gzip_and_7z_with_browser_decoder() {
         vec![]
     );
     let output = list_from_request(SEVEN_ZIP).unwrap();
-    assert_eq!(output[0], 3);
+    assert_eq!(&output[..4], b"PZL2");
+    assert_eq!(output[4], 3);
     let entries = decode_entries(&output).unwrap();
     assert_eq!(entries.len(), 6);
     assert!(
@@ -100,6 +128,8 @@ fn lists_zip_tar_gzip_and_7z_with_browser_decoder() {
 #[test]
 fn list_wire_layout_is_little_endian_and_preserves_u64_sizes() {
     let bytes = metadata(&[("目录/你好".as_bytes(), 0, 1234, 567)]);
+    assert_eq!(&bytes[..9], b"PZL2\x00\x01\x00\x00\x00");
+    assert_eq!(&bytes[9..13], &0u32.to_le_bytes());
     assert_eq!(
         decode_entries(&bytes).unwrap(),
         [Entry {
@@ -107,11 +137,110 @@ fn list_wire_layout_is_little_endian_and_preserves_u64_sizes() {
             is_dir: false,
             size: 1234,
             compressed_size: 567,
+            packed_size: None,
         }]
     );
     for size in [u32::MAX as u64 + 1, u64::MAX] {
         assert!(decode_entries(&metadata(&[(b"a", 0, size, 0)])).is_err());
         assert!(decode_entries(&metadata(&[(b"a", 0, 0, size)])).is_err());
+    }
+}
+
+#[test]
+fn stored_empty_file_serializes_known_zero_without_confusing_it_with_unknown() {
+    let zip = peazip_core::create_zip_with_options(
+        &[MemoryEntry {
+            path: "empty".into(),
+            is_dir: false,
+            data: vec![],
+        }],
+        Limits::default(),
+        peazip_core::ZipOptions {
+            compression: peazip_core::ZipCompression::Stored,
+        },
+    )
+    .unwrap();
+    let packet = list_from_request(&zip).unwrap();
+    assert_eq!(&packet[..9], b"PZL2\x00\x01\x00\x00\x00");
+    assert_eq!(&packet[9..13], &2u32.to_le_bytes());
+    assert_eq!(&packet[packet.len() - 8..], &0u64.to_le_bytes());
+    let entries = decode_entries(&packet).unwrap();
+    assert_eq!(entries[0].compressed_size, 0);
+    assert_eq!(entries[0].packed_size, Some(0));
+}
+
+#[test]
+fn packed_flags_preserve_unknown_known_zero_and_directory_semantics() {
+    let entries = decode_entries(&metadata(&[
+        (b"unknown", 0, 12, 7),
+        (b"known", 2, 12, 7),
+        (b"empty", 2, 0, 0),
+        (b"directory/", 1, 0, 0),
+    ]))
+    .unwrap();
+    assert_eq!(entries[0].compressed_size, 7);
+    assert_eq!(entries[0].packed_size, None);
+    assert_eq!(entries[1].compressed_size, 7);
+    assert_eq!(entries[1].packed_size, Some(7));
+    assert_eq!(entries[2].compressed_size, 0);
+    assert_eq!(entries[2].packed_size, Some(0));
+    assert!(entries[3].is_dir);
+    assert_eq!(entries[3].packed_size, None);
+    for kind in [3, 4, 5, 6, 7, u32::MAX] {
+        assert!(decode_entries(&metadata(&[(b"directory/", kind, 0, 0)])).is_err());
+    }
+}
+
+#[test]
+fn packed_size_is_independent_of_legacy_compressed_size_and_has_its_own_bounds() {
+    let limits = Limits::default();
+    let packet = metadata_with_packed(&[
+        (b"tar-file", 2, 11, 11, 512),
+        (b"unknown", 0, 11, 11, 0),
+        (b"known-zero", 2, 0, 7, 0),
+    ]);
+    let entries = decode_entries(&packet).unwrap();
+    assert_eq!(entries[0].compressed_size, 11);
+    assert_eq!(entries[0].packed_size, Some(512));
+    assert_eq!(entries[1].compressed_size, 11);
+    assert_eq!(entries[1].packed_size, None);
+    assert_eq!(entries[2].compressed_size, 7);
+    assert_eq!(entries[2].packed_size, Some(0));
+    for (kind, legacy, packed) in [
+        (0, 0, 1),
+        (1, 0, 1),
+        (2, 0, limits.max_archive_bytes + 1),
+        (2, limits.max_archive_bytes + 1, 0),
+    ] {
+        assert!(
+            decode_entries(&metadata_with_packed(&[(b"file", kind, 0, legacy, packed)])).is_err()
+        );
+    }
+    let maximum = decode_entries(&metadata_with_packed(&[(
+        b"file",
+        2,
+        0,
+        0,
+        limits.max_archive_bytes,
+    )]))
+    .unwrap();
+    assert_eq!(maximum[0].packed_size, Some(limits.max_archive_bytes));
+    let mut old_entry_layout = metadata(&[(b"file", 0, 1, 1)]);
+    old_entry_layout.truncate(old_entry_layout.len() - 8);
+    assert!(decode_entries(&old_entry_layout).is_err());
+}
+
+#[test]
+fn unversioned_and_old_magic_metadata_are_rejected_instead_of_silently_reinterpreted() {
+    for packet in [metadata(&[]), metadata(&[(b"file", 0, 1, 1)])] {
+        assert!(
+            decode_entries(&packet[4..])
+                .unwrap_err()
+                .contains("version")
+        );
+        let mut old = packet;
+        old[..4].copy_from_slice(b"PZL1");
+        assert!(decode_entries(&old).unwrap_err().contains("version"));
     }
 }
 
@@ -167,15 +296,20 @@ fn decoder_rejects_truncation_counts_kinds_paths_and_trailing_bytes() {
         );
     }
     for count in [1u32, 4097, u32::MAX] {
-        assert!(decode_entries(&[&[0], count.to_le_bytes().as_slice()].concat()).is_err());
+        assert!(
+            decode_entries(&[b"PZL2".as_slice(), &[0], count.to_le_bytes().as_slice()].concat())
+                .is_err()
+        );
     }
-    assert_eq!(decode_entries(&[0; 5]).unwrap(), vec![]);
+    assert_eq!(decode_entries(&metadata(&[])).unwrap(), vec![]);
+    assert!(decode_entries(&[0; 5]).is_err());
     for format in [4, u8::MAX] {
-        let mut bytes = vec![format];
+        let mut bytes = b"PZL2".to_vec();
+        bytes.push(format);
         bytes.extend(0u32.to_le_bytes());
         assert!(browser::decode_list(&bytes).unwrap_err().contains("format"));
     }
-    for kind in [2, u32::MAX] {
+    for kind in [3, 4, 5, 6, 7, u32::MAX] {
         assert!(decode_entries(&metadata(&[(b"a", kind, 0, 0)])).is_err());
     }
     for path in [
@@ -202,7 +336,7 @@ fn decoder_rejects_truncation_counts_kinds_paths_and_trailing_bytes() {
     assert!(decode_entries(&metadata(&[(b"dir", 1, 0, 0)])).is_err());
     assert!(decode_entries(&metadata(&[(b"dir/", 1, 1, 0)])).is_err());
     let mut huge_path = metadata(&[(b"a", 0, 0, 0)]);
-    huge_path[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
+    huge_path[13..17].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(decode_entries(&huge_path).is_err());
     let mut trailing = valid;
     trailing.push(0);

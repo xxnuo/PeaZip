@@ -116,6 +116,8 @@ pub(crate) enum Sort {
     NameDesc,
     SizeAsc,
     SizeDesc,
+    PackedAsc,
+    PackedDesc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,7 +126,24 @@ pub(crate) struct BrowserRow {
     pub(crate) name: String,
     pub(crate) is_dir: bool,
     pub(crate) size: u64,
+    pub(crate) packed_size: Option<u64>,
     pub(crate) explicit: bool,
+}
+
+impl BrowserRow {
+    pub(crate) fn kind_label(&self) -> String {
+        if self.is_dir {
+            return "Folder".into();
+        }
+        self.name
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .rsplit_once('.')
+            .filter(|(_, extension)| !extension.is_empty())
+            .map(|(_, extension)| extension.to_ascii_uppercase())
+            .unwrap_or_else(|| "File".into())
+    }
 }
 
 pub(crate) fn rows(entries: &[Entry], directory: &str, flat: bool, sort: Sort) -> Vec<BrowserRow> {
@@ -136,6 +155,11 @@ pub(crate) fn rows(entries: &[Entry], directory: &str, flat: bool, sort: Sort) -
                 name: entry.path.clone(),
                 is_dir: entry.is_dir,
                 size: entry.size,
+                packed_size: if entry.is_dir {
+                    None
+                } else {
+                    entry.packed_size
+                },
                 explicit: true,
             })
             .collect::<Vec<_>>()
@@ -159,6 +183,7 @@ pub(crate) fn rows(entries: &[Entry], directory: &str, flat: bool, sort: Sort) -
                     name: tail[..at].into(),
                     is_dir: true,
                     size: if explicit { entry.size } else { 0 },
+                    packed_size: None,
                     explicit,
                 }
             } else {
@@ -167,6 +192,11 @@ pub(crate) fn rows(entries: &[Entry], directory: &str, flat: bool, sort: Sort) -
                     name: tail.into(),
                     is_dir: entry.is_dir,
                     size: entry.size,
+                    packed_size: if entry.is_dir {
+                        None
+                    } else {
+                        entry.packed_size
+                    },
                     explicit: true,
                 }
             };
@@ -186,6 +216,13 @@ pub(crate) fn rows(entries: &[Entry], directory: &str, flat: bool, sort: Sort) -
                 Sort::NameDesc => b.name.cmp(&a.name),
                 Sort::SizeAsc => a.size.cmp(&b.size),
                 Sort::SizeDesc => b.size.cmp(&a.size),
+                Sort::PackedAsc | Sort::PackedDesc => match (a.packed_size, b.packed_size) {
+                    (Some(a), Some(b)) if sort == Sort::PackedDesc => b.cmp(&a),
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                },
             })
             .then_with(|| a.name.cmp(&b.name))
             .then_with(|| a.path.cmp(&b.path))
@@ -319,6 +356,7 @@ mod tests {
             is_dir: path.ends_with('/'),
             size,
             compressed_size: size,
+            packed_size: (!path.ends_with('/')).then_some(size),
         }
     }
 
@@ -356,6 +394,57 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn packed_sort_keeps_unknown_last_and_distinguishes_known_zero() {
+        let mut entries = vec![
+            entry("folder/", 0),
+            entry("small", 1000),
+            entry("large", 1),
+            entry("unknown", 5),
+            entry("zero", 0),
+            entry("tie", 3),
+        ];
+        for (entry, packed) in
+            entries
+                .iter_mut()
+                .zip([None, Some(10), Some(100), None, Some(0), Some(10)])
+        {
+            entry.packed_size = packed;
+        }
+        assert_eq!(
+            paths(&rows(&entries, "", true, Sort::PackedAsc)),
+            ["folder/", "zero", "small", "tie", "large", "unknown"]
+        );
+        assert_eq!(
+            paths(&rows(&entries, "", true, Sort::PackedDesc)),
+            ["folder/", "large", "small", "tie", "zero", "unknown"]
+        );
+        let implicit = rows(&[entry("docs/file", 2)], "", false, Sort::PackedAsc);
+        assert_eq!(implicit[0].packed_size, None);
+    }
+
+    #[test]
+    fn file_type_uses_the_basename_not_dots_in_parent_directories() {
+        let entries = [
+            entry("dir.ext/file", 1),
+            entry("dir.ext/.hidden", 1),
+            entry("dir.ext/.hidden.txt", 1),
+        ];
+        let rows = rows(&entries, "", true, Sort::NameAsc);
+        for row in rows {
+            assert_eq!(
+                row.kind_label(),
+                if row.path.ends_with(".txt") {
+                    "TXT"
+                } else if row.path.ends_with(".hidden") {
+                    "HIDDEN"
+                } else {
+                    "File"
+                }
+            );
+        }
     }
 
     #[test]
@@ -454,6 +543,7 @@ mod tests {
                 name: "docs".into(),
                 is_dir: true,
                 size: 0,
+                packed_size: None,
                 explicit: false
             }
         );

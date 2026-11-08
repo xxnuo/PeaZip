@@ -63,7 +63,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
     } = context;
     let Controls {
         flat,
-        sort: _,
+        sort,
         draft,
         input: path_input,
         content,
@@ -79,8 +79,12 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
     let toggle_flat = commands.get(CommandId::ToggleFlat).unwrap();
     let sort_name = commands.get(CommandId::SortName).unwrap();
     let sort_size = commands.get(CommandId::SortSize).unwrap();
+    let sort_packed = commands.get(CommandId::SortPacked).unwrap();
     let error = signal(String::new());
     let wide = signal(false);
+    let packed_order = move || matches!(sort.get(), Sort::PackedAsc | Sort::PackedDesc);
+    let show_size = move || wide.get() || !packed_order();
+    let show_packed = move || wide.get() || packed_order();
     effect(move || {
         let _ = archive_version.get();
         draft.set(navigation.with(|state| {
@@ -153,10 +157,14 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                         .child(text(move || row().map(|row|row.name).unwrap_or_default()).number_of_lines(1))
                 }).estimated_item_size(px(32.0)).flex_1())))
             .child(view().element_ref(&content).focusable(true).role(AccessibilityRole::Group).label("Archive contents").flex_1().min_w(px(0.0)).min_h(px(0.0))
+                .child(when(move || show_packed() && entries.with(|items| items.iter().any(|entry| !entry.is_dir && entry.packed_size.is_none())),
+                    || text("— means the file's packed size is unavailable.").px_3().py_1().text_color(move || theme().muted_foreground)))
                 .child(view().flex_row().px_3().py_1().bg(move || theme().muted).border_b_1().border_color(move || theme().border)
-                    .child(commands::button(&sort_name).flex_1().child(text("Name")))
-                    .child(when(move || wide.get(), move || text("Type").w(px(85.0))))
-                    .child(commands::button(&sort_size).w(px(110.0)).child(text("Size (bytes)")))
+                    .child(view().flex_row().flex_1().gap_2()
+                        .child(commands::button(&sort_name).flex_1().child(text("Name")))
+                        .child(when(move || wide.get(), move || text("Type").w(px(85.0))))
+                        .child(when(show_size, move || commands::button(&sort_size).w(px(110.0)).child(text("Size (bytes)"))))
+                        .child(when(show_packed, move || commands::button(&sort_packed).w(px(110.0)).child(text("Packed (bytes)")))))
                     .child(view().w(px(36.0))))
                 .child(virtual_list(move || visible.with(Vec::len), move |at: Position| {
                     let row=move || visible.with(|rows| rows.get(at.index()).cloned());
@@ -177,8 +185,11 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                             .child(when(move || row().is_some_and(|row|row.is_dir), || crate::icons::icon("folder")))
                             .child(when(move || row().is_some_and(|row|!row.is_dir), || crate::icons::icon("file")))
                             .child(text(move || row().map(|row|row.name).unwrap_or_default()).number_of_lines(1).flex_1().min_w(px(0.0)).pr_2())
-                            .child(when(move || wide.get(), move || text(move || row().map(|row| if row.is_dir {"Folder".into()} else {row.name.rsplit_once('.').map(|(_,ext)|ext.to_ascii_uppercase()).filter(|ext|!ext.is_empty()).unwrap_or_else(||"File".into())}).unwrap_or_default()).number_of_lines(1).w(px(85.0))))
-                            .child(text(move || row().map(|row| if row.is_dir {"—".into()}else{row.size.to_string()}).unwrap_or_default()).w(px(110.0))))
+                            .child(when(move || wide.get(), move || text(move || row().map(|row| row.kind_label()).unwrap_or_default()).number_of_lines(1).w(px(85.0))))
+                            .child(when(show_size, move || text(move || row().map(|row| if row.is_dir {"—".into()}else{row.size.to_string()}).unwrap_or_default())
+                                .label(move || row().map(|row| if row.is_dir {"Size in bytes: not applicable".into()} else {format!("Size in bytes: {}",row.size)}).unwrap_or_default()).w(px(110.0))))
+                            .child(when(show_packed, move || text(move || row().and_then(|row|row.packed_size).map(|size|size.to_string()).unwrap_or_else(||"—".into()))
+                                .label(move || row().map(|row| if row.is_dir {"Packed bytes: not applicable".into()} else {row.packed_size.map(|size|format!("Packed bytes: {size}")).unwrap_or_else(||"Packed bytes: unavailable".into())}).unwrap_or_default()).w(px(110.0)))))
                         .child(view().w(px(36.0)).child(when(move || row().is_some_and(|row|row.is_dir), move || button().accessibility_label(move ||row().map(|row|format!("Open folder {}",row.path).into())).disabled(move ||busy.get()).on_press(move || {if let Some(row)=row(){flat.set(false);enter(row.path);}}).px_2().py_2().child(text("›")))))
                 }).estimated_item_size(px(36.0)).flex_1())
             ))

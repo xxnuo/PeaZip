@@ -41,9 +41,12 @@ pub(crate) fn decode_list(
     }
     let limits = peazip_core::Limits::default();
     if packet.len() as u64 > limits.max_archive_bytes
-        || packet.len() > 5 + limits.max_entries * (24 + limits.max_path_bytes)
+        || packet.len() > 9 + limits.max_entries * (32 + limits.max_path_bytes)
     {
         return Err("Archive metadata exceeds the byte limit.".into());
+    }
+    if take(&mut packet, 4)? != b"PZL2" {
+        return Err("Invalid archive metadata version.".into());
     }
     let format = match take(&mut packet, 1)?[0] {
         0 => peazip_core::ArchiveFormat::Zip,
@@ -53,17 +56,18 @@ pub(crate) fn decode_list(
         _ => return Err("Invalid archive metadata format.".into()),
     };
     let count = number(&mut packet)? as usize;
-    if count > limits.max_entries || count > packet.len() / 25 {
+    if count > limits.max_entries || count > packet.len() / 33 {
         return Err("Invalid archive metadata count.".into());
     }
     let mut entries = Vec::with_capacity(count);
     let mut total = 0u64;
     for _ in 0..count {
-        let is_dir = match number(&mut packet)? {
-            0 => false,
-            1 => true,
-            _ => return Err("Invalid archive metadata kind.".into()),
-        };
+        let kind = number(&mut packet)?;
+        if kind & !3 != 0 || kind == 3 {
+            return Err("Invalid archive metadata kind.".into());
+        }
+        let is_dir = kind & 1 != 0;
+        let packed_known = kind & 2 != 0;
         let len = number(&mut packet)? as usize;
         if len == 0 || len > limits.max_path_bytes {
             return Err("Invalid archive metadata path length.".into());
@@ -95,11 +99,16 @@ pub(crate) fn decode_list(
         }
         let size = read_u64(&mut packet)?;
         let compressed_size = read_u64(&mut packet)?;
+        let packed_size = read_u64(&mut packet)?;
+        if !packed_known && packed_size != 0 {
+            return Err("Invalid unknown packed metadata value.".into());
+        }
         total = total
             .checked_add(size)
             .ok_or("Archive metadata size overflow.")?;
         if size > limits.max_entry_bytes
             || compressed_size > limits.max_archive_bytes
+            || packed_size > limits.max_archive_bytes
             || total > limits.max_total_bytes
             || (is_dir && size != 0)
         {
@@ -110,6 +119,7 @@ pub(crate) fn decode_list(
             is_dir,
             size,
             compressed_size,
+            packed_size: packed_known.then_some(packed_size),
         });
     }
     if !packet.is_empty() {

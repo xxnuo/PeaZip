@@ -81,10 +81,11 @@ fn independent_system_gzip_and_bsdtar_samples() {
         ),
     ] {
         assert_eq!(detect_format(packed).unwrap(), ArchiveFormat::TarGzip);
-        assert_eq!(
-            list_archive(packed, DEFAULT).unwrap(),
-            list_archive(raw, DEFAULT).unwrap()
-        );
+        let mut expected = list_archive(raw, DEFAULT).unwrap();
+        for entry in &mut expected {
+            entry.packed_size = None;
+        }
+        assert_eq!(list_archive(packed, DEFAULT).unwrap(), expected);
         assert_eq!(
             extract_archive(packed, DEFAULT).unwrap(),
             extract_archive(raw, DEFAULT).unwrap()

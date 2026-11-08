@@ -250,14 +250,20 @@ fn metadata(archive: &Archive, data_end: u64, limits: Limits) -> Result<Vec<Entr
             is_dir: file.is_directory,
             size: file.size,
             compressed_size: file.compressed_size,
+            packed_size: (!file.is_directory && !file.has_stream).then_some(0),
         });
     }
+    let mut described_streams = 0usize;
     for (i, block) in archive.blocks.iter().enumerate() {
         // The backend hands zero-sized streams an empty reader without probing the decoder.
         if block.get_unpack_size() == 0 {
             return Err(invalid("zero-output 7z stream block"));
         }
-        if archive.block_sub_streams(i).is_empty() || block.get_unpack_size() != block_totals[i] {
+        let sub_streams = archive.block_sub_streams(i);
+        described_streams = described_streams
+            .checked_add(sub_streams.len())
+            .ok_or_else(|| invalid("7z sub-stream count overflow"))?;
+        if sub_streams.is_empty() || block.get_unpack_size() != block_totals[i] {
             return Err(invalid("7z block size or stream mapping"));
         }
         let mut compressed = 0u64;
@@ -283,6 +289,21 @@ fn metadata(archive: &Archive, data_end: u64, limits: Limits) -> Result<Vec<Entr
             compressed.saturating_mul(limits.max_compression_ratio),
             "compression ratio",
         )?;
+        if sub_streams.len() == 1 {
+            let first = archive
+                .stream_map
+                .block_first_file_index
+                .get(i)
+                .ok_or_else(|| invalid("missing 7z first-file mapping"))?;
+            let entry = entries
+                .get_mut(*first)
+                .ok_or_else(|| invalid("7z first-file mapping out of range"))?;
+            entry.packed_size = Some(compressed);
+        }
+    }
+    // Per-block declared counts are private; equality with their public total rules out filter_map omissions.
+    if described_streams != archive.num_unpack_sub_streams() {
+        return Err(invalid("incomplete 7z sub-stream metadata"));
     }
     check(
         total,
@@ -458,4 +479,54 @@ fn read_blocks(
         }
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod packed_mapping_tests {
+    use super::*;
+
+    fn single_stream_archive() -> Archive {
+        ArchiveReader::new(
+            Cursor::new(include_bytes!("../tests/fixtures/7z-bcj2-single.7z")),
+            Password::empty(),
+        )
+        .unwrap()
+        .archive()
+        .clone()
+    }
+
+    fn data_end(archive: &Archive) -> u64 {
+        32 + archive.pack_sizes().iter().sum::<u64>()
+    }
+
+    #[test]
+    fn missing_sub_stream_metadata_cannot_make_a_declared_multi_stream_block_known() {
+        let mut archive = single_stream_archive();
+        let solid = ArchiveReader::new(
+            Cursor::new(include_bytes!("../tests/fixtures/7z-solid-plain.7z")),
+            Password::empty(),
+        )
+        .unwrap();
+        archive.blocks[0] = solid.archive().blocks[0].clone();
+        archive.files = solid.archive().files.clone();
+        archive.stream_map.file_block_index = vec![Some(0); archive.files.len()];
+        assert_eq!(archive.num_unpack_sub_streams(), 2);
+        assert_eq!(archive.block_sub_streams(0).len(), 1);
+        assert!(matches!(
+            metadata(&archive, data_end(&archive), Limits::default()),
+            Err(Error::InvalidSevenZip(_))
+        ));
+    }
+
+    #[test]
+    fn missing_or_out_of_range_first_file_mapping_returns_invalid_instead_of_panicking() {
+        for mapping in [vec![], vec![usize::MAX]] {
+            let mut archive = single_stream_archive();
+            archive.stream_map.block_first_file_index = mapping;
+            assert!(matches!(
+                metadata(&archive, data_end(&archive), Limits::default()),
+                Err(Error::InvalidSevenZip(_))
+            ));
+        }
+    }
 }

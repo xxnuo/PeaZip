@@ -145,7 +145,10 @@ pub struct Entry {
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
+    /// Legacy backend accounting: TAR uses logical size; the first solid 7z member holds the block total.
     pub compressed_size: u64,
+    /// Physical packed span attributable to this file, including TAR padding; None for shared streams or directories.
+    pub packed_size: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,7 +316,13 @@ pub fn list_archive_with_format(
     let entries = match format {
         ArchiveFormat::Zip => list_zip(bytes, limits),
         ArchiveFormat::Tar => tar::list(bytes, limits),
-        ArchiveFormat::TarGzip => tar::list(&gzip::decode(bytes, limits)?, limits),
+        ArchiveFormat::TarGzip => {
+            let mut entries = tar::list(&gzip::decode(bytes, limits)?, limits)?;
+            for entry in &mut entries {
+                entry.packed_size = None;
+            }
+            Ok(entries)
+        }
         ArchiveFormat::SevenZip => sevenzip::list(bytes, limits),
     }?;
     Ok((format, entries))
@@ -414,6 +423,7 @@ pub fn list_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
             is_dir: dir,
             size: file.size(),
             compressed_size: file.compressed_size(),
+            packed_size: (!dir).then_some(file.compressed_size()),
         });
     }
     Ok(entries)

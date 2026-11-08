@@ -196,10 +196,12 @@ fn scan(bytes: &[u8], limits: Limits) -> Result<(Vec<Entry>, Vec<&[u8]>), Error>
         // allocation occurs before these checks; extension parsing borrows the input slice.
         sizes(size, size, &mut total, limits)?;
         let size = usize::try_from(size).map_err(|_| invalid("entry size overflow"))?;
-        let padded = size
+        let data_padded = size
             .checked_add(BLOCK - 1)
             .map(|n| n / BLOCK * BLOCK)
-            .and_then(|n| n.checked_add(BLOCK))
+            .ok_or_else(|| invalid("entry size overflow"))?;
+        let padded = data_padded
+            .checked_add(BLOCK)
             .ok_or_else(|| invalid("entry size overflow"))?;
         if remaining.len() < padded {
             return Err(invalid("incomplete entry payload or padding"));
@@ -253,6 +255,7 @@ fn scan(bytes: &[u8], limits: Limits) -> Result<(Vec<Entry>, Vec<&[u8]>), Error>
             is_dir: dir,
             size: size as u64,
             compressed_size: size as u64,
+            packed_size: (!dir).then_some(data_padded as u64),
         });
         payloads.push(data);
     }

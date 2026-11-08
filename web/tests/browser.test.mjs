@@ -346,7 +346,7 @@ test('Chromium runs WASM: open ZIP, select entries, recover from invalid ZIP', {
     for (const [name, size] of [['你好.txt', '7'], ['notes.txt', '6'], ['空目录/', '—']]) {
       const row = page.getByRole('checkbox', { name, exact: true });
       await expect(row).toBeVisible();
-      await expect(row.getByText(size, { exact: true })).toBeVisible();
+      await expect(row.getByLabel(size === '—' ? 'Size in bytes: not applicable' : `Size in bytes: ${size}`, { exact: true })).toBeVisible();
     }
   }
 
@@ -485,7 +485,7 @@ test('Chromium creates, downloads and reopens ZIP using a real Rust worker', { t
     for (const file of files) {
       const row = page.getByRole('checkbox', { name: file.name, exact: true });
       await expect(row).toBeVisible();
-      await expect(row.getByText(String(file.buffer.length), { exact: true })).toBeVisible();
+      await expect(row.getByLabel(`Size in bytes: ${file.buffer.length}`, { exact: true })).toBeVisible();
     }
   }
   async function released(index) {
@@ -1423,7 +1423,7 @@ test('7Z uses real list/extract workers and preserves its snapshot after header 
   await expect(page.getByText('6 entries', { exact: true })).toBeVisible();
   await expect(page.getByRole('checkbox')).toHaveCount(6);
   const chinese = page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true });
-  await expect(chinese.getByText('10', { exact: true })).toBeVisible();
+  await expect(chinese.getByLabel('Size in bytes: 10', { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.listWorkers)).toEqual([{ terminated: true, codes: [1] }]);
   assert.deepEqual(await page.evaluate(() => window.extractionWorkers), []);
   await expect(button('Download 7Z')).toBeEnabled();
@@ -1688,6 +1688,81 @@ for (const [width, height, colorScheme] of [[1024, 600, 'light'], [1440, 900, 'd
   });
 }
 
+async function packedFixture() {
+  const { stdout } = await promisify(execFile)('uv', ['run', 'python', '-c', `
+import base64, io, json, zipfile
+out = io.BytesIO()
+with zipfile.ZipFile(out, 'w') as archive:
+    for name, data, method in [('folder/', b'', 0), ('compressed.txt', b'A' * 2000, 8), ('stored.bin', bytes(range(128)), 0), ('empty.txt', b'', 0), ('dir.ext/plain', b'data', 0)]:
+        archive.writestr(name, data, compress_type=method)
+with zipfile.ZipFile(out) as archive:
+    packed = {item.filename: None if item.is_dir() else item.compress_size for item in archive.infolist()}
+print(json.dumps({'archive': base64.b64encode(out.getvalue()).decode(), 'packed': packed}))
+`]);
+  const value = JSON.parse(stdout);
+  return { file: { name: 'packed.zip', mimeType: 'application/zip', buffer: Buffer.from(value.archive, 'base64') }, packed: value.packed };
+}
+
+for (const [width, colorScheme] of [[1024, 'light'], [1440, 'dark'], [360, 'light'], [430, 'dark']]) {
+  test(`Packed size shows real ZIP values and sorts without changing selection at ${width}px ${colorScheme}`, { timeout: 120_000 }, async (t) => {
+    const { page, button, tree } = await extractionPage(t, true, { viewport: { width, height: width < 600 ? 800 : 900 }, colorScheme, isMobile: width < 600, hasTouch: width < 600 });
+    const { file, packed } = await packedFixture();
+    const picker = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await picker).setFiles(file);
+    await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+    await page.getByRole('checkbox', { name: 'stored.bin', exact: true }).click();
+    await button('Layout').click();
+    await page.getByRole('menuitemcheckbox', { name: 'Sort by packed size', exact: true }).click();
+    await expect(button('Packed (bytes)')).toBeVisible();
+    if (width < 600) await expect(button('Size (bytes)')).toHaveCount(0);
+    const rows = page.getByRole('checkbox');
+    const paths = () => rows.evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+    const ordered = Object.keys(packed).filter(name => packed[name] !== null).sort((a, b) => packed[a] - packed[b] || a.localeCompare(b));
+    await expect.poll(paths).toEqual(['folder/', ...ordered]);
+    for (const [name, value] of Object.entries(packed)) {
+      const row = page.getByRole('checkbox', { name, exact: true });
+      await expect(row.getByLabel(value === null ? 'Packed bytes: not applicable' : `Packed bytes: ${value}`, { exact: true })).toHaveText(value === null ? '—' : String(value));
+    }
+    await expect(page.getByRole('checkbox', { name: 'dir.ext/plain', exact: true }).getByText('File', { exact: true })).toHaveCount(width < 760 ? 0 : 1);
+    await button('Packed (bytes)').click();
+    await expect.poll(paths).toEqual(['folder/', ...ordered.reverse()]);
+    await expect(page.getByRole('checkbox', { name: 'stored.bin', exact: true })).toBeChecked();
+    const screenshot = fileURLToPath(new URL(`../../target/packed-${width}-${colorScheme}.png`, import.meta.url));
+    await page.screenshot({ path: screenshot });
+    t.diagnostic(`Screenshot: ${screenshot}`);
+    await button('Extract…').click();
+    const output = await finishExtraction(page, button);
+    assert.deepEqual(await tree(), { ...sentinelTree, [output]: { 'stored.bin': Array.from({ length: 128 }, (_, i) => i) } });
+    await button('Layout').click();
+    await page.getByRole('menuitemcheckbox', { name: 'Sort by name', exact: true }).click();
+    await expect(button('Size (bytes)')).toBeVisible();
+    if (width < 600) await expect(button('Packed (bytes)')).toHaveCount(0);
+  });
+}
+
+test('Packed metadata distinguishes TAR alignment, gzip/solid unknown values and non-solid 7z sizes', { timeout: 120_000 }, async (t) => {
+  const { page, button } = await extractionPage(t);
+  async function load(relative, count) {
+    const picker = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await picker).setFiles(fileURLToPath(new URL(relative, import.meta.url)));
+    await expect(page.getByText(`${count} entries`, { exact: true })).toBeVisible();
+    await expect(button('Open archive…')).toBeEnabled();
+  }
+  await load('../../tests/fixtures/sample.tar', 5);
+  await expect(page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true }).getByLabel('Packed bytes: 512', { exact: true })).toHaveText('512');
+  await load('../../tests/fixtures/sample.tar.gz', 5);
+  await expect(page.getByLabel('Packed bytes: unavailable', { exact: true })).toHaveCount(3);
+  await expect(page.getByText("— means the file's packed size is unavailable.", { exact: true })).toBeVisible();
+  await load('../../tests/fixtures/sample.7z', 6);
+  await expect(page.getByLabel('Packed bytes: unavailable', { exact: true })).toHaveCount(3);
+  await load('../../crates/peazip-core/tests/fixtures/extract-tree.7z', 7);
+  await expect(page.getByRole('checkbox', { name: 'empty-file', exact: true }).getByLabel('Packed bytes: 0', { exact: true })).toHaveText('0');
+  await expect(page.getByRole('checkbox', { name: 'docs/deep/data.bin', exact: true }).getByLabel('Packed bytes: 3', { exact: true })).toHaveText('3');
+  await expect(page.getByLabel('Packed bytes: unavailable', { exact: true })).toHaveCount(0);
+});
+
 async function extractionFixture(entries) {
   const { stdout } = await promisify(execFile)('uv', ['run', 'python', '-c', `
 import base64, io, json, sys, zipfile
@@ -1702,10 +1777,10 @@ print(base64.b64encode(out.getvalue()).decode())
 
 async function finishExtraction(page, button) {
   await button('Continue').click();
-  const report = page.getByText(/^Extracted [0-9]+ entries to PeaZip-/);
+  const report = page.getByLabel(/^Extracted [0-9]+ entries to PeaZip-[0-9a-f-]{36}$/);
   await expect(report).toBeVisible();
   await expect(button('Extract…')).toBeEnabled();
-  return (await report.innerText()).split(' to ')[1];
+  return (await report.getAttribute('aria-label')).split(' to ')[1];
 }
 
 test('Extraction dialog supports All without selecting rows and Files only with independent output checks', { timeout: 120_000 }, async (t) => {

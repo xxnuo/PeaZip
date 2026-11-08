@@ -15,11 +15,15 @@ self.onmessage = async ({ data: request }) => {
       new Uint8Array(wasm.memory.buffer, pointer, packet.byteLength).set(new Uint8Array(packet));
       const ok = (testing ? wasm.pw_test() : wasm.pw_list()) === 1;
       const length = wasm.pw_output_len() >>> 0;
-      const limit = testing ? (ok ? 20 : 4096) : Math.min(MAX_ARCHIVE, 5 + MAX_ENTRIES * (24 + MAX_PATH));
+      const limit = testing ? (ok ? 20 : 4096) : Math.min(MAX_ARCHIVE, 9 + MAX_ENTRIES * (32 + MAX_PATH));
       if (length > limit || (testing && ok && length !== 20)) {
         throw new Error('Worker returned an invalid or oversized report.');
       }
       const result = new Uint8Array(wasm.memory.buffer, wasm.pw_output_ptr() >>> 0, length).slice();
+      if (!testing && ok && (length < 9 || result[0] !== 0x50 || result[1] !== 0x5a
+          || result[2] !== 0x4c || result[3] !== 0x32)) {
+        throw new Error('Invalid archive metadata version.');
+      }
       self.postMessage({ code: ok ? 1 : 0, bytes: result }, [result.buffer]);
       return;
     }
