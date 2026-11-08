@@ -1,4 +1,4 @@
-import { validateExtractOptions, validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH, MAX_TOTAL } from './archive-limits.js';
+import { validateCreateOptions, validateExtractOptions, validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH, MAX_TOTAL } from './archive-limits.js';
 import init from './worker-core.js';
 
 self.onmessage = async ({ data: request }) => {
@@ -56,23 +56,26 @@ self.onmessage = async ({ data: request }) => {
       self.postMessage({ code: ok ? 1 : 0, bytes: result }, [result.buffer]);
       return;
     }
-    const versioned = request?.operation === 'create-v1';
-    if (!versioned && !Array.isArray(request)) throw new Error('Invalid archive request.');
-    const options = versioned ? validateZipOptions(request.options) : null;
-    const files = versioned ? request.files : request;
+    const version = request?.operation === 'create-v2' ? 2 : request?.operation === 'create-v1' ? 1 : 0;
+    if (!version && !Array.isArray(request)) throw new Error('Invalid archive request.');
+    const options = version === 2 ? validateCreateOptions(request.options)
+      : version === 1 ? validateZipOptions(request.options) : null;
+    const files = version ? request.files : request;
+    const headerSize = version === 2 ? 16 : version === 1 ? 12 : 0;
     if (!Array.isArray(files)) throw new Error('Invalid archive request.');
-    const size = packetSize(files) + (versioned ? 12 : 0);
+    const size = packetSize(files) + headerSize;
     const wasm = await init({ module_or_path: new URL('./worker-core_bg.wasm', import.meta.url) });
     const pointer = wasm.pw_input_resize(size) >>> 0;
     if (!pointer) throw new Error('Archive request is too large.');
     const view = new DataView(wasm.memory.buffer);
     const bytes = new Uint8Array(wasm.memory.buffer);
     let at = pointer;
-    if (versioned) {
-      view.setUint32(at, 1, true);
-      view.setUint32(at + 4, options.compression, true);
-      view.setUint32(at + 8, options.level, true);
-      at += 12;
+    if (version) {
+      view.setUint32(at, version, true);
+      if (version === 2) view.setUint32(at + 4, options.format, true);
+      view.setUint32(at + headerSize - 8, options.compression, true);
+      view.setUint32(at + headerSize - 4, options.level, true);
+      at += headerSize;
     }
     view.setUint32(at, files.length, true);
     at += 4;
@@ -95,7 +98,7 @@ self.onmessage = async ({ data: request }) => {
       }
     }
     self.postMessage({ progress: { phase: 'compress', done, total: files.length } });
-    const ok = (versioned ? wasm.pw_create_v1() : wasm.pw_create()) === 1;
+    const ok = (version === 2 ? wasm.pw_create_v2() : version === 1 ? wasm.pw_create_v1() : wasm.pw_create()) === 1;
     const length = wasm.pw_output_len() >>> 0;
     if (length > MAX_ARCHIVE) throw new Error('Worker output exceeds the archive limit.');
     const result = new Uint8Array(wasm.memory.buffer, wasm.pw_output_ptr() >>> 0, length).slice();

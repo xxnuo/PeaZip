@@ -8,9 +8,9 @@ use std::sync::Arc;
 #[cfg(test)]
 use peazip_core::create_zip;
 pub use peazip_core::{
-    Entry, Error, ExtractOptions, ExtractPaths, Limits, ZipCompression, ZipOptions,
+    CreateOptions, Entry, Error, ExtractOptions, ExtractPaths, Limits, ZipCompression, ZipOptions,
 };
-use peazip_core::{MemoryEntry, create_zip_with_options, list_zip};
+use peazip_core::{MemoryEntry, create_archive, list_archive};
 
 mod browse;
 pub use browse::{
@@ -132,6 +132,15 @@ pub fn create_zip_from_paths_with_options(
     limits: Limits,
     options: ZipOptions,
 ) -> Result<Vec<Entry>, Error> {
+    create_archive_from_paths(paths, destination, limits, CreateOptions::Zip(options))
+}
+
+pub fn create_archive_from_paths(
+    paths: &[PathBuf],
+    destination: &Path,
+    limits: Limits,
+    options: CreateOptions,
+) -> Result<Vec<Entry>, Error> {
     let sources = paths.iter().map(|path| {
         if path.to_str().is_none() {
             return Err(Error::UnsafePath(path.to_string_lossy().into_owned()));
@@ -146,7 +155,7 @@ pub fn create_zip_from_paths_with_options(
         let parent = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
         Ok((Arc::new(parent), name.to_owned()))
     });
-    create_zip_from_sources(paths.len(), sources, destination, options, limits)
+    create_archive_from_sources(paths.len(), sources, destination, options, limits)
 }
 
 type Source = (Arc<cap_std::fs::Dir>, OsString);
@@ -157,11 +166,11 @@ struct RawEntry {
     data: Vec<u8>,
 }
 
-fn create_zip_from_sources(
+fn create_archive_from_sources(
     count: usize,
     sources: impl IntoIterator<Item = Result<Source, Error>>,
     destination: &Path,
-    options: ZipOptions,
+    options: CreateOptions,
     limits: Limits,
 ) -> Result<Vec<Entry>, Error> {
     options.validate()?;
@@ -195,8 +204,8 @@ fn create_zip_from_sources(
         })
         .collect::<Result<Vec<_>, Error>>()?;
     entries.sort_by(|a, b| a.path.cmp(&b.path));
-    let bytes = create_zip_with_options(&entries, limits, options)?;
-    let listed = list_zip(&bytes, limits)?;
+    let bytes = create_archive(&entries, limits, options)?;
+    let listed = list_archive(&bytes, limits)?;
     publish(&bytes, destination)?;
     Ok(listed)
 }

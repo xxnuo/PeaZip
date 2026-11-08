@@ -251,7 +251,7 @@ fn filesystem_types_sort_without_changing_selected_ids_or_zip_bytes() {
     let requests = app.screen().file_requests().len();
     let output = temp.path().join("selected.zip");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("Created ZIP: 2 entries").unwrap();

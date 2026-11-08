@@ -72,6 +72,8 @@ jobs:
       - if: runner.os == 'Linux'
         run: bash scripts/smoke_linux_create_options.sh target/debug/peazip-ui target/linux-create-options
       - if: runner.os == 'Linux'
+        run: bash scripts/smoke_linux_create_formats.sh target/debug/peazip-ui target/linux-create-formats
+      - if: runner.os == 'Linux'
         run: bash scripts/smoke_linux_extract_options.sh target/debug/peazip-ui target/linux-extract-options
       - if: runner.os == 'Linux'
         run: bash scripts/smoke_linux_packed.sh target/debug/peazip-ui target/linux-packed
@@ -89,6 +91,7 @@ jobs:
             target/linux-smoke/
             target/linux-filesystem/
             target/linux-create-options/
+            target/linux-create-formats/
             target/linux-extract-options/
             target/linux-packed/
             target/linux-filter/

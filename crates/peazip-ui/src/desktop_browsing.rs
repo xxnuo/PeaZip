@@ -475,9 +475,9 @@ impl Browser {
 
     pub async fn create_selection(
         self,
-        options: peazip_core::ZipOptions,
+        options: peazip_core::CreateOptions,
     ) -> Result<Option<OpenedArchive>, String> {
-        use nsh_core::file_dialog::{FileFilter, SaveDialog};
+        options.validate().map_err(|error| error.to_string())?;
         let Some(view) = self.files.current.get_untracked() else {
             return Err("No folder is open.".into());
         };
@@ -485,27 +485,14 @@ impl Browser {
             .files
             .selected
             .with(|selected| selected.iter().copied().collect::<Vec<_>>());
-        let Some(destination) = pick_save_path(
-            SaveDialog::new()
-                .title("Create ZIP — choose a new filename")
-                .button_label("Create")
-                .file_name("Archive.zip")
-                .filter(FileFilter::new("ZIP archives", ["zip"])),
-        )
-        .await?
-        else {
+        let Some(destination) = pick_save_path(crate::creation_save_dialog(options)).await? else {
             return Ok(None);
         };
         let source_path = destination.clone();
         let name = destination.display().to_string();
         let data = blocking(move || {
             view.0
-                .create_zip_with_options(
-                    &ids,
-                    &destination,
-                    peazip_core::Limits::default(),
-                    options,
-                )
+                .create_archive(&ids, &destination, peazip_core::Limits::default(), options)
                 .map_err(|error| error.to_string())?;
             crate::read_archive(&destination)
         })

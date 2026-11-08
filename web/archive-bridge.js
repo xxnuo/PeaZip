@@ -1,8 +1,39 @@
-import { validateExtractOptions, validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH } from './archive-limits.js';
+import { validateCreateOptions, validateExtractOptions, validateZipOptions, packetSize, MAX_ARCHIVE, MAX_ENTRIES, MAX_PATH } from './archive-limits.js';
 import { exportEntries } from './directory-export.js';
 
 let wasm;
 let active;
+let pageActive = true;
+let pageEpoch = 0;
+let logicalCreate;
+let nextCreateToken = 0;
+let queuedReplies = 0;
+
+function createOperationValid(token) {
+  return pageActive && logicalCreate && logicalCreate.token === (token >>> 0) && logicalCreate.valid ? 1 : 0;
+}
+function finishCreateOperation() {
+  if (logicalCreate?.ended && !active && queuedReplies === 0) logicalCreate = undefined;
+}
+function createOperationBegin() {
+  if (!pageActive || !wasm || active || queuedReplies || logicalCreate || nextCreateToken === 0xffffffff) return 0;
+  logicalCreate = { token: ++nextCreateToken, valid: true, ended: false };
+  return logicalCreate.token;
+}
+function createOperationEnd(token) {
+  if (!logicalCreate || logicalCreate.token !== (token >>> 0)) return 0;
+  logicalCreate.ended = true;
+  logicalCreate.valid = false;
+  if (active?.createToken === token) cancel();
+  finishCreateOperation();
+  return 1;
+}
+function stageAllowed() {
+  return pageActive && !active && !queuedReplies && (!logicalCreate || logicalCreate.valid);
+}
+function stageJob(fields) {
+  return { ...fields, epoch: pageEpoch, createToken: logicalCreate?.token };
+}
 const encoder = new TextEncoder();
 
 function reply(code, bytes = new Uint8Array(), job = active) {
@@ -14,14 +45,28 @@ function reply(code, bytes = new Uint8Array(), job = active) {
     code = 0;
     bytes = encoder.encode('Worker output exceeds the archive limit.');
   }
+  queuedReplies++;
   queueMicrotask(() => {
-    const ptr = wasm.pc_response_begin(bytes.length) >>> 0;
-    if (!ptr && bytes.length) {
-      wasm.pc_response_end(0);
-      return;
+    try {
+      // A writer may have committed files: preserve its accurate partial-output report on hide.
+      if (job.phase !== 'write' && (job.epoch !== pageEpoch || !pageActive
+          || (job.createToken !== undefined && !createOperationValid(job.createToken)))) {
+        code = 2;
+        bytes = new Uint8Array();
+      }
+      const ptr = wasm.pc_response_begin(bytes.length) >>> 0;
+      if (!ptr && bytes.length) code = 0;
+      else if (bytes.length) new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
+    } catch {
+      code = 0;
     }
-    if (bytes.length) new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
-    wasm.pc_response_end(code);
+    // All writes to the old PENDING are complete before its receiver may resume.
+    queuedReplies--;
+    try {
+      wasm.pc_response_end(code);
+    } finally {
+      finishCreateOperation();
+    }
   });
 }
 
@@ -29,17 +74,17 @@ function fail(error, job = active) {
   reply(0, encoder.encode(String(error.message ?? error).slice(0, 4096)), job);
 }
 
-function create(options) {
+function create(options, version = 1) {
   if (options !== undefined) {
-    try { validateZipOptions(options); } catch { return 0; }
+    try { version === 2 ? validateCreateOptions(options) : validateZipOptions(options); } catch { return 0; }
   }
-  if (active || !wasm || typeof Worker === 'undefined') return 0;
+  if (!stageAllowed() || !wasm || typeof Worker === 'undefined') return 0;
   const input = document.createElement('input');
   input.type = 'file';
   input.multiple = true;
   input.hidden = true;
   document.body.append(input);
-  const job = { input, worker: null };
+  const job = stageJob({ input, worker: null });
   active = job;
   input.addEventListener('cancel', () => reply(2, undefined, job), { once: true });
   input.addEventListener('change', () => {
@@ -62,7 +107,7 @@ function create(options) {
       };
       worker.onerror = (event) => { event.preventDefault(); fail(new Error('Archive worker failed.'), job); };
       worker.onmessageerror = () => fail(new Error('Archive worker returned an invalid response.'), job);
-      worker.postMessage(options === undefined ? files : { operation: 'create-v1', options, files });
+      worker.postMessage(options === undefined ? files : { operation: version === 2 ? 'create-v2' : 'create-v1', options, files });
     } catch (error) { fail(error, job); }
   }, { once: true });
   try { input.click(); } catch (error) { fail(error, job); }
@@ -78,8 +123,8 @@ function progress(data, job) {
 }
 
 function inspect(ptr, length, operation) {
-  if (active || !wasm || typeof Worker === 'undefined') return 0;
-  const job = { worker: null, phase: operation };
+  if (!stageAllowed() || !wasm || typeof Worker === 'undefined') return 0;
+  const job = stageJob({ worker: null, phase: operation });
   active = job;
   try {
     if (!Number.isInteger(length) || length < 1 || length > MAX_ARCHIVE) throw new Error(`Invalid ${operation} request size.`);
@@ -104,8 +149,8 @@ function extract(ptr, length, options) {
   if (options !== undefined) {
     try { validateExtractOptions(options); } catch { return 0; }
   }
-  if (active || !wasm || typeof Worker === 'undefined' || typeof window.showDirectoryPicker !== 'function') return 0;
-  const job = { worker: null, phase: 'pick', controller: new AbortController(), outputName: null };
+  if (!stageAllowed() || !wasm || typeof Worker === 'undefined' || typeof window.showDirectoryPicker !== 'function') return 0;
+  const job = stageJob({ worker: null, phase: 'pick', controller: new AbortController(), outputName: null });
   active = job;
   try {
     if (!Number.isInteger(length) || length < 8
@@ -148,7 +193,8 @@ function extract(ptr, length, options) {
 }
 
 function cancel() {
-  if (!active) return 0;
+  if (logicalCreate) logicalCreate.valid = false;
+  if (!active) return logicalCreate ? 1 : 0;
   if (active.phase === 'write') {
     // File close may already be committing: wait for the writer's accurate partial-output report.
     active.controller.abort();
@@ -159,7 +205,7 @@ function cancel() {
 }
 
 function download(ptr, length, format) {
-  if (!wasm || !length || length > MAX_ARCHIVE) return 0;
+  if (!pageActive || !wasm || !length || length > MAX_ARCHIVE) return 0;
   const kind = {
     0: { name: 'Archive.zip', mime: 'application/zip' },
     1: { name: 'Archive.tar', mime: 'application/x-tar' },
@@ -186,7 +232,12 @@ function download(ptr, length, format) {
 }
 
 export function __nsh_imports() {
-  return { peazip: { pc_create_start: () => create(),
+  return { peazip: {
+    pc_create_operation_begin: createOperationBegin,
+    pc_create_operation_valid: createOperationValid,
+    pc_create_operation_end: createOperationEnd,
+    pc_create_start: () => create(),
+    pc_create_archive_start: (format, compression, level) => create({ format, compression, level }, 2),
     pc_create_with_options_start: (compression, level) => create({ compression, level }), pc_download: download, pc_cancel: cancel,
     pc_list_start: (ptr, length) => inspect(ptr, length, 'list'),
     pc_test_start: (ptr, length) => inspect(ptr, length, 'test'),
@@ -201,5 +252,8 @@ export function __nsh_finalize(instance) {
 }
 
 window.addEventListener('pagehide', () => {
+  pageActive = false;
+  pageEpoch++;
   cancel();
 });
+window.addEventListener('pageshow', () => { pageActive = true; });

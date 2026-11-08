@@ -324,3 +324,14 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 本轮执行 upstream sources fetch 和差异报告，`target/copy-selected-upstream-report.json` 的 target 与既有审查基线均为 `367c68278a7b0e7741fd8fe3106f34d6cfcb656f`，commits/files 为空，未自动移动基线。项目总体迁移和剩余文件管理/六平台验收仍未完成。
 
 - 补充 GTK 复制后键盘焦点定向检查通过：无额外点击的 Ctrl+I 实测 3→2→3 selected，两个隐藏选择保持；筛选框保留高亮文字不等于仍拥有快捷键编辑焦点。补充脚本、截图及 source/build hashes 位于 `target/linux-copy-selected/focus-probe`，没有修改生产或正式脚本。汇总证据 `target/copy-selected-evidence.json`。
+
+
+## TAR / TAR.GZ 创建（ARC-CREATE-TAR-01、ARC-CREATE-TGZ-01）
+
+- 创建表单新增 ZIP / TAR / TAR.GZ，默认 ZIP 和既有 Automatic/Store/Deflate 保持；TAR 不显示压缩等级，TAR.GZ 接受 GZIP 1–9、默认 6。已确认的格式/选项在当前会话内记忆，Cancel 不提交草稿。创建入口改为 Create archive… / Create folder archive…；桌面选中文件夹项目只请求新保存位置，独立导入仍使用既有文件/文件夹选择器。保存名、筛选器、下载 MIME、状态和重新打开均按实际格式处理。
+- core 新增 CreateOptions/create_archive，保留 ZIP API 包装；native 的路径和 DirectorySnapshot 创建入口复用安全源遍历、预算与排他发布。TAR 使用 GNU 长名称头，规则文件/目录、uid/gid/mtime=0、权限 0644/0755；TAR.GZ 将 TAR 直接写入有界 GZIP 输出，不建立完整未压缩 TAR 中间 Vec。输入与最终可读输出均执行既有限额，压缩率超限明确失败，不改变请求格式或放宽读取限制；ZIP Automatic 原有回退规则不变。这仍是有界内存路径，不能作为大归档流式处理验收。
+- Web create-v2 在 JS 与 Rust 两端校验格式、压缩参数和封包长度，保留既有 ZIP 协议。创建与后续元数据读取均在真实 Worker 运行，TAR.GZ 不转回主线程展开；整个 create→list 使用同一个生命周期 token。Cancel/pagehide 覆盖阶段间空隙与排队回复，旧等待者必须结算、旧成功不得替换新快照；pageshow 只允许新操作。解压写入阶段在取消/pagehide 后等待 abort/close 并保留真实部分输出报告，不误报成无输出的取消。
+- 原版参照固定 peach.lfm:6681 与 peach.pas:33274、32455、23288、50802、32509、32637、33034、53479、53646、58880。原版使用 TAR 或 GZip＋TAR before，GZip 预设 1/3/5/7/9、默认 Normal 5，并包含 Word/Passes；单文件可直接 .gz。当前 TAR.GZ 始终包含 TAR、数字等级默认 6、输出默认 Archive.tar(.gz)、固定元数据且直接管道写入，尚未复刻原版完整创建工作区、源名称派生、纯 .gz、压缩预设和 GNU/PAX 切换，均保留为待实现。
+- 验证：工作区 339 次测试执行、完整 Web 119 项、Python 8 项通过；新 core/native 创建测试分别 7/5 项、App 格式测试 6 项、worker create-v2 5 项。主机/WASM/Android target Clippy 与格式检查通过。独立 tar/gzip/7z/Python 核对 Unicode/长名称、二进制、空文件/目录、校验和及确定性元数据；真实 Web 测试覆盖 MIME/下载文件名/重开、压缩率失败保留原字节与选择、Cancel/pagehide 及随后重试。Linux GTK/X11 两尺寸新格式全流程、旧 ZIP 创建选项及文件系统流程回归通过，证据 target/linux-create-formats；原版完整视觉一致性仍待阶段 2a 验收。
+- Web/Android 发布物逐文件核对 core/regex 依赖图许可证（分别 95/62 文件）；Android ZIP 打包钳制超出 ZIP 时间范围的元数据，保持许可证源文件及实际字节不变，新增回归覆盖。Windows GNU check/release、native 测试交叉检查和 PE/loader 校验通过，未实际运行 Windows 程序；构建后仅删除 cfg(wasm32) 内无调用包装，不改变 Windows 编译代码。iOS 未新增运行/创建验收。
+- Android API36 专用模拟器运行最终 APK（SHA256 2f4ab7ac7f5d7c294cfc12c347d2f092d803bf2cf04520c6237ee06aebecb53f），完整 smoke 通过：真实 DocumentsUI/SAF 选择 Unicode/二进制/空文件、TAR 与 GZIP 1/9 创建/保存/回读/重开、取消不新增输出、等级 0 禁止继续、选择解压逐字节验证、ratio 失败保留原字节和选择、改 TAR 重试成功；日志 target/android-smoke/create-formats-final.log，制品 target/android-smoke/416580770b31。未新增 Android 真实设备、其他 provider、横屏/完整主题验收。汇总源码与制品哈希见 target/create-formats-evidence.json。

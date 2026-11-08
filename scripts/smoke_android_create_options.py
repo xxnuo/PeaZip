@@ -55,7 +55,7 @@ class CreateOptionsSmoke(smoke_android.Smoke):
             field.get("text") == str(level) for field in self.level_fields(t)))
 
     def modal(self, compression, level=None):
-        self.tap("Create ZIP…")
+        self.tap("Create archive…")
         self.label("Create archive")
         self.tap(compression)
         if compression == "Deflate":

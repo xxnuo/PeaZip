@@ -85,9 +85,10 @@ menu_action() {
 }
 selection_count() {
   ocr
-  read -r selected_x selected_y < <(locate selected)
-  convert "$artifacts/current.png" -crop "${width}x30+0+$((selected_y-10))" +repage -resize 300% "$artifacts/selection.png"
-  tesseract "$artifacts/selection.png" "$artifacts/selection" --psm 6 2> "$artifacts/selection-ocr.log"
+  read -r selected_x selected_y < <(locate '^selected$' 0 150 280)
+  read -r word_left word_width < <(awk -F '\t' '$12=="selected" && $8/3>=150 && $8/3<=280 {x=int($7/3);w=int($9/3)} END{print x,w}' "$artifacts/current.tsv")
+  convert "$artifacts/current.png" -crop "$((word_width+40))x30+$((word_left-25))+$((selected_y-10))" +repage -resize 300% "$artifacts/selection.png"
+  tesseract "$artifacts/selection.png" "$artifacts/selection" --psm 7 2> "$artifacts/selection-ocr.log"
   grep -Eq "(^| )$1 selected" "$artifacts/selection.txt"
 }
 status_text() {
@@ -199,9 +200,9 @@ select_row '^unicode-'
 select_row '^empty$'
 selection_count 3
 screen 03-zip-selection
-menu_action File '^ZIP'
+menu_action File '^Create$'
 click_word '^Continue$'
-save=$(timeout 20 xdotool search --sync --onlyvisible --name '^Create ZIP — choose a new filename$' | head -n1)
+save=$(timeout 20 xdotool search --sync --onlyvisible --name '^Create archive — choose a new filename$' | head -n1)
 ! xdotool search --onlyvisible --name '^Select files to archive$' >/dev/null
 xdotool windowfocus --sync "$save"
 sleep .5

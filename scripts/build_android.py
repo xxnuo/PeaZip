@@ -27,6 +27,13 @@ def latest(directory):
     return max(versions, key=lambda path: tuple(map(int, path.name.split("."))))
 
 
+def append_apk_files(destination, files):
+    # Registry license mtimes may precede ZIP's 1980 epoch; clamp only ZIP metadata.
+    with zipfile.ZipFile(destination, "a", strict_timestamps=False) as apk:
+        for source, name, compression in files:
+            apk.write(source, name, compress_type=compression)
+
+
 def build(args):
     sdk_default = Path.home() / ("Library/Android/sdk" if platform.system() == "Darwin" else "Android/Sdk")
     sdk = Path(args.sdk or os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or sdk_default).expanduser().resolve()
@@ -95,13 +102,15 @@ def build(args):
          "--min-sdk-version", "28", "--target-sdk-version", args.api, "--version-code", "1", "--version-name", "0.1.0",
          "--debug-mode", "-o", unsigned])
     library = Path(metadata["target_directory"]) / target / ("debug" if args.debug else "release") / "libpeazip_android.so"
-    with zipfile.ZipFile(unsigned, "a") as apk:
-        apk.write(out / "classes.dex", "classes.dex", compress_type=zipfile.ZIP_DEFLATED)
-        apk.write(library, f"lib/{args.abi}/libnsh.so", compress_type=zipfile.ZIP_STORED)
-        apk.write(ROOT / "LICENSE", "assets/PeaZip-LICENSE", compress_type=zipfile.ZIP_DEFLATED)
-        apk.write(Path(runtime["manifest_path"]).parent.parent.parent / "LICENSE-APACHE", "assets/NSH-LICENSE-APACHE", compress_type=zipfile.ZIP_DEFLATED)
-        for name, source in archive_licenses(metadata):
-            apk.write(source, f"assets/{name}", compress_type=zipfile.ZIP_DEFLATED)
+    append_apk_files(unsigned, [
+        (out / "classes.dex", "classes.dex", zipfile.ZIP_DEFLATED),
+        (library, f"lib/{args.abi}/libnsh.so", zipfile.ZIP_STORED),
+        (ROOT / "LICENSE", "assets/PeaZip-LICENSE", zipfile.ZIP_DEFLATED),
+        (Path(runtime["manifest_path"]).parent.parent.parent / "LICENSE-APACHE",
+         "assets/NSH-LICENSE-APACHE", zipfile.ZIP_DEFLATED),
+        *((source, f"assets/{name}", zipfile.ZIP_DEFLATED)
+          for name, source in archive_licenses(metadata)),
+    ])
     aligned = out / "aligned.apk"
     run([tool("zipalign"), "-P", "16", "-f", "4", unsigned, aligned])
     keystore = ROOT / "target/android/debug.keystore"

@@ -172,10 +172,14 @@ fn visible_select_all_and_invert_keep_hidden_ids_and_sorting_creates_the_selecte
     filter(&mut app, "no-match", 0, 3);
     app.wait_for("2 selected").unwrap();
     assert!(!app.screen().enabled("role:button[Select all]").unwrap());
-    assert!(app.screen().enabled("role:button[Create ZIP…]").unwrap());
+    assert!(
+        app.screen()
+            .enabled("role:button[Create archive…]")
+            .unwrap()
+    );
     let output = temp.path().join("selected.zip");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("Created ZIP: 2 entries").unwrap();

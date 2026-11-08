@@ -15,7 +15,7 @@ fn start() -> Headless {
 }
 
 fn open(app: &mut Headless) {
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
 }
 
@@ -55,7 +55,11 @@ fn cancel_and_escape_start_no_picker_and_discard_unconfirmed_options() {
         .unwrap();
     assert!(!app.screen().matches("role:button[Continue]").unwrap());
     assert!(app.screen().file_requests().is_empty());
-    assert!(app.screen().enabled("role:button[Create ZIP…]").unwrap());
+    assert!(
+        app.screen()
+            .enabled("role:button[Create archive…]")
+            .unwrap()
+    );
 }
 
 #[test]

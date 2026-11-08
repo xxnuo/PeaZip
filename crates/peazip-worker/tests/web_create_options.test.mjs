@@ -11,6 +11,7 @@ async function worker() {
     pw_input_resize: (length) => { size = length; return 16; },
     pw_create: () => { calls.push('legacy'); return 1; },
     pw_create_v1: () => { calls.push('v1'); return 1; },
+    pw_create_v2: () => { calls.push('v2'); return 1; },
     pw_output_len: () => 0,
     pw_output_ptr: () => 16,
   };
@@ -39,7 +40,7 @@ test('create-v1 rejects bad options before metadata, file reads or Wasm init', a
   assert.equal(reads, 0);
   assert.equal(harness.inits, 0);
   assert.deepEqual(harness.calls, []);
-  await harness.self.onmessage({ data: { operation: 'create-v2', files: [file] } });
+  await harness.self.onmessage({ data: { operation: 'create-v3', files: [file] } });
   assert.equal(harness.messages.at(-1).code, 0);
   assert.equal(reads, 0);
 });
@@ -133,4 +134,95 @@ test('bridge validates before picker and preserves cancellation, progress and le
   inputs.at(-1).listeners.cancel();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(responses.at(-1), 2);
+});
+
+const invalidCreateOptions = [undefined, null, {}, [], { format: 0 },
+  { format: 0, compression: 0, level: 1 }, { format: 0, compression: 2, level: 0 },
+  { format: 1, compression: 1, level: 0 }, { format: 1, compression: 0, level: 1 },
+  { format: 2, compression: 1, level: 6 }, { format: 2, compression: 0, level: 0 },
+  { format: 2, compression: 0, level: 10 }, { format: 2, compression: 0, level: '6' },
+  { format: 3, compression: 0, level: 0 }, { format: '1', compression: 0, level: 0 },
+  { format: 1, compression: 0, level: 0, extra: true }];
+
+test('create-v2 validates format, unused fields and levels before metadata, reads or Wasm', async () => {
+  const h = await worker();
+  let reads = 0;
+  const file = { get name() { reads++; throw new Error('metadata read'); },
+    arrayBuffer() { reads++; throw new Error('content read'); } };
+  for (const options of invalidCreateOptions) {
+    await h.self.onmessage({ data: { operation: 'create-v2', options, files: [file] } });
+    assert.equal(h.messages.at(-1).code, 0);
+    assert.match(new TextDecoder().decode(h.messages.at(-1).bytes), /options/);
+  }
+  assert.equal(reads, 0);
+  assert.equal(h.inits, 0);
+  assert.deepEqual(h.calls, []);
+});
+
+test('create-v2 writes the exact sixteen-byte header and preserves read/compress progress', async () => {
+  for (const [format, compression, level] of [[0, 0, 0], [0, 1, 0], [0, 2, 1], [0, 2, 9],
+    [1, 0, 0], [2, 0, 1], [2, 0, 9]]) {
+    const h = await worker();
+    const content = Uint8Array.of(0, 127, 255);
+    const files = [{ name: '你好.bin', size: 3, arrayBuffer: async () => content.buffer }];
+    await h.self.onmessage({ data: { operation: 'create-v2', options: { format, compression, level }, files } });
+    assert.deepEqual(h.calls, ['v2']);
+    const view = new DataView(h.wasm.memory.buffer);
+    assert.deepEqual([0, 4, 8, 12, 16].map((offset) => view.getUint32(16 + offset, true)),
+      [2, format, compression, level, 1]);
+    const name = new TextEncoder().encode(files[0].name);
+    assert.equal(h.size, 16 + 4 + 8 + name.length + 3);
+    const bytes = new Uint8Array(h.wasm.memory.buffer, 16 + 16 + 12, name.length + 3);
+    assert.deepEqual([...bytes], [...name, ...content]);
+    assert.deepEqual(h.messages.filter((m) => m.progress).map((m) => ({ ...m.progress })),
+      [{ phase: 'read', done: 1, total: 1 }, { phase: 'compress', done: 1, total: 1 }]);
+    assert.equal(h.messages.at(-1).code, 1);
+  }
+});
+
+test('create-v2 bridge validates before picker and isolates cancelled/late jobs across formats', async () => {
+  const inputs = [], workers = [], responses = [];
+  const document = { body: { append() {} }, createElement: () => {
+    const listeners = {};
+    const input = { listeners, addEventListener: (event, callback) => { listeners[event] = callback; },
+      click() {}, remove() { this.removed = true; } };
+    inputs.push(input);
+    return input;
+  } };
+  class Worker {
+    constructor(url) { this.url = url; workers.push(this); }
+    postMessage(message) { this.message = message; }
+    terminate() { this.terminated = true; }
+  }
+  const bridge = await moduleFor('archive-bridge.js', { document, Worker, window: { addEventListener() {} } });
+  bridge.__nsh_finalize({ exports: {
+    memory: { buffer: new ArrayBuffer(4096) }, pc_response_begin: () => 16,
+    pc_response_end: (code) => responses.push(code), pc_progress() {},
+  } });
+  const api = bridge.__nsh_imports().peazip;
+  for (const options of invalidCreateOptions) {
+    if (!options || Array.isArray(options) || options.extra) continue;
+    assert.equal(api.pc_create_archive_start(options.format, options.compression, options.level), 0);
+  }
+  assert.equal(inputs.length, 0);
+  let previous;
+  for (const [format, compression, level] of [[0, 0, 0], [1, 0, 0], [2, 0, 9]]) {
+    assert.equal(api.pc_create_archive_start(format, compression, level), 1);
+    const input = inputs.at(-1);
+    input.files = [{ name: 'file', size: 3 }];
+    input.listeners.change();
+    const current = workers.at(-1);
+    assert.match(current.url.href, /\/archive-worker\.js$/);
+    assert.equal(current.message.operation, 'create-v2');
+    assert.deepEqual({ ...current.message.options }, { format, compression, level });
+    if (previous) previous.onmessage({ data: { code: 1, bytes: Uint8Array.of(1) } });
+    assert.equal(api.pc_cancel(), 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(responses.at(-1), 2);
+    assert.equal(current.terminated, true);
+    assert.equal(input.removed, true);
+    previous = current;
+  }
+  assert.deepEqual(responses, [2, 2, 2]);
+  assert.equal(workers.length, 3, 'create does not start any metadata/list worker');
 });

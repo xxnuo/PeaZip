@@ -1,6 +1,6 @@
 use super::{
-    Entry, Error, Limits, Source, ZipOptions, create_zip_from_sources, is_link, open_source,
-    publish_copied, read_archive_file, read_sources,
+    CreateOptions, Entry, Error, Limits, Source, ZipOptions, create_archive_from_sources, is_link,
+    open_source, publish_copied, read_archive_file, read_sources,
 };
 use cap_fs_ext::MetadataExt;
 use cap_std::fs::Dir;
@@ -246,8 +246,18 @@ impl DirectorySnapshot {
         limits: Limits,
         options: ZipOptions,
     ) -> Result<Vec<Entry>, Error> {
+        self.create_archive(ids, destination, limits, CreateOptions::Zip(options))
+    }
+
+    pub fn create_archive(
+        &self,
+        ids: &[usize],
+        destination: &Path,
+        limits: Limits,
+        options: CreateOptions,
+    ) -> Result<Vec<Entry>, Error> {
         let sources = ids.iter().map(|&id| self.source(id));
-        create_zip_from_sources(ids.len(), sources, destination, options, limits)
+        create_archive_from_sources(ids.len(), sources, destination, options, limits)
     }
 
     pub fn copy_selected_to_directory(

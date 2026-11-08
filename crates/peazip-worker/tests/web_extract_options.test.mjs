@@ -92,6 +92,7 @@ async function bridge(fs, picker = async () => fs.root) {
   const workers = [], responses = [], progress = [];
   const memory = { buffer: new ArrayBuffer(8192) };
   let picks = 0, length = 0;
+  const events = {};
   class Worker {
     constructor() { workers.push(this); }
     postMessage(message) { this.message = message; }
@@ -99,7 +100,8 @@ async function bridge(fs, picker = async () => fs.root) {
   }
   const namespace = await moduleFor('archive-bridge.js', {
     Worker, crypto: { randomUUID: () => '00000000-0000-4000-8000-000000000001' },
-    window: { addEventListener() {}, showDirectoryPicker: () => { picks++; return picker(); } },
+    window: { addEventListener: (name, callback) => { events[name] = callback; },
+      showDirectoryPicker: () => { picks++; return picker(); } },
   });
   namespace.__nsh_finalize({ exports: {
     memory, pc_response_begin: (size) => { length = size; return 4096; },
@@ -109,7 +111,7 @@ async function bridge(fs, picker = async () => fs.root) {
   } });
   const legacy = request(0).slice(8);
   new Uint8Array(memory.buffer, 16, legacy.length).set(legacy);
-  return { api: namespace.__nsh_imports().peazip, memory, legacy, workers, responses, progress,
+  return { api: namespace.__nsh_imports().peazip, memory, legacy, workers, responses, progress, events,
     get picks() { return picks; } };
 }
 
@@ -192,7 +194,8 @@ test('core failure creates no output; flat write failure still aborts and report
   assert.notEqual(fs.streams[0].closed, true);
 });
 
-test('flat cancellation during a pending write aborts and waits for an accurate partial-output report', async () => {
+for (const cancellation of ['Cancel', 'pagehide']) {
+test(`flat ${cancellation} during a pending write preserves the partial-output failure report`, async () => {
   let began, rejectWrite;
   const started = new Promise((resolve) => { began = resolve; });
   const writing = new Promise((_, reject) => { rejectWrite = reject; });
@@ -205,7 +208,8 @@ test('flat cancellation during a pending write aborts and waits for an accurate 
   await flush();
   const result = h.workers[0].onmessage({ data: { code: 1, bytes: output('waiting', Uint8Array.of(1)) } });
   await started;
-  assert.equal(h.api.pc_cancel(), 1);
+  if (cancellation === 'pagehide') h.events.pagehide();
+  else assert.equal(h.api.pc_cancel(), 1);
   assert.equal(h.responses.length, 0);
   await result;
   await flush();
@@ -214,3 +218,4 @@ test('flat cancellation during a pending write aborts and waits for an accurate 
   assert.equal(fs.streams[0].aborted, true);
   assert.notEqual(fs.streams[0].closed, true);
 });
+}

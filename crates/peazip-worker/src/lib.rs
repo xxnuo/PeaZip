@@ -1,7 +1,10 @@
-use peazip_core::{ExtractOptions, ExtractPaths, Limits, MemoryEntry, ZipCompression, ZipOptions};
+use peazip_core::{
+    CreateOptions, ExtractOptions, ExtractPaths, Limits, MemoryEntry, ZipCompression, ZipOptions,
+};
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024 + 4096 * (8 + 1024) + 4;
 pub const MAX_CREATE_V1_REQUEST_BYTES: usize = MAX_REQUEST_BYTES + 12;
+pub const MAX_CREATE_V2_REQUEST_BYTES: usize = MAX_REQUEST_BYTES + 16;
 pub const MAX_EXTRACT_REQUEST_BYTES: usize = 32 * 1024 * 1024 + 4096 * (4 + 1024) + 8;
 pub const MAX_EXTRACT_V1_REQUEST_BYTES: usize = MAX_EXTRACT_REQUEST_BYTES + 8;
 pub const MAX_EXTRACT_OUTPUT_BYTES: usize = 64 * 1024 * 1024 + 4096 * (12 + 1024) + 4;
@@ -165,7 +168,7 @@ pub fn create_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
     if packet.len() > MAX_REQUEST_BYTES {
         return Err("request byte limit exceeded".into());
     }
-    create_entries(packet, ZipOptions::default())
+    create_entries(packet, CreateOptions::Zip(ZipOptions::default()))
 }
 
 pub fn create_v1_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
@@ -178,16 +181,43 @@ pub fn create_v1_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
     }
     let compression = read_u32(&mut remaining)?;
     let level = read_u32(&mut remaining)?;
+    create_entries(
+        remaining,
+        CreateOptions::Zip(zip_options(compression, level)?),
+    )
+}
+
+fn zip_options(compression: usize, level: usize) -> Result<ZipOptions, String> {
     let compression = match (compression, level) {
         (0, 0) => ZipCompression::Automatic,
         (1, 0) => ZipCompression::Stored,
         (2, 1..=9) => ZipCompression::Deflate { level: level as u8 },
         _ => return Err("invalid ZIP compression options".into()),
     };
-    create_entries(remaining, ZipOptions { compression })
+    Ok(ZipOptions { compression })
 }
 
-fn create_entries(packet: &[u8], options: ZipOptions) -> Result<Vec<u8>, String> {
+pub fn create_v2_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
+    if packet.len() > MAX_CREATE_V2_REQUEST_BYTES {
+        return Err("request byte limit exceeded".into());
+    }
+    let mut remaining = packet;
+    if read_u32(&mut remaining)? != 2 {
+        return Err("unsupported archive create request version".into());
+    }
+    let format = read_u32(&mut remaining)?;
+    let compression = read_u32(&mut remaining)?;
+    let level = read_u32(&mut remaining)?;
+    let options = match (format, compression, level) {
+        (0, compression, level) => CreateOptions::Zip(zip_options(compression, level)?),
+        (1, 0, 0) => CreateOptions::Tar,
+        (2, 0, 1..=9) => CreateOptions::TarGzip { level: level as u8 },
+        _ => return Err("invalid archive creation options".into()),
+    };
+    create_entries(remaining, options)
+}
+
+fn create_entries(packet: &[u8], options: CreateOptions) -> Result<Vec<u8>, String> {
     options.validate().map_err(|error| error.to_string())?;
     let limits = Limits::default();
     let mut remaining = packet;
@@ -225,15 +255,15 @@ fn create_entries(packet: &[u8], options: ZipOptions) -> Result<Vec<u8>, String>
     if !remaining.is_empty() {
         return Err("trailing request bytes".into());
     }
-    peazip_core::create_zip_with_options(&entries, limits, options)
-        .map_err(|error| error.to_string())
+    peazip_core::create_archive(&entries, limits, options).map_err(|error| error.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::{
-        MAX_CREATE_V1_REQUEST_BYTES, create_from_request, create_v1_from_request,
-        extract_from_request, extract_v1_from_request, list_from_request, test_from_request,
+        MAX_CREATE_V2_REQUEST_BYTES, create_from_request, create_v1_from_request,
+        create_v2_from_request, extract_from_request, extract_v1_from_request, list_from_request,
+        test_from_request,
     };
     use std::cell::RefCell;
 
@@ -245,7 +275,7 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn pw_input_resize(len: usize) -> *mut u8 {
         INPUT.with_borrow_mut(|input| {
-            if len > MAX_CREATE_V1_REQUEST_BYTES {
+            if len > MAX_CREATE_V2_REQUEST_BYTES {
                 *input = Vec::new();
                 return std::ptr::null_mut();
             }
@@ -262,6 +292,11 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn pw_create_v1() -> u32 {
         run(create_v1_from_request)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn pw_create_v2() -> u32 {
+        run(create_v2_from_request)
     }
 
     #[unsafe(no_mangle)]

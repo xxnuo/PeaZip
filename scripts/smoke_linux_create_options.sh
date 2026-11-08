@@ -126,7 +126,7 @@ expect_modal_closed() {
   screen modal-did-not-close
   return 1
 }
-open_options() { menu_action File '^ZIP'; expect_modal; }
+open_options() { menu_action File '^Create$'; expect_modal; }
 choose_mode() {
   local mode=$1 level=${2:-}
   modal_word "^$mode$"
@@ -165,7 +165,7 @@ file_from_picker() {
 }
 save_to() {
   local destination=$1
-  save=$(timeout 20 xdotool search --sync --onlyvisible --name '^Create ZIP — choose a new filename$' | head -n1)
+  save=$(timeout 20 xdotool search --sync --onlyvisible --name '^Create archive — choose a new filename$' | head -n1)
   xdotool windowfocus --sync "$save"
   sleep .5
   xdotool mousemove 360 16 click 1 key ctrl+a
@@ -266,7 +266,7 @@ choose_mode Deflate 9
 modal_word '^Continue$'
 file_from_picker '^Select files to archive$' 'bomb.bin'
 save_to "$outputs/ratio.zip"
-wait_status 'Could not create ZIP:.*compression ratio'
+wait_status 'Could not create (ZIP|archive):.*compression ratio'
 screen ratio-error
 original_unchanged
 table_snapshot after-ratio

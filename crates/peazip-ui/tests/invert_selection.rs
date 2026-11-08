@@ -225,7 +225,7 @@ fn empty_views_and_create_extract_modals_guard_inversion() {
     assert!(app.screen().shows("1 selected"));
     app.press("role:button[Archive root]").unwrap();
     let requests = app.screen().file_requests().len();
-    for action in ["Create ZIP…", "Extract…"] {
+    for action in ["Create archive…", "Extract…"] {
         app.press(&format!("role:button[{action}]")).unwrap();
         app.wait_for("role:button[Continue]").unwrap();
         app.press_key("mod+i").unwrap();
@@ -279,7 +279,7 @@ fn filesystem_inversion_uses_stable_ids_after_sort_and_zips_the_complement_bytes
     let output = temp.path().join("complement.zip");
     let requests = app.screen().file_requests().len();
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("Created ZIP: 4 entries").unwrap();

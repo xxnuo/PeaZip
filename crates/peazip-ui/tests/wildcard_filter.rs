@@ -257,7 +257,7 @@ fn filesystem_mode_is_independent_and_matching_ids_drive_selection_inversion_and
     let output = temp.path().join("selected.zip");
     let requests = app.screen().file_requests().len();
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("Created ZIP: 3 entries").unwrap();
@@ -343,7 +343,7 @@ fn create_and_extract_modals_explicitly_disable_mode_without_changing_it() {
         }
     });
     let requests = app.screen().file_requests().len();
-    for action in ["Create ZIP…", "Extract…"] {
+    for action in ["Create archive…", "Extract…"] {
         disabled.store(false, Ordering::SeqCst);
         app.press(&format!("role:button[{action}]")).unwrap();
         app.wait_for("role:button[Continue]").unwrap();

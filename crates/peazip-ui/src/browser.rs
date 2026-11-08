@@ -143,6 +143,7 @@ mod host {
     struct Pending {
         sender: mpsc::UnboundedSender<Update>,
         bytes: Vec<u8>,
+        create_format: Option<peazip_core::ArchiveFormat>,
     }
 
     thread_local! {
@@ -151,13 +152,69 @@ mod host {
 
     #[link(wasm_import_module = "peazip")]
     unsafe extern "C" {
-        fn pc_create_with_options_start(compression: u32, level: u32) -> u32;
+        fn pc_create_archive_start(format: u32, compression: u32, level: u32) -> u32;
+        fn pc_create_operation_begin() -> u32;
+        fn pc_create_operation_valid(token: u32) -> u32;
+        fn pc_create_operation_end(token: u32) -> u32;
         fn pc_list_start(ptr: *const u8, len: usize) -> u32;
         fn pc_test_start(ptr: *const u8, len: usize) -> u32;
         fn pc_can_extract() -> u32;
         fn pc_extract_with_options_start(ptr: *const u8, len: usize, paths: u32) -> u32;
         fn pc_cancel() -> u32;
         fn pc_download(ptr: *const u8, len: usize, format: u32) -> u32;
+    }
+
+    struct CreateOperation(u32);
+    impl CreateOperation {
+        fn begin() -> Result<Self, String> {
+            let token = unsafe { pc_create_operation_begin() };
+            if token == 0 {
+                Err("Browser creation operation is unavailable or already running.".into())
+            } else {
+                Ok(Self(token))
+            }
+        }
+        fn valid(&self) -> bool {
+            unsafe { pc_create_operation_valid(self.0) == 1 }
+        }
+    }
+    impl Drop for CreateOperation {
+        fn drop(&mut self) {
+            unsafe {
+                pc_create_operation_end(self.0);
+            }
+        }
+    }
+
+    pub async fn create_and_list_archive(
+        options: peazip_core::CreateOptions,
+        mut progress: impl FnMut(String),
+    ) -> Result<Option<crate::LoadedArchive>, String> {
+        options.validate().map_err(|error| error.to_string())?;
+        let operation = CreateOperation::begin()?;
+        let created = create_archive(options, &mut progress).await;
+        if !operation.valid() {
+            return Ok(None);
+        }
+        let Some(bytes) = created? else {
+            return Ok(None);
+        };
+        let bytes = Arc::new(bytes);
+        progress("Listing created archive…".to_owned());
+        if !operation.valid() {
+            return Ok(None);
+        }
+        let listed = list_archive(bytes.clone()).await;
+        if !operation.valid() {
+            return Ok(None);
+        }
+        let Some((format, entries)) = listed? else {
+            return Ok(None);
+        };
+        if format != options.format() {
+            return Err("Created archive format does not match the requested format.".into());
+        }
+        Ok(Some((bytes, entries, format)))
     }
 
     pub async fn list_archive(
@@ -170,25 +227,32 @@ mod host {
         run(
             move || unsafe { pc_list_start(bytes.as_ptr(), bytes.len()) },
             |_| {},
+            None,
         )
         .await?
         .map(|metadata| super::decode_list(&metadata))
         .transpose()
     }
 
-    pub async fn create_zip(
-        options: peazip_core::ZipOptions,
-        progress: impl FnMut(String) + 'static,
+    pub async fn create_archive(
+        options: peazip_core::CreateOptions,
+        progress: impl FnMut(String),
     ) -> Reply {
         options.validate().map_err(|error| error.to_string())?;
-        let (compression, level) = match options.compression {
-            peazip_core::ZipCompression::Automatic => (0, 0),
-            peazip_core::ZipCompression::Stored => (1, 0),
-            peazip_core::ZipCompression::Deflate { level } => (2, u32::from(level)),
+        let format = options.format();
+        let (format_code, compression, level) = match options {
+            peazip_core::CreateOptions::Zip(options) => match options.compression {
+                peazip_core::ZipCompression::Automatic => (0, 0, 0),
+                peazip_core::ZipCompression::Stored => (0, 1, 0),
+                peazip_core::ZipCompression::Deflate { level } => (0, 2, u32::from(level)),
+            },
+            peazip_core::CreateOptions::Tar => (1, 0, 0),
+            peazip_core::CreateOptions::TarGzip { level } => (2, 0, u32::from(level)),
         };
         run(
-            || unsafe { pc_create_with_options_start(compression, level) },
+            || unsafe { pc_create_archive_start(format_code, compression, level) },
             progress,
+            Some(format),
         )
         .await
     }
@@ -203,13 +267,18 @@ mod host {
         run(
             move || unsafe { pc_test_start(bytes.as_ptr(), bytes.len()) },
             |_| {},
+            None,
         )
         .await?
         .map(|report| super::decode_test_report(&report))
         .transpose()
     }
 
-    async fn run(start: impl FnOnce() -> u32, mut progress: impl FnMut(String)) -> Reply {
+    async fn run(
+        start: impl FnOnce() -> u32,
+        mut progress: impl FnMut(String),
+        create_format: Option<peazip_core::ArchiveFormat>,
+    ) -> Reply {
         let (sender, mut receiver) = mpsc::unbounded();
         PENDING.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -219,6 +288,7 @@ mod host {
             *slot = Some(Pending {
                 sender,
                 bytes: Vec::new(),
+                create_format,
             });
             Ok(())
         })?;
@@ -275,6 +345,7 @@ mod host {
         let result = run(
             move || unsafe { pc_extract_with_options_start(packet.as_ptr(), packet.len(), paths) },
             progress,
+            None,
         )
         .await?;
         result
@@ -294,15 +365,20 @@ mod host {
         {
             return;
         }
-        let message = match phase {
-            0 => format!("Reading files: {done}/{total}"),
-            1 if done == total => "Compressing ZIP…".to_owned(),
-            2 => "Validating and extracting archive…".to_owned(),
-            3 => format!("Writing entries: {done}/{total}"),
-            _ => return,
-        };
         PENDING.with(|slot| {
             if let Some(pending) = slot.borrow().as_ref() {
+                let message = match phase {
+                    0 => format!("Reading files: {done}/{total}"),
+                    1 if done == total => match pending.create_format {
+                        Some(peazip_core::ArchiveFormat::Tar) => "Writing TAR…",
+                        Some(peazip_core::ArchiveFormat::TarGzip) => "Compressing TAR.GZ…",
+                        _ => "Compressing ZIP…",
+                    }
+                    .to_owned(),
+                    2 => "Validating and extracting archive…".to_owned(),
+                    3 => format!("Writing entries: {done}/{total}"),
+                    _ => return,
+                };
                 let _ = pending.sender.unbounded_send(Update::Progress(message));
             }
         });

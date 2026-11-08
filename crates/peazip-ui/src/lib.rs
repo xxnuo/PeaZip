@@ -175,7 +175,7 @@ pub fn App() -> impl IntoElement {
         target_os = "linux",
         target_os = "windows"
     ))]
-    let zip_options = signal(peazip_core::ZipOptions::default());
+    let archive_options = signal(peazip_core::CreateOptions::default());
     let archive = ArchiveState {
         snapshot,
         source,
@@ -274,8 +274,13 @@ pub fn App() -> impl IntoElement {
         target_os = "linux",
         target_os = "windows"
     ))]
-    let create = move |folders: bool, options: peazip_core::ZipOptions| {
+    let create = move |folders: bool, options: peazip_core::CreateOptions| {
         if busy.get_untracked() {
+            return;
+        }
+        let label = archive_label(options.format());
+        if let Err(error) = options.validate() {
+            status.set(format!("Could not create {label}: {error}"));
             return;
         }
         busy.set(true);
@@ -283,7 +288,7 @@ pub fn App() -> impl IntoElement {
         cancellable.set(true);
         #[cfg(target_arch = "wasm32")]
         cancel_message.set("Creation cancelled.".into());
-        activity.set("Creating ZIP…".to_owned());
+        activity.set(format!("Creating {label}…"));
         spawn(async move {
             #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
             let result = if !folders
@@ -300,10 +305,10 @@ pub fn App() -> impl IntoElement {
                 Ok(Some(opened)) => {
                     let count = opened.data.1.len();
                     show_archive(opened);
-                    status.set(format!("Created ZIP: {} entries", count));
+                    status.set(format!("Created {label}: {} entries", count));
                 }
                 Ok(None) => {}
-                Err(error) => status.set(format!("Could not create ZIP: {error}")),
+                Err(error) => status.set(format!("Could not create {label}: {error}")),
             }
             busy.set(false);
             #[cfg(target_arch = "wasm32")]
@@ -699,7 +704,7 @@ pub fn App() -> impl IntoElement {
                 .description(concat!(
                     "PeaZip Rust edition ",
                     env!("CARGO_PKG_VERSION"),
-                    "\nRead: ZIP, TAR, TAR.GZ, 7z\nCreate: ZIP\nLGPL-3.0-or-later"
+                    "\nRead: ZIP, TAR, TAR.GZ, 7z\nCreate: ZIP, TAR, TAR.GZ\nLGPL-3.0-or-later"
                 ))
                 .action("close", "Close")
                 .show();
@@ -720,7 +725,7 @@ pub fn App() -> impl IntoElement {
     all.push(desktop_shortcut(
         Command::new(
             CommandId::CreateZip,
-            "Create ZIP…",
+            "Create archive…",
             move || !busy.get(),
             move || creating.set(Some(false)),
         )
@@ -731,7 +736,7 @@ pub fn App() -> impl IntoElement {
     all.push(
         Command::new(
             CommandId::CreateFolderZip,
-            "Create folder ZIP…",
+            "Create folder archive…",
             move || !busy.get(),
             move || creating.set(Some(true)),
         )
@@ -1145,13 +1150,13 @@ pub fn App() -> impl IntoElement {
             };
             create_dialog::show(
                 input,
-                zip_options.get_untracked(),
+                archive_options.get_untracked(),
                 move |options| {
                     owner.run(|| {
                         if creating.get_untracked().is_none() || busy.get_untracked() {
                             return;
                         }
-                        zip_options.set(options);
+                        archive_options.set(options);
                         creating.set(None);
                         create(folders, options);
                     })
@@ -1285,6 +1290,47 @@ pub fn App() -> impl IntoElement {
     )
 }
 
+fn archive_label(format: ArchiveFormat) -> &'static str {
+    match format {
+        ArchiveFormat::Zip => "ZIP",
+        ArchiveFormat::Tar => "TAR",
+        ArchiveFormat::TarGzip => "TAR.GZ",
+        ArchiveFormat::SevenZip => "7Z",
+    }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "windows"
+))]
+fn archive_filename(format: ArchiveFormat) -> &'static str {
+    match format {
+        ArchiveFormat::Zip => "Archive.zip",
+        ArchiveFormat::Tar => "Archive.tar",
+        ArchiveFormat::TarGzip => "Archive.tar.gz",
+        ArchiveFormat::SevenZip => "Archive.7z",
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn creation_save_dialog(options: peazip_core::CreateOptions) -> nsh_core::file_dialog::SaveDialog {
+    use nsh_core::file_dialog::{FileFilter, SaveDialog};
+    let filter = match options.format() {
+        ArchiveFormat::Zip => FileFilter::new("ZIP archives", ["zip"]),
+        ArchiveFormat::Tar => FileFilter::new("TAR archives", ["tar"]),
+        ArchiveFormat::TarGzip => FileFilter::new("TAR.GZ archives", ["gz", "tgz"]),
+        ArchiveFormat::SevenZip => unreachable!("7z creation is not an available option"),
+    };
+    SaveDialog::new()
+        .title("Create archive — choose a new filename")
+        .button_label("Create")
+        .file_name(archive_filename(options.format()))
+        .filter(filter)
+}
+
 fn render_toolbar(
     commands: Commands,
     format: Signal<ArchiveFormat>,
@@ -1302,12 +1348,7 @@ fn render_toolbar(
             let label = command.label;
             bar = bar.child(action_button(&command).child(text(move || {
                 if id == CommandId::SaveArchive {
-                    let kind = match format.get() {
-                        ArchiveFormat::Zip => "ZIP",
-                        ArchiveFormat::Tar => "TAR",
-                        ArchiveFormat::TarGzip => "TAR.GZ",
-                        ArchiveFormat::SevenZip => "7Z",
-                    };
+                    let kind = archive_label(format.get());
                     if cfg!(target_arch = "wasm32") {
                         format!("Download {kind}")
                     } else {
@@ -1389,9 +1430,10 @@ async fn extract_android_archive(
 async fn create_archive(
     folders: bool,
     _activity: Signal<String>,
-    options: peazip_core::ZipOptions,
+    options: peazip_core::CreateOptions,
 ) -> Result<Option<OpenedArchive>, String> {
-    use nsh_core::file_dialog::{FileFilter, OpenDialog, SaveDialog};
+    use nsh_core::file_dialog::OpenDialog;
+    options.validate().map_err(|error| error.to_string())?;
     let dialog = if folders {
         OpenDialog::folders()
             .title("Select folders to archive")
@@ -1407,22 +1449,14 @@ async fn create_archive(
     else {
         return Ok(None);
     };
-    let Some(destination) = pick_save_path(
-        SaveDialog::new()
-            .title("Create ZIP — choose a new filename")
-            .button_label("Create")
-            .file_name("Archive.zip")
-            .filter(FileFilter::new("ZIP archives", ["zip"])),
-    )
-    .await?
-    else {
+    let Some(destination) = pick_save_path(creation_save_dialog(options)).await? else {
         return Ok(None);
     };
     let destination = std::path::absolute(destination).map_err(|error| error.to_string())?;
     let name = destination.display().to_string();
     let source_path = Some(destination.clone());
     let rows = blocking(move || {
-        peazip_native::create_zip_from_paths_with_options(
+        peazip_native::create_archive_from_paths(
             &paths,
             &destination,
             peazip_core::Limits::default(),
@@ -1444,15 +1478,16 @@ async fn create_archive(
 async fn create_archive(
     _folders: bool,
     activity: Signal<String>,
-    options: peazip_core::ZipOptions,
+    options: peazip_core::CreateOptions,
 ) -> Result<Option<OpenedArchive>, String> {
-    let Some(bytes) = browser::create_zip(options, move |message| activity.set(message)).await?
+    let Some(data) =
+        browser::create_and_list_archive(options, move |message| activity.set(message)).await?
     else {
         return Ok(None);
     };
     Ok(Some(OpenedArchive {
-        name: "Archive.zip".into(),
-        data: load_archive(Arc::new(bytes))?,
+        name: archive_filename(data.2).into(),
+        data,
         source_path: None,
     }))
 }
@@ -1461,22 +1496,22 @@ async fn create_archive(
 async fn create_archive(
     _folders: bool,
     activity: Signal<String>,
-    options: peazip_core::ZipOptions,
+    options: peazip_core::CreateOptions,
 ) -> Result<Option<OpenedArchive>, String> {
+    options.validate().map_err(|error| error.to_string())?;
     let Some(files) = android::pick_files().await? else {
         return Ok(None);
     };
-    activity.set("Compressing ZIP…".into());
+    activity.set(format!("Creating {}…", archive_label(options.format())));
     let archive = blocking(move || {
-        let bytes =
-            peazip_core::create_zip_with_options(&files, peazip_core::Limits::default(), options)
-                .map_err(|error| error.to_string())?;
+        let bytes = peazip_core::create_archive(&files, peazip_core::Limits::default(), options)
+            .map_err(|error| error.to_string())?;
         load_archive(Arc::new(bytes))
     })
     .await
     .map_err(|error| error.to_string())??;
     Ok(Some(OpenedArchive {
-        name: "Archive.zip".into(),
+        name: archive_filename(archive.2).into(),
         data: archive,
         source_path: None,
     }))
@@ -1556,6 +1591,7 @@ fn read_archive(path: &std::path::Path) -> Result<LoadedArchive, String> {
     load_archive(Arc::new(bytes))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_archive(bytes: Arc<Vec<u8>>) -> Result<LoadedArchive, String> {
     let (format, rows) =
         peazip_core::list_archive_with_format(&bytes, peazip_core::Limits::default())

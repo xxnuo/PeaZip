@@ -154,7 +154,7 @@ fn creating_zip_from_filesystem_selection_requests_only_save_and_uses_real_bytes
     app.wait_for("2 selected").unwrap();
     let requests = app.screen().file_requests().len();
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("Created ZIP: 2 entries").unwrap();
@@ -392,7 +392,7 @@ fn cancelling_folder_and_save_dialogs_preserves_the_filesystem_selection() {
     assert_folder(&app, temp.path());
     assert!(checked(&app, "keep.txt"));
     app.on_pick_save_path(None).unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("1 items").unwrap();
@@ -439,7 +439,7 @@ fn linked_entries_and_links_inside_selected_folders_never_follow_or_publish_outp
     }
     let output = temp.path().join("rejected.zip");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("text:/^Could not create ZIP:/").unwrap();
@@ -450,7 +450,7 @@ fn linked_entries_and_links_inside_selected_folders_never_follow_or_publish_outp
     app.press("role:checkbox[ordinary/]").unwrap();
     let nested = temp.path().join("nested-rejected.zip");
     app.on_pick_save_path(Some(nested.clone())).unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("text:/^Could not create ZIP:/").unwrap();
@@ -493,7 +493,7 @@ fn replacing_listed_entries_with_links_preserves_the_snapshot_and_rejects_output
     assert!(checked(&app, "sample.tar"));
     let output = temp.path().join("replaced-file.zip");
     app.on_pick_save_path(Some(output.clone())).unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("text:/^Could not create ZIP:/").unwrap();
@@ -516,7 +516,7 @@ fn replacing_listed_entries_with_links_preserves_the_snapshot_and_rejects_output
     let directory_output = temp.path().join("replaced-folder.zip");
     app.on_pick_save_path(Some(directory_output.clone()))
         .unwrap();
-    app.press("role:button[Create ZIP…]").unwrap();
+    app.press("role:button[Create archive…]").unwrap();
     app.wait_for("role:button[Continue]").unwrap();
     app.press("role:button[Continue]").unwrap();
     app.wait_for("text:/^Could not create ZIP:/").unwrap();

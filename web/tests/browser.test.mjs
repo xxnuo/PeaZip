@@ -400,14 +400,14 @@ test('Create dialog cancels without a picker and applies Stored and Deflate to r
   const { page, button, choose } = await creationPage(t);
   const body = Buffer.from(Array.from({ length: 2000 }, (_, i) => `line ${i}: repeated archive content ${i % 17}\n`).join(''));
   const file = { name: 'payload.txt', mimeType: 'text/plain', buffer: body };
-  await choose('Create ZIP…', [file]);
+  await choose('Create archive…', [file]);
   await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
   await page.getByRole('checkbox', { name: file.name, exact: true }).click();
   const original = await downloadArchive(page, button('Download ZIP'));
   let pickers = 0;
   page.on('filechooser', () => pickers++);
   for (const cancel of ['Cancel', 'Escape']) {
-    await button('Create ZIP…').click();
+    await button('Create archive…').click();
     await expect(page.getByText('Create archive', { exact: true })).toBeVisible();
     if (cancel === 'Escape') await page.keyboard.press('Escape');
     else await page.getByRole('group', { name: 'Create archive', exact: true }).getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -417,26 +417,26 @@ test('Create dialog cancels without a picker and applies Stored and Deflate to r
   }
   assert.equal(pickers, 0);
   for (const [choice, method, level] of [['Store (no compression)', 0, null], ['Deflate', 8, '1'], ['Deflate', 8, '9']]) {
-    await button('Create ZIP…').click();
+    await button('Create archive…').click();
     await page.getByRole('radio', { name: choice, exact: true }).click();
     if (level) await page.getByRole('textbox', { name: 'Compression level', exact: true }).fill(level);
     const pending = page.waitForEvent('filechooser');
     await button('Continue').click();
     await (await pending).setFiles([file]);
     await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
-    await expect(button('Create ZIP…')).toBeEnabled();
+    await expect(button('Create archive…')).toBeEnabled();
     checkSingleZip(await downloadArchive(page, button('Download ZIP')), method, body);
   }
   await page.getByRole('checkbox', { name: file.name, exact: true }).click();
   const beforeFailure = await downloadArchive(page, button('Download ZIP'));
-  await button('Create ZIP…').click();
+  await button('Create archive…').click();
   const pending = page.waitForEvent('filechooser');
   await button('Continue').click();
   await (await pending).setFiles([{ name: 'high-ratio.txt', mimeType: 'text/plain', buffer: Buffer.alloc(1024 * 1024, 65) }]);
   await expect(page.getByText(/Could not create ZIP: .*compression ratio/)).toBeVisible();
   await expect(page.getByRole('checkbox', { name: file.name, exact: true })).toBeChecked();
   assert.deepEqual(await downloadArchive(page, button('Download ZIP')), beforeFailure);
-  await button('Create ZIP…').click();
+  await button('Create archive…').click();
   await page.getByRole('radio', { name: 'Store (no compression)', exact: true }).click();
   const retry = page.waitForEvent('filechooser');
   await button('Continue').click();
@@ -461,7 +461,7 @@ test('Chromium creates, downloads and reopens ZIP using a real Rust worker', { t
   });
   t.after(() => assert.deepEqual(errors, []));
   await bootPage(page, await serve(t));
-  const create = page.getByRole('button', { name: 'Create ZIP…', exact: true });
+  const create = page.getByRole('button', { name: 'Create archive…', exact: true });
   const open = page.getByRole('button', { name: 'Open archive…', exact: true });
   const download = page.getByRole('button', { name: 'Download ZIP', exact: true });
   await expect(create).toBeEnabled();
@@ -610,6 +610,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
       releaseWasm();
       await page.unrouteAll({ behavior: 'wait' });
     }
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
     await choose(create, files);
     await expect(page.getByText('Created ZIP: 3 entries', { exact: true })).toBeVisible();
     await released(index + 1);
@@ -624,7 +625,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
 for (const [width, height, colorScheme] of [[1024, 600, 'light'], [1440, 900, 'dark'], [360, 800, 'light'], [430, 800, 'dark']]) {
   test(`Create dialog remains usable at ${width}x${height} ${colorScheme}`, { timeout: 120_000 }, async (t) => {
     const { page, button } = await creationPage(t, { viewport: { width, height }, colorScheme, isMobile: width < 600, hasTouch: width < 600 });
-    await button('Create ZIP…').click();
+    await button('Create archive…').click();
     const dialog = page.getByRole('group', { name: 'Create archive', exact: true });
     await expect(dialog).toBeVisible();
     await dialog.getByRole('radio', { name: 'Deflate', exact: true }).click();
@@ -639,7 +640,7 @@ for (const [width, height, colorScheme] of [[1024, 600, 'light'], [1440, 900, 'd
     await page.screenshot({ path: screenshot });
     t.diagnostic(`Screenshot: ${screenshot}`);
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await expect(button('Create ZIP…')).toBeEnabled();
+    await expect(button('Create archive…')).toBeEnabled();
   });
 }
 
@@ -658,6 +659,135 @@ function checkSingleZip({ bytes }, method, expected) {
   const payload = bytes.subarray(start, start + compressed);
   assert.deepEqual(method === 0 ? payload : inflateRawSync(payload), expected);
   return compressed;
+}
+
+test('TAR and TAR.GZ creation uses real workers, matching filenames and MIME, and independent readers', { timeout: 180_000 }, async (t) => {
+  const { page, button, downloads } = await creationPage(t);
+  const directory = await mkdtemp(resolve(tmpdir(), 'peazip-created-formats-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const files = [
+    { name: '你好.txt', mimeType: 'text/plain', buffer: Buffer.from('created 中文\n') },
+    { name: 'binary.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([0, 127, 255, 1]) },
+    { name: 'empty', mimeType: 'application/octet-stream', buffer: Buffer.alloc(0) },
+  ];
+  const workerKinds = [];
+  page.on('worker', worker => workerKinds.push(new URL(worker.url()).searchParams.get('operation')));
+  await page.evaluate(() => {
+    window.createdMimes = [];
+    const create = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = value => { window.createdMimes.push(value.type); return create(value); };
+  });
+  for (const [format, extension, mime] of [['TAR', 'tar', 'application/x-tar'], ['TAR.GZ', 'tar.gz', 'application/gzip']]) {
+    await button('Create archive…').click();
+    const modal = page.getByRole('group', { name: 'Create archive', exact: true });
+    await modal.getByRole('radio', { name: format, exact: true }).click();
+    if (format === 'TAR.GZ') {
+      const level = modal.getByRole('textbox', { name: 'GZIP compression level', exact: true });
+      await level.fill('0');
+      await expect(modal.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+      await level.fill('9');
+    } else {
+      await expect(modal.getByRole('textbox', { name: 'Compression level', exact: true })).toHaveCount(0);
+    }
+    const pending = page.waitForEvent('filechooser');
+    await modal.getByRole('button', { name: 'Continue', exact: true }).click();
+    await (await pending).setFiles(files);
+    await expect(page.getByText(`Created ${format}: 3 entries`, { exact: true })).toBeVisible();
+    await expect(button(`Download ${format}`)).toBeEnabled();
+    const artifact = await downloadArchive(page, button(`Download ${format}`));
+    assert.equal(artifact.name, `Archive.${extension}`);
+    assert.equal((await page.evaluate(() => window.createdMimes)).at(-1), mime);
+    const path = resolve(directory, artifact.name);
+    await writeFile(path, artifact.bytes);
+    const { stdout } = await promisify(execFile)('uv', ['run', 'python', '-c', `
+import gzip, json, sys, tarfile
+path = sys.argv[1]
+with tarfile.open(path, 'r:*') as archive:
+    actual = {item.name: archive.extractfile(item).read() for item in archive if item.isfile()}
+    assert actual == {'你好.txt': 'created 中文\\n'.encode(), 'binary.bin': bytes([0,127,255,1]), 'empty': b''}, actual
+    assert all(item.mtime == 0 and item.uid == 0 and item.gid == 0 for item in archive)
+if path.endswith('.gz'):
+    raw = gzip.decompress(open(path, 'rb').read())
+    assert raw[-1024:] == bytes(1024)
+print(json.dumps({name: len(data) for name, data in actual.items()}, ensure_ascii=False))
+`, path]);
+    t.diagnostic(`Independent ${format}: ${stdout.trim()}`);
+    const reopen = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await reopen).setFiles(path);
+    await expect(page.getByText('3 entries', { exact: true })).toBeVisible();
+    await expect(button(`Download ${format}`)).toBeEnabled();
+    assert.deepEqual(await downloadArchive(page, button(`Download ${format}`)), artifact);
+  }
+  assert.equal(workerKinds.filter(kind => kind === 'list').length, 4, 'each created archive and reopened file must use a real metadata worker');
+  await expect.poll(() => page.workers().length).toBe(0);
+  assert.equal(downloads.length, 4);
+});
+
+test('Strict gzip creation failure preserves the previous archive and can retry as TAR', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await creationPage(t);
+  await choose('Create archive…', [{ name: 'keep.txt', mimeType: 'text/plain', buffer: Buffer.from('keep original') }]);
+  await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: 'keep.txt', exact: true }).click();
+  const original = await downloadArchive(page, button('Download ZIP'));
+  await button('Create archive…').click();
+  await page.getByRole('radio', { name: 'TAR.GZ', exact: true }).click();
+  await page.getByRole('textbox', { name: 'GZIP compression level', exact: true }).fill('9');
+  const pending = page.waitForEvent('filechooser');
+  await button('Continue').click();
+  await (await pending).setFiles([{ name: 'zeros.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(1024 * 1024) }]);
+  await expect(page.getByText(/^Could not create TAR.GZ:.*compression ratio/)).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'keep.txt', exact: true })).toBeChecked();
+  assert.deepEqual(await downloadArchive(page, button('Download ZIP')), original);
+  await button('Create archive…').click();
+  await expect(page.getByRole('radio', { name: 'TAR.GZ', exact: true })).toBeChecked();
+  await page.getByRole('radio', { name: 'TAR', exact: true }).click();
+  const retry = page.waitForEvent('filechooser');
+  await button('Continue').click();
+  await (await retry).setFiles([{ name: 'zeros.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(1024 * 1024) }]);
+  await expect(page.getByText('Created TAR: 1 entries', { exact: true })).toBeVisible();
+  const created = await downloadArchive(page, button('Download TAR'));
+  assert.equal(created.name, 'Archive.tar');
+  assert.equal(created.bytes.subarray(512, 512 + 1024 * 1024).every(value => value === 0), true);
+});
+
+for (const cancellation of ['Cancel', 'pagehide']) {
+  test(`TAR.GZ creation ${cancellation} during the follow-up metadata worker preserves the old snapshot`, { timeout: 120_000 }, async (t) => {
+    const { page, button, choose } = await creationPage(t);
+    await choose('Create archive…', [{ name: 'keep.txt', mimeType: 'text/plain', buffer: Buffer.from('old snapshot') }]);
+    await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
+    await page.getByRole('checkbox', { name: 'keep.txt', exact: true }).click();
+    const original = await downloadArchive(page, button('Download ZIP'));
+    let requests = 0, blocked = false, release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/worker-core_bg.wasm', async route => {
+      if (++requests === 2) { blocked = true; await gate; }
+      await route.continue().catch(() => {});
+    });
+    try {
+      await button('Create archive…').click();
+      await page.getByRole('radio', { name: 'TAR.GZ', exact: true }).click();
+      const picker = page.waitForEvent('filechooser');
+      await button('Continue').click();
+      await (await picker).setFiles([{ name: 'new.txt', mimeType: 'text/plain', buffer: Buffer.from('new contents') }]);
+      await expect.poll(() => blocked).toBe(true);
+      await expect(page.getByText('Listing created archive…', { exact: true })).toBeVisible();
+      if (cancellation === 'Cancel') await button('Cancel').click();
+      else await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+      await expect(button('Create archive…')).toBeEnabled();
+      await expect(page.getByRole('checkbox', { name: 'keep.txt', exact: true })).toBeChecked();
+      await expect.poll(() => page.workers().length).toBe(0);
+    } finally {
+      release();
+      await page.unrouteAll({ behavior: 'wait' });
+    }
+    if (cancellation === 'pagehide') await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    assert.deepEqual(await downloadArchive(page, button('Download ZIP')), original);
+    await choose('Create archive…', [{ name: 'retry.txt', mimeType: 'text/plain', buffer: Buffer.from('retry contents') }]);
+    await expect(page.getByText('Created TAR.GZ: 1 entries', { exact: true })).toBeVisible();
+    await expect(page.getByRole('checkbox', { name: 'retry.txt', exact: true })).toBeVisible();
+    await expect(button('Download TAR.GZ')).toBeEnabled();
+  });
 }
 
 async function creationPage(t, contextOptions = {}) {
@@ -702,10 +832,10 @@ async function creationPage(t, contextOptions = {}) {
   async function choose(name, files) {
     const pending = page.waitForEvent('filechooser');
     await button(name).click();
-    if (name === 'Create ZIP…') await button('Continue').click();
+    if (name === 'Create archive…') await button('Continue').click();
     await (await pending).setFiles(files);
   }
-  await expect(button('Create ZIP…')).toBeEnabled();
+  await expect(button('Create archive…')).toBeEnabled();
   return { page, button, choose, downloads };
 }
 
@@ -730,7 +860,7 @@ test('Long names remain accessible and render on one line without breaking navig
     assert.ok(layout.left >= 0 && layout.right <= 361, 'the title must fit inside the narrow viewport');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'long names must not cause horizontal page scrolling');
   }
-  await choose('Create ZIP…', [{ name, mimeType: 'text/plain', buffer: Buffer.from('long filename payload') }]);
+  await choose('Create archive…', [{ name, mimeType: 'text/plain', buffer: Buffer.from('long filename payload') }]);
   await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.archiveWorkers.map(({ terminated, messages }) => ({ terminated, code: messages.at(-1)?.code })))).toEqual([{ terminated: true, code: 1 }]);
   const row = page.getByRole('checkbox', { name, exact: true });
@@ -777,7 +907,7 @@ test('Cancel during real worker WASM loading preserves snapshot; retry ignores s
   const { page, button, choose, downloads } = await creationPage(t);
   const cancel = button('Cancel');
   await expect(cancel).toBeDisabled();
-  await choose('Create ZIP…', [{ name: 'original.txt', mimeType: 'text/plain', buffer: Buffer.from('original snapshot') }]);
+  await choose('Create archive…', [{ name: 'original.txt', mimeType: 'text/plain', buffer: Buffer.from('original snapshot') }]);
   await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
   const original = page.getByRole('checkbox', { name: 'original.txt', exact: true });
   await original.click();
@@ -799,24 +929,24 @@ test('Cancel during real worker WASM loading preserves snapshot; retry ignores s
     await route.continue().catch(() => {});
   });
   try {
-    await choose('Create ZIP…', [{ name: 'cancelled.txt', mimeType: 'text/plain', buffer: Buffer.from('cancel me') }]);
+    await choose('Create archive…', [{ name: 'cancelled.txt', mimeType: 'text/plain', buffer: Buffer.from('cancel me') }]);
     await expect.poll(() => intercepted).toBe(true);
     await expect(cancel).toBeEnabled();
-    for (const name of ['Create ZIP…', 'Open archive…', 'Download ZIP', 'Select all', 'Invert selection', 'Clear selection']) await expect(button(name)).toBeDisabled();
+    for (const name of ['Create archive…', 'Open archive…', 'Download ZIP', 'Select all', 'Invert selection', 'Clear selection']) await expect(button(name)).toBeDisabled();
     await cancel.click();
     await expect(page.getByText('Creation cancelled.', { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.archiveWorkers[1].terminated)).toBe(true);
     assert.deepEqual(await page.evaluate(() => window.archiveWorkers[1].messages), [], 'cancel reached WASM initialization before file reading');
     await expect(original).toBeChecked();
     await expect(cancel).toBeDisabled();
-    await expect(button('Create ZIP…')).toBeEnabled();
+    await expect(button('Create archive…')).toBeEnabled();
     assert.equal(downloads.length, downloadsBefore, 'cancellation must not download');
     assert.deepEqual(await snapshot(), before, 'cancel must preserve exact original archive bytes');
   } finally {
     release();
     await page.unrouteAll({ behavior: 'wait' });
   }
-  await choose('Create ZIP…', [{ name: 'retry.txt', mimeType: 'text/plain', buffer: Buffer.from('retry succeeds') }]);
+  await choose('Create archive…', [{ name: 'retry.txt', mimeType: 'text/plain', buffer: Buffer.from('retry succeeds') }]);
   await expect(page.getByRole('checkbox', { name: 'retry.txt', exact: true })).toBeVisible();
   await page.getByRole('checkbox', { name: 'retry.txt', exact: true }).click();
   const retry = await snapshot();
@@ -845,7 +975,7 @@ test('Real worker reports bounded read counts then compression and UI shows actu
     await writeFile(path, randomBytes(8 * 1024 * 1024));
     paths.push(path);
   }
-  await choose('Create ZIP…', paths);
+  await choose('Create archive…', paths);
   await expect(page.getByText('Created ZIP: 3 entries', { exact: true })).toBeVisible({ timeout: 120_000 });
   const messages = await page.evaluate(() => window.archiveWorkers[0].messages);
   assert.deepEqual(messages, [
@@ -874,7 +1004,7 @@ test('Real worker reports bounded read counts then compression and UI shows actu
   }
   const before = await snapshot();
   const downloadsBefore = downloads.length;
-  await choose('Create ZIP…', paths);
+  await choose('Create archive…', paths);
   await expect(page.getByText('Compressing ZIP…', { exact: true })).toBeVisible();
   await button('Cancel').click();
   await expect(page.getByText('Creation cancelled.', { exact: true })).toBeVisible();
@@ -885,10 +1015,10 @@ test('Real worker reports bounded read counts then compression and UI shows actu
   assert.equal(downloads.length, downloadsBefore, 'CPU cancellation must not download');
   await expect(selected).toBeChecked();
   await expect(button('Cancel')).toBeDisabled();
-  await expect(button('Create ZIP…')).toBeEnabled();
+  await expect(button('Create archive…')).toBeEnabled();
   assert.deepEqual(await snapshot(), before, 'CPU cancellation must preserve exact prior ZIP bytes');
   await expect(selected).toBeChecked();
-  await choose('Create ZIP…', paths);
+  await choose('Create archive…', paths);
   await expect(page.getByText('Created ZIP: 3 entries', { exact: true })).toBeVisible({ timeout: 120_000 });
   await expect(selected).not.toBeChecked();
   assert.deepEqual(await page.evaluate(() => window.archiveWorkers[2].messages), messages, 'retry must finish actual compression');
@@ -896,7 +1026,7 @@ test('Real worker reports bounded read counts then compression and UI shows actu
   t.diagnostic(`Real CPU cancellation: ${JSON.stringify(cancelled)}; worker terminated without success; prior ZIP bytes/selection preserved; same 24 MiB retry succeeded.`);
 
   const count = 251;
-  await choose('Create ZIP…', Array.from({ length: count }, (_, index) => ({
+  await choose('Create archive…', Array.from({ length: count }, (_, index) => ({
     name: `empty-${index}.txt`, mimeType: 'text/plain', buffer: Buffer.alloc(0),
   })));
   await expect(page.getByText(`Created ZIP: ${count} entries`, { exact: true })).toBeVisible();
@@ -1126,7 +1256,7 @@ test('Busy application menu items match toolbar eligibility and menu Cancel stop
     await expect.poll(() => intercepted).toBe(true);
     await expect(page.getByText('Testing archive…', { exact: true })).toBeVisible();
     await openMenu('File');
-    for (const [item, action] of [['Open archive…', 'Open archive…'], ['Create ZIP…', 'Create ZIP…'], ['Download archive', 'Download ZIP']]) {
+    for (const [item, action] of [['Open archive…', 'Open archive…'], ['Create archive…', 'Create archive…'], ['Download archive', 'Download ZIP']]) {
       await expect(popup.getByRole('menuitem', { name: item, exact: true })).toBeDisabled();
       await expect(button(action)).toBeDisabled();
     }
@@ -1183,7 +1313,7 @@ for (const touch of [false, true]) {
       await expect(popup.getByRole('menuitem', { name: 'Open archive…', exact: true })).toBeVisible();
       await expect(button('Open archive…')).toBeVisible();
       await expect(popup.getByRole('button', { name: 'Open archive…', exact: true })).toHaveCount(0);
-      await expect(popup.getByRole('menuitem', { name: 'Create folder ZIP…', exact: true })).toHaveCount(0);
+      await expect(popup.getByRole('menuitem', { name: 'Create folder archive…', exact: true })).toHaveCount(0);
       const bounds = await popup.boundingBox();
       assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width + 1);
       if (touch) {
@@ -1362,7 +1492,7 @@ for (const cancellation of ['Cancel', 'pagehide']) {
       await expect.poll(() => intercepted).toBe(true);
       await expect(page.getByText('Testing archive…', { exact: true })).toBeVisible();
       await expect(button('Cancel')).toBeEnabled();
-      for (const name of ['Test archive', 'Open archive…', 'Create ZIP…', 'Download ZIP', 'Extract…', 'Select all', 'Invert selection', 'Clear selection']) await expect(button(name)).toBeDisabled();
+      for (const name of ['Test archive', 'Open archive…', 'Create archive…', 'Download ZIP', 'Extract…', 'Select all', 'Invert selection', 'Clear selection']) await expect(button(name)).toBeDisabled();
       if (cancellation === 'Cancel') await button('Cancel').click();
       else await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
       await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
@@ -1375,6 +1505,7 @@ for (const cancellation of ['Cancel', 'pagehide']) {
       release();
       await page.unrouteAll({ behavior: 'wait' });
     }
+    if (cancellation === 'pagehide') await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
     let releaseRetry, retryIntercepted = false;
     const retryGate = new Promise((resolve) => { releaseRetry = resolve; });
     await page.route('**/worker-core_bg.wasm', async (route) => {
@@ -1615,6 +1746,7 @@ for (const cancellation of ['Cancel', 'pagehide']) {
       await expect.poll(() => page.evaluate(() => window.listWorkers[1])).toEqual({ terminated: true, codes: [] });
       await expect.poll(() => page.workers().length).toBe(0);
       await expect(selected).toBeChecked();
+      if (cancellation === 'pagehide') await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
       assert.deepEqual(await downloadArchive(page, button('Download ZIP')), original);
       assert.deepEqual(await tree(), sentinelTree);
     } finally {
@@ -2157,7 +2289,7 @@ test('Cancel extraction during real worker WASM loading preserves archive snapsh
   const { page, button, tree, downloads } = await extractionPage(t);
   // A created archive also gives us a downloadable snapshot to compare byte for byte.
   const pending = page.waitForEvent('filechooser');
-  await button('Create ZIP…').click();
+  await button('Create archive…').click();
   await button('Continue').click();
   await (await pending).setFiles(fixture('sample.zip'));
   await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
@@ -2185,7 +2317,7 @@ test('Cancel extraction during real worker WASM loading preserves archive snapsh
     await button('Continue').click();
     await expect.poll(() => intercepted).toBe(true);
     await expect(button('Cancel')).toBeEnabled();
-    for (const name of ['Create ZIP…', 'Open archive…', 'Download ZIP', 'Select all', 'Clear selection', 'Extract…']) await expect(button(name)).toBeDisabled();
+    for (const name of ['Create archive…', 'Open archive…', 'Download ZIP', 'Select all', 'Clear selection', 'Extract…']) await expect(button(name)).toBeDisabled();
     await button('Cancel').click();
     await expect(page.getByText('Extraction cancelled.', { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.extractionWorkers[1])).toEqual({ terminated: true, codes: [] });

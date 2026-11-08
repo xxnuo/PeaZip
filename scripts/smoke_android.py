@@ -165,7 +165,7 @@ class Smoke:
                  "-d", shlex.quote(f"file://{remote}"))
 
     def create_inputs(self, query, names, evidence):
-        self.tap("Create ZIP…")
+        self.tap("Create archive…")
         self.label("Create archive")
         self.tap("Continue")
         self.documents()
@@ -592,7 +592,7 @@ class Smoke:
         tree = self.label(f"Save {kind}…")
         if any(self.match(n, "Save ZIP…") for n in tree.iter("node")):
             raise RuntimeError(f"Opened {kind} exposes Save ZIP")
-        self.label("Create ZIP…")
+        self.label("Create archive…")
         self.save(f"{evidence}-imported")
         self.tap("docs/")
         self.extraction_state(name, selected_entry="docs/")

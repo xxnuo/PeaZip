@@ -373,9 +373,9 @@ xdotool key Return
 selection_count 1
 checkbox alpha.txt unchecked
 screen fs-hidden-stable-beta-selection
-menu_action File '^ZIP'
+menu_action File '^Create$'
 modal_word '^Continue$'
-save=$(timeout 20 xdotool search --sync --onlyvisible --name '^Create ZIP — choose a new filename$' | head -n1)
+save=$(timeout 20 xdotool search --sync --onlyvisible --name '^Create archive — choose a new filename$' | head -n1)
 ! xdotool search --onlyvisible --name '^Select files to archive$' >/dev/null
 xdotool windowfocus --sync "$save"
 sleep .5

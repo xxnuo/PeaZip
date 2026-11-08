@@ -57,6 +57,40 @@ impl ZipOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateOptions {
+    Zip(ZipOptions),
+    Tar,
+    TarGzip { level: u8 },
+}
+
+impl Default for CreateOptions {
+    fn default() -> Self {
+        Self::Zip(ZipOptions::default())
+    }
+}
+
+impl CreateOptions {
+    pub fn validate(&self) -> Result<(), Error> {
+        match self {
+            Self::Zip(options) => options.validate(),
+            Self::Tar => Ok(()),
+            Self::TarGzip { level } if (1..=9).contains(level) => Ok(()),
+            Self::TarGzip { .. } => Err(Error::InvalidCreateOptions(
+                "Gzip level must be between 1 and 9",
+            )),
+        }
+    }
+
+    pub fn format(&self) -> ArchiveFormat {
+        match self {
+            Self::Zip(_) => ArchiveFormat::Zip,
+            Self::Tar => ArchiveFormat::Tar,
+            Self::TarGzip { .. } => ArchiveFormat::TarGzip,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub max_archive_bytes: u64,
@@ -84,6 +118,7 @@ impl Default for Limits {
 pub enum Error {
     NoFilesSelected,
     InvalidZipOptions(&'static str),
+    InvalidCreateOptions(&'static str),
     Limit(&'static str),
     UnsafePath(String),
     DuplicatePath(String),
@@ -102,6 +137,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::NoFilesSelected => write!(f, "no files selected for extraction"),
             Self::InvalidZipOptions(message) => write!(f, "invalid ZIP options: {message}"),
+            Self::InvalidCreateOptions(message) => write!(f, "invalid creation options: {message}"),
             Self::Limit(kind) => write!(f, "Archive limit exceeded: {kind}"),
             Self::UnsafePath(path) => write!(f, "unsafe archive path: {path:?}"),
             Self::DuplicatePath(path) => {
@@ -576,12 +612,7 @@ pub fn create_zip(entries: &[MemoryEntry], limits: Limits) -> Result<Vec<u8>, Er
     create_zip_with_options(entries, limits, ZipOptions::default())
 }
 
-pub fn create_zip_with_options(
-    entries: &[MemoryEntry],
-    limits: Limits,
-    zip_options: ZipOptions,
-) -> Result<Vec<u8>, Error> {
-    zip_options.validate()?;
+fn validate_memory_entries(entries: &[MemoryEntry], limits: Limits) -> Result<(), Error> {
     check(
         entries.len() as u64,
         limits.max_entries as u64,
@@ -608,6 +639,64 @@ pub fn create_zip_with_options(
             .ok_or(Error::Limit("total bytes"))?;
         check(total, limits.max_total_bytes, "total bytes")?;
     }
+    Ok(())
+}
+
+pub fn create_archive(
+    entries: &[MemoryEntry],
+    limits: Limits,
+    options: CreateOptions,
+) -> Result<Vec<u8>, Error> {
+    options.validate()?;
+    if let CreateOptions::Zip(zip_options) = options {
+        return create_zip_with_options(entries, limits, zip_options);
+    }
+    validate_memory_entries(entries, limits)?;
+    let writer = BoundedWriter {
+        cursor: Cursor::new(Vec::new()),
+        max: limits.max_archive_bytes,
+    };
+    let writer = match options {
+        CreateOptions::Tar => write_tar(entries, writer)?,
+        CreateOptions::TarGzip { level } => {
+            let encoder = flate2::GzBuilder::new()
+                .mtime(0)
+                .write(writer, flate2::Compression::new(u32::from(level)));
+            write_tar(entries, encoder)?.finish()?
+        }
+        CreateOptions::Zip(_) => unreachable!(),
+    };
+    let bytes = writer.cursor.into_inner();
+    list_archive(&bytes, limits)?;
+    Ok(bytes)
+}
+
+fn write_tar<W: Write>(entries: &[MemoryEntry], writer: W) -> io::Result<W> {
+    let mut builder = ::tar::Builder::new(writer);
+    for entry in entries {
+        let mut header = ::tar::Header::new_gnu();
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_mode(if entry.is_dir { 0o755 } else { 0o644 });
+        header.set_entry_type(if entry.is_dir {
+            ::tar::EntryType::Directory
+        } else {
+            ::tar::EntryType::Regular
+        });
+        header.set_size(entry.data.len() as u64);
+        builder.append_data(&mut header, &entry.path, entry.data.as_slice())?;
+    }
+    builder.into_inner()
+}
+
+pub fn create_zip_with_options(
+    entries: &[MemoryEntry],
+    limits: Limits,
+    zip_options: ZipOptions,
+) -> Result<Vec<u8>, Error> {
+    zip_options.validate()?;
+    validate_memory_entries(entries, limits)?;
     let methods: &[CompressionMethod] = match zip_options.compression {
         ZipCompression::Automatic => &[CompressionMethod::Deflated, CompressionMethod::Stored],
         ZipCompression::Stored => &[CompressionMethod::Stored],
