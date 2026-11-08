@@ -13,7 +13,10 @@ pub use peazip_core::{
 use peazip_core::{MemoryEntry, create_zip_with_options, list_zip};
 
 mod browse;
-pub use browse::{DirectoryEntry, DirectoryError, DirectoryLimits, DirectorySnapshot, EntryKind};
+pub use browse::{
+    DirectoryEntry, DirectoryError, DirectoryLimits, DirectorySnapshot, EntryKind,
+    validate_folder_name,
+};
 
 // Reject final-component symlinks (including Windows reparse points). Parent
 // directories are resolved normally; callers must trust their selected parents.

@@ -52,6 +52,7 @@ pub enum DirectoryError {
     Io(io::Error),
     Limit(&'static str),
     InvalidEntry,
+    InvalidName,
     InvalidPath,
     NotDirectory,
     UnsupportedEntry,
@@ -69,6 +70,9 @@ impl fmt::Display for DirectoryError {
             },
             Self::Limit(kind) => write!(f, "Folder limit exceeded: {kind}"),
             Self::InvalidEntry => f.write_str("This item is not in the directory snapshot."),
+            Self::InvalidName => f.write_str(
+                "Enter one folder name without reserved characters, device names, or a trailing dot or space.",
+            ),
             Self::InvalidPath => f.write_str("Choose a valid folder path."),
             Self::NotDirectory => f.write_str("This item is not a folder."),
             Self::UnsupportedEntry => f.write_str("Links and special files cannot be opened."),
@@ -96,6 +100,34 @@ fn directory_error(error: Error) -> DirectoryError {
         Error::Io(error) => DirectoryError::Io(error),
         _ => DirectoryError::UnsupportedEntry,
     }
+}
+
+pub fn validate_folder_name(name: &str, limits: DirectoryLimits) -> Result<(), DirectoryError> {
+    if name.len() > limits.max_name_bytes {
+        return Err(DirectoryError::Limit("name bytes"));
+    }
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.contains(['/', '\\', ':', '<', '>', '"', '|', '?', '*'])
+        || name.chars().any(char::is_control)
+        || name.ends_with(['.', ' '])
+    {
+        return Err(DirectoryError::InvalidName);
+    }
+    // Match core's path_key device-name rules, including names with extensions.
+    let stem = name.split('.').next().unwrap_or_default();
+    if ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+        || (stem.len() == 4
+            && stem.get(..3).is_some_and(|prefix| {
+                prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT")
+            })
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(DirectoryError::InvalidName);
+    }
+    Ok(())
 }
 
 fn display_name(name: &OsStr) -> String {
@@ -182,6 +214,12 @@ impl DirectorySnapshot {
 
     pub fn refresh(&self, limits: DirectoryLimits) -> Result<Self, DirectoryError> {
         Self::scan(Arc::clone(&self.dir), self.path.clone(), limits)
+    }
+
+    pub fn create_folder(&self, name: &str, limits: DirectoryLimits) -> Result<(), DirectoryError> {
+        validate_folder_name(name, limits)?;
+        self.dir.create_dir(name)?;
+        Ok(())
     }
 
     pub fn read_archive(&self, id: usize, limits: Limits) -> Result<Vec<u8>, Error> {

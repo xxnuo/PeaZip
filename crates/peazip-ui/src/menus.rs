@@ -7,6 +7,7 @@ const GROUPS: &[(&str, &[CommandId])] = &[
         &[
             CommandId::Open,
             CommandId::OpenFolder,
+            CommandId::NewFolder,
             CommandId::OpenSelected,
             CommandId::CreateZip,
             CommandId::CreateFolderZip,

@@ -297,3 +297,16 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 
 - 最终 Linux GTK/X11 完整筛选流程通过，记录 `target/linux-wildcards/final.log`：字面 `*.txt` 无匹配、启用通配后匹配 txt、字符类/问号掩码筛选 other.txt 的 Displayed 解压内容、无效类错误及零行、切回字面/Clear 恢复、隐藏选择保持均已验证，并通过原 7z/TAR/文件夹筛选与 ZIP 创建字节回归。最终运行时应用和脚本源哈希与待提交内容一致，脚本沿用已有 Linux CI 入口；远程 CI 未运行。
 - 完成对话框关闭后的两个定向浏览器复验并重新生成 1024/360 截图，均通过。各验证及源码哈希汇总 `target/wildcard-evidence.json`。高级过滤、递归搜索及六平台完整运行/界面验收仍未完成。
+
+## 桌面新建文件夹（FM-NEWFOLDER-01）
+
+- 桌面文件夹视图新增 File/New folder…、工具栏及 mod+Shift+N（NotEditing，无 native accelerator），归档视图和未打开目录时禁用。对话框预填 New folder 并发送聚焦/全选命令；Cancel 或一次 Escape 不写入。GTK 输入默认先吞 Escape 退出编辑，当前输入显式处理 Escape 取消，不修改 nsh。
+- `DirectorySnapshot::create_folder` 使用打开表单时冻结的父目录 capability，单次排他 mkdir，不跟随或替换已有文件/目录/链接，不自动编号；`validate_folder_name` 在 UI 和 native 两次校验单组件、控制/路径字符、Windows 保留名、尾部点空格和名称字节限额。Unicode 与普通合法名称不裁剪空格，不用显示路径重建操作目标。当前使用跨平台可移植名称策略，比原版部分 Unix 命名规则更严格。
+- 创建失败保留表单、名称及原选择供修正重试；成功后单独刷新同一个目录 capability，清除筛选与旧快照选择，不新增历史或自动进入新目录。mkdir 已成功但刷新超限/失败时关闭表单并明确报告“已创建但无法刷新”，不误称创建失败或回滚用户文件。后台执行和 App-owner 生命周期保持，写入期间取消控件及主窗口命令禁用。
+- 原版对应 `peach.pas:54667` 的 createnewfolder、`:54673` 命名和 `peach.lfm:19061` 的 Ctrl+Shift+N。当前显式冲突反馈与可修正重试、排他创建、主动安全刷新不同于原版显示列表碰撞预检/ForceDirectories/自动刷新；归档内新目录写回仍待格式更新能力，本轮不开放该入口。重命名、复制/移动/删除及其余文件管理仍待迁移。
+- 验证：最终工作区 300 次测试执行、完整浏览器 99 项通过，主机/WASM/Android target Clippy、格式和 Android APK 构建通过。native 新 9 项覆盖非法名称、Unicode、已有 file/dir/live/dangling link、父目录被替换及并发同名仅一次成功；Linux 同 9 项通过。新增 App 6 项覆盖取消、名称与模态快捷键门禁、中文 Enter 创建、冲突后重试、冻结目录及 16384 条目边界下“创建成功但刷新失败”的旧视图/选择保留。
+- headless 输入驱动不会按 SetSelection 替换文字，也忽略聚焦输入的 Escape；相应测试检查发出的选区命令并分发真实 Input KeyPress 事件，取消的实际键盘行为另由 GTK 验证，未把驱动简化行为误当生产实现。
+- Linux 最终 GTK/X11 完整六项通过，`target/linux-new-folder/final.log` / `final-source.json` 验证取消、单 Escape、非法名禁止 Create、已有目录不覆盖、改名成功清筛选、打开新目录及返回/前进/上级；源文件和预置哨兵不变，最终应用和脚本哈希一致。新增脚本纳入 Linux CI，远程 CI 未执行。
+- Windows GNU native 测试交叉检查、UI check/release 与 PE/loader/hash 检查通过，记录 `target/windows-build/new-folder`；未实际运行 Windows 程序或测试。Web/Android 本轮只回归已有归档流程，不开放桌面文件夹创建；iOS 未新增验收声明。
+
+- 补充仅打开/取消的 GTK 视觉流程，1024×600 与 1440×900 截图位于 `target/linux-new-folder/visual/captures`，已目视检查并确认真实输入框默认名称被全选；Cancel 后无输出，运行二进制 hash 与最终通过版本一致。补充脚本/source/build hashes 保存在同目录，不据此宣称暗色/高 DPI 或 macOS/Windows 视觉验收完成。汇总证据 `target/new-folder-evidence.json`。

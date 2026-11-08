@@ -4,6 +4,7 @@ use std::rc::Rc;
 pub enum CommandId {
     Open,
     OpenFolder,
+    NewFolder,
     OpenSelected,
     RefreshFolder,
     FilesystemRoot,

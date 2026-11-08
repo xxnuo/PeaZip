@@ -147,6 +147,38 @@ impl Browser {
         });
     }
 
+    pub async fn create_folder(
+        self,
+        parent: Arc<DirectorySnapshot>,
+        name: String,
+    ) -> Result<(), String> {
+        let target = Arc::clone(&parent);
+        let chosen_name = name.clone();
+        blocking(move || target.create_folder(&chosen_name, DirectoryLimits::default()))
+            .await.map_err(|error| format!("Could not confirm folder creation: {error}. Refresh the parent folder before retrying."))?
+            .map_err(|error| match error {
+                peazip_native::DirectoryError::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                    "An item with this name already exists. Choose another name.".to_owned(),
+                peazip_native::DirectoryError::Io(error) => format!("Could not create folder: {error}"),
+                error => format!("Could not create folder: {error}"),
+            })?;
+        let refreshed = blocking(move || parent.refresh(DirectoryLimits::default())).await;
+        match refreshed {
+            Ok(Ok(snapshot)) => {
+                self.files.filter.set(String::new());
+                self.show_folder(snapshot, HistoryChange::Refresh);
+                self.status.set(format!("Created folder: {name}"));
+            }
+            Ok(Err(error)) => self.status.set(format!(
+                "Created folder: {name}. Could not refresh the folder: {error}"
+            )),
+            Err(error) => self.status.set(format!(
+                "Created folder: {name}. Could not refresh the folder: {error}"
+            )),
+        }
+        Ok(())
+    }
+
     pub fn open_folder(self) {
         if self.busy.get_untracked() {
             return;

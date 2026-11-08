@@ -77,6 +77,8 @@ jobs:
         run: bash scripts/smoke_linux_packed.sh target/debug/peazip-ui target/linux-packed
       - if: runner.os == 'Linux'
         run: bash scripts/smoke_linux_filter.sh target/debug/peazip-ui target/linux-filter
+      - if: runner.os == 'Linux'
+        run: bash scripts/smoke_linux_new_folder.sh target/debug/peazip-ui target/linux-new-folder
       - if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
@@ -88,6 +90,7 @@ jobs:
             target/linux-extract-options/
             target/linux-packed/
             target/linux-filter/
+            target/linux-new-folder/
   android-build:
     runs-on: ubuntu-latest
     steps:

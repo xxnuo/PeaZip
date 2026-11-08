@@ -93,6 +93,8 @@ impl ArchiveState {
 mod desktop_browsing;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 mod filesystem;
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+mod new_folder_dialog;
 
 #[cfg(target_arch = "wasm32")]
 mod browser;
@@ -139,8 +141,17 @@ pub fn App() -> impl IntoElement {
     let owner = Owner::current();
     let creating = signal(None::<bool>);
     let extracting = signal(false);
+    let new_folder_open = signal(false);
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let new_folder_parent = stored(None::<Arc<peazip_native::DirectorySnapshot>>);
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let new_folder_error = signal(String::new());
     let editing_locked = signal(false);
-    effect(move || editing_locked.set(busy.get() || creating.get().is_some() || extracting.get()));
+    effect(move || {
+        editing_locked.set(
+            busy.get() || creating.get().is_some() || extracting.get() || new_folder_open.get(),
+        )
+    });
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
@@ -911,6 +922,22 @@ pub fn App() -> impl IntoElement {
         ));
         all.push(desktop_shortcut(
             Command::new(
+                CommandId::NewFolder,
+                "New folder…",
+                move || !busy.get() && files.active.get() && files.current.with(Option::is_some),
+                move || {
+                    if let Some(view) = files.current.get_untracked() {
+                        let _ = new_folder_parent.replace(Some(view.0));
+                        new_folder_error.set(String::new());
+                        new_folder_open.set(true);
+                    }
+                },
+            )
+            .icon("folder"),
+            "mod+shift+n",
+        ));
+        all.push(desktop_shortcut(
+            Command::new(
                 CommandId::OpenSelected,
                 "Open selected",
                 move || !busy.get() && disk.can_open_selected(),
@@ -938,9 +965,9 @@ pub fn App() -> impl IntoElement {
     let commands = Commands::new(
         all.into_iter()
             .map(|command| {
-                command
-                    .in_owner(owner)
-                    .unless(move || creating.get().is_some() || extracting.get())
+                command.in_owner(owner).unless(move || {
+                    creating.get().is_some() || extracting.get() || new_folder_open.get()
+                })
             })
             .collect(),
     );
@@ -992,6 +1019,7 @@ pub fn App() -> impl IntoElement {
                     format,
                     &[
                         CommandId::OpenFolder,
+                        CommandId::NewFolder,
                         CommandId::OpenSelected,
                         CommandId::CreateZip,
                         CommandId::CreateFolderZip,
@@ -1183,6 +1211,54 @@ pub fn App() -> impl IntoElement {
                         let _ = pending_extract.replace(None);
                         extracting.set(false);
                         after_answer(move || controls.content.focus());
+                    })
+                },
+            )
+        },
+    ));
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let root = root.child(when(
+        move || new_folder_open.get(),
+        move || {
+            let parent = new_folder_parent
+                .get()
+                .expect("new folder dialog has a directory snapshot");
+            new_folder_dialog::show(
+                parent.path().display().to_string(),
+                new_folder_error,
+                busy,
+                move |name| {
+                    owner.run(|| {
+                        if busy.get_untracked() || !new_folder_open.get_untracked() {
+                            return;
+                        }
+                        let Some(parent) = new_folder_parent.get() else {
+                            return;
+                        };
+                        busy.set(true);
+                        activity.set("Creating folder…".into());
+                        new_folder_error.set(String::new());
+                        spawn(async move {
+                            match disk.create_folder(parent, name).await {
+                                Ok(()) => {
+                                    let _ = new_folder_parent.replace(None);
+                                    new_folder_open.set(false);
+                                    after_answer(move || files.content.focus());
+                                }
+                                Err(error) => new_folder_error.set(error),
+                            }
+                            busy.set(false);
+                        });
+                    })
+                },
+                move || {
+                    owner.run(|| {
+                        if busy.get_untracked() {
+                            return;
+                        }
+                        let _ = new_folder_parent.replace(None);
+                        new_folder_open.set(false);
+                        after_answer(move || files.content.focus());
                     })
                 },
             )
