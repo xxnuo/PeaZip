@@ -1,3 +1,4 @@
+use crate::columns::{self, Column, ColumnWidths};
 use crate::commands::{self, CommandId, Commands};
 use crate::navigation::{self, BrowserRow, BrowserState, Sort};
 use nsh_base::{button, checkbox, input, theme, toolbar};
@@ -19,6 +20,7 @@ pub(crate) struct Controls {
     pub input: ElementRef,
     pub content: ElementRef,
     pub visible: Memo<Vec<BrowserRow>>,
+    pub widths: ColumnWidths,
 }
 
 impl Controls {
@@ -47,6 +49,7 @@ impl Controls {
             input: element_ref(),
             content: element_ref(),
             visible,
+            widths: ColumnWidths::new(),
         }
     }
 }
@@ -83,6 +86,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
         input: path_input,
         content,
         visible,
+        widths,
     } = controls;
     let back = commands.get(CommandId::Back).unwrap();
     let forward = commands.get(CommandId::Forward).unwrap();
@@ -102,6 +106,47 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
     let packed_order = move || matches!(sort.get(), Sort::PackedAsc | Sort::PackedDesc);
     let show_size = move || wide.get() || !packed_order();
     let show_packed = move || wide.get() || packed_order();
+    let table_viewport = signal((0.0_f32, 0.0_f32));
+    let type_width = move || {
+        if wide.get() {
+            widths.get(Column::Type, 85.0)
+        } else {
+            0.0
+        }
+    };
+    let size_width = move || {
+        if wide.get() {
+            widths.get(Column::Size, 110.0)
+        } else {
+            110.0
+        }
+    };
+    let packed_width = move || {
+        if wide.get() {
+            widths.get(Column::Packed, 110.0)
+        } else {
+            110.0
+        }
+    };
+    let name_width = move || {
+        let remaining = table_viewport.get().0
+            - 36.0
+            - type_width()
+            - if show_size() { size_width() } else { 0.0 }
+            - if show_packed() { packed_width() } else { 0.0 };
+        if wide.get() {
+            widths.get(Column::Name, remaining.max(160.0))
+        } else {
+            remaining.max(0.0)
+        }
+    };
+    let table_width = move || {
+        if wide.get() {
+            name_width() + type_width() + size_width() + packed_width() + 36.0
+        } else {
+            table_viewport.get().0
+        }
+    };
     effect(move || {
         let _ = archive_version.get();
         draft.set(navigation.with(|state| {
@@ -145,7 +190,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
             Err(message) => error.set(message),
         }
     };
-    view().flex_1().min_h(px(0.0))
+    view().flex_1().min_w(px(0.0)).min_h(px(0.0))
         .on_layout(move |bounds: &Bounds<Points>| wide.set(bounds.size.width.0 >= 760.0))
         .child(text(move || name.get()).number_of_lines(1).px_3().py_1().border_b_1().border_color(move || theme().border))
         .child(toolbar().flex_row().flex_wrap().gap_2().px_2().py_1().border_b_1().border_color(move || theme().border)
@@ -179,7 +224,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
             .child(commands::button(&invert).child(text("Invert selection")))
             .child(commands::button(&clear_selection).child(text("Clear selection")))
             .child(text(move || format!("{} selected",selected.with(BTreeSet::len)))))
-        .child(view().flex_row().flex_1().min_h(px(0.0))
+        .child(view().flex_row().flex_1().min_w(px(0.0)).min_h(px(0.0))
             .child(when(move || wide.get() && !flat.get(), move || view().w(px(180.0)).min_h(px(0.0)).border_r_1().border_color(move || theme().border)
                 .child(text("Archive folders").px_3().py_2().font_weight(FontWeight::SEMIBOLD))
                 .child(button().accessibility_label("Browse folder /").disabled(move || busy.get()).on_press(move || enter(String::new())).px_3().py_1().child(text("/")))
@@ -193,19 +238,22 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
             .child(view().element_ref(&content).focusable(true).role(AccessibilityRole::Group).label("Archive contents").flex_1().min_w(px(0.0)).min_h(px(0.0))
                 .child(when(move || show_packed() && entries.with(|items| items.iter().any(|entry| !entry.is_dir && entry.packed_size.is_none())),
                     || text("— means the file's packed size is unavailable.").px_3().py_1().text_color(move || theme().muted_foreground)))
-                .child(view().flex_row().px_3().py_1().bg(move || theme().muted).border_b_1().border_color(move || theme().border)
-                    .child(view().flex_row().flex_1().gap_2()
-                        .child(commands::button(&sort_name).flex_1().child(text("Name")))
-                        .child(when(move || wide.get(), move || commands::button(&sort_type).child(text("Type")).w(px(85.0))))
-                        .child(when(show_size, move || commands::button(&sort_size).w(px(110.0)).child(text("Size (bytes)"))))
-                        .child(when(show_packed, move || commands::button(&sort_packed).w(px(110.0)).child(text("Packed (bytes)")))))
-                    .child(view().w(px(36.0))))
+                .child(view().relative().flex_1().min_w(px(0.0)).min_h(px(0.0)).overflow_hidden()
+                    .on_layout(move |bounds: &Bounds<Points>| table_viewport.set((bounds.size.width.0, bounds.size.height.0)))
+                    .child(scroll().horizontal().label("Archive table").absolute().inset_0().scrollbar(move || wide.get())
+                        .child(view().w(move || px(table_width())).h(move || px(table_viewport.get().1)).min_h(px(0.0))
+                .child(view().flex_row().flex_shrink(0.0).py_1().bg(move || theme().muted).border_b_1().border_color(move || theme().border)
+                    .child(columns::header(widths, Column::Name, sort_name, "Name", name_width, busy, wide))
+                    .child(when(move || wide.get(), move || columns::header(widths, Column::Type, sort_type.clone(), "Type", type_width, busy, wide)))
+                    .child(when(show_size, move || columns::header(widths, Column::Size, sort_size.clone(), "Size (bytes)", size_width, busy, wide)))
+                    .child(when(show_packed, move || columns::header(widths, Column::Packed, sort_packed.clone(), "Packed (bytes)", packed_width, busy, wide)))
+                    .child(view().w(px(36.0)).flex_shrink(0.0)))
                 .child(virtual_list(move || visible.with(Vec::len), move |at: Position| {
                     let row=move || visible.with(|rows| rows.get(at.index()).cloned());
                     let selection = move || row().map_or((false, false), |row| entries.with(|items| selected.with(|chosen| navigation::selection_state(&row, items, chosen))));
                     let checked = move || selection().0;
                     let mixed = move || selection().1;
-                    view().flex_row().items_center().border_b_1().border_color(move || theme().border)
+                    view().flex_row().items_center().w(move || px(table_width())).border_b_1().border_color(move || theme().border)
                         .bg(move || if checked() {theme().muted}else{theme().background})
                         .child(checkbox().accessibility_label(move || row().map(|row| row.path.into())).checked(checked).indeterminate(mixed).disabled(move || busy.get())
                             .on_change(move |value: &bool| {
@@ -213,18 +261,20 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                                 if let Some(row)=row() {
                                     entries.with(|items| selected.update(|chosen| navigation::set_selected(&row, *value, items, chosen)));
                                 }
-                            }).flex_row().items_center().flex_1().min_w(px(0.0)).gap_2().px_3().py_2()
-                            .indicator_class("size-4 border border-border bg-background")
+                            }).flex_row().items_center().w(move || px((table_width() - 36.0).max(0.0))).flex_shrink(0.0).min_w(px(0.0))
+                            .indicator_class("size-4 ml-3 shrink-0 border border-border bg-background")
                             .indicator(view().size_4().items_center().justify_center().child(when(checked, move || view().w(px(8.0)).h(px(8.0)).bg(move || theme().foreground))).child(when(mixed, move || view().w(px(8.0)).h(px(2.0)).bg(move || theme().foreground))))
-                            .child(when(move || row().is_some_and(|row|row.is_dir), || crate::icons::icon("folder")))
-                            .child(when(move || row().is_some_and(|row|!row.is_dir), || crate::icons::icon("file")))
-                            .child(text(move || row().map(|row|row.name).unwrap_or_default()).number_of_lines(1).flex_1().min_w(px(0.0)).pr_2())
-                            .child(when(move || wide.get(), move || text(move || row().map(|row| row.kind_label()).unwrap_or_default()).number_of_lines(1).w(px(85.0))))
+                            .child(view().flex_row().items_center().gap_2().pl_2().pr_2().py_2().w(move || px((name_width() - 28.0).max(0.0))).flex_shrink(0.0).min_w(px(0.0))
+                                .child(when(move || row().is_some_and(|row|row.is_dir), || crate::icons::icon("folder")))
+                                .child(when(move || row().is_some_and(|row|!row.is_dir), || crate::icons::icon("file")))
+                                .child(text(move || row().map(|row|row.name).unwrap_or_default()).number_of_lines(1).flex_1().min_w(px(0.0))))
+                            .child(when(move || wide.get(), move || text(move || row().map(|row| row.kind_label()).unwrap_or_default()).number_of_lines(1).w(move || px(type_width())).flex_shrink(0.0).px_2()))
                             .child(when(show_size, move || text(move || row().map(|row| if row.is_dir {"—".into()}else{row.size.to_string()}).unwrap_or_default())
-                                .label(move || row().map(|row| if row.is_dir {"Size in bytes: not applicable".into()} else {format!("Size in bytes: {}",row.size)}).unwrap_or_default()).w(px(110.0))))
+                                .label(move || row().map(|row| if row.is_dir {"Size in bytes: not applicable".into()} else {format!("Size in bytes: {}",row.size)}).unwrap_or_default()).w(move || px(size_width())).flex_shrink(0.0).px_2()))
                             .child(when(show_packed, move || text(move || row().and_then(|row|row.packed_size).map(|size|size.to_string()).unwrap_or_else(||"—".into()))
-                                .label(move || row().map(|row| if row.is_dir {"Packed bytes: not applicable".into()} else {row.packed_size.map(|size|format!("Packed bytes: {size}")).unwrap_or_else(||"Packed bytes: unavailable".into())}).unwrap_or_default()).w(px(110.0)))))
-                        .child(view().w(px(36.0)).child(when(move || row().is_some_and(|row|row.is_dir), move || button().accessibility_label(move ||row().map(|row|format!("Open folder {}",row.path).into())).disabled(move ||busy.get()).on_press(move || {if let Some(row)=row(){flat.set(false);enter(row.path);}}).px_2().py_2().child(text("›")))))
-                }).estimated_item_size(px(36.0)).flex_1())
+                                .label(move || row().map(|row| if row.is_dir {"Packed bytes: not applicable".into()} else {row.packed_size.map(|size|format!("Packed bytes: {size}")).unwrap_or_else(||"Packed bytes: unavailable".into())}).unwrap_or_default()).w(move || px(packed_width())).flex_shrink(0.0).px_2())))
+                        .child(view().w(px(36.0)).flex_shrink(0.0).child(when(move || row().is_some_and(|row|row.is_dir), move || button().accessibility_label(move ||row().map(|row|format!("Open folder {}",row.path).into())).disabled(move ||busy.get()).on_press(move || {if let Some(row)=row(){flat.set(false);enter(row.path);}}).px_2().py_2().child(text("›")))))
+                }).estimated_item_size(px(36.0)).flex_1().min_h(px(0.0)))
+                    )))
             ))
 }

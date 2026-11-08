@@ -159,11 +159,11 @@ class NavigationSmoke(smoke_android.Smoke):
         self.wait_archive_ready(name)
         self.navigation_rows({"docs/": False, "other.txt": False})
         self.flat_view()
-        self.archive(name)
+        self.navigation_rows(dict.fromkeys(self.entries, False))
         self.choose(name)
         self.wait_archive_ready(name)
         self.label("Folder view")
-        self.archive(name)
+        self.navigation_rows(dict.fromkeys(self.entries, False))
         self.save("navigation-flat-persisted")
         self.tap("Folder view")
         self.check_path_submit()
@@ -216,7 +216,8 @@ class NavigationSmoke(smoke_android.Smoke):
     def navigation_rows(self, expected):
         self.wait("immediate children and selection", lambda t: {
             n.get("content-desc"): n.get("checked") == "true" for n in t.iter("node")
-            if n.get("checkable") == "true" and n.get("package") == smoke_android.PACKAGE
+            if n.get("class") == "android.widget.CheckBox"
+            and n.get("checkable") == "true" and n.get("package") == smoke_android.PACKAGE
         } == expected)
 
     def path_fields(self, tree):

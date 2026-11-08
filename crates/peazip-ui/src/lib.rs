@@ -5,6 +5,7 @@ use nsh_base::{theme, toolbar};
 use nsh_core::prelude::*;
 use peazip_core::{ArchiveFormat, Entry};
 
+mod columns;
 mod commands;
 #[cfg(any(
     target_arch = "wasm32",
@@ -1065,6 +1066,7 @@ pub fn App() -> impl IntoElement {
                     editing_locked,
                     controls.sort,
                     pane_commands.clone(),
+                    controls.widths,
                     move |id| disk.open_entry(id),
                     move |path| disk.go(path),
                 )

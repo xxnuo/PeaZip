@@ -4,6 +4,7 @@ use nsh_core::prelude::*;
 use peazip_native::{DirectoryEntry, DirectorySnapshot, EntryKind};
 
 use crate::{
+    columns::{self, Column, ColumnWidths},
     commands::{self, CommandId, Commands},
     navigation::Sort,
 };
@@ -291,6 +292,7 @@ pub fn browser(
     busy: Signal<bool>,
     sort: Signal<Sort>,
     commands: Commands,
+    widths: ColumnWidths,
     open_entry: impl Fn(usize) + Copy + 'static,
     go: impl Fn(PathBuf) + Copy + 'static,
 ) -> impl IntoElement {
@@ -309,6 +311,35 @@ pub fn browser(
         })
     });
     let wide = signal(false);
+    let viewport = signal(Size::new(px(0.0), px(0.0)));
+    let type_width = move || {
+        if wide.get() {
+            widths.get(Column::Type, 85.0)
+        } else {
+            0.0
+        }
+    };
+    let size_width = move || {
+        if wide.get() {
+            widths.get(Column::Size, 110.0)
+        } else {
+            110.0
+        }
+    };
+    // The Name column includes the checkbox and icon; gutters/open action stay fixed.
+    let name_width = move || {
+        let fallback = viewport.get().width.0
+            - type_width()
+            - size_width()
+            - if wide.get() { 76.0 } else { 68.0 };
+        if wide.get() {
+            widths.get(Column::Name, fallback.max(160.0))
+        } else {
+            fallback.max(0.0)
+        }
+    };
+    let table_width =
+        move || name_width() + type_width() + size_width() + if wide.get() { 76.0 } else { 68.0 };
     let filter_input = element_ref();
     effect(move || {
         let _ = files.version.get();
@@ -338,6 +369,7 @@ pub fn browser(
     let sort_type = commands.get(CommandId::SortType).unwrap();
     view()
         .flex_1()
+        .min_w(px(0.0))
         .min_h(px(0.0))
         .on_layout(move |bounds: &Bounds<Points>| wide.set(bounds.size.width.0 >= 760.0))
         .child(
@@ -529,24 +561,37 @@ pub fn browser(
                 .min_w(px(0.0))
                 .min_h(px(0.0))
                 .child(
+                    scroll()
+                        .horizontal()
+                        .scrollbar(move || wide.get())
+                        .label("Folder table")
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0))
+                        .on_layout(move |bounds: &Bounds<Points>| viewport.set(bounds.size))
+                        .child(view()
+                            .w(move || px(table_width()))
+                            .h(move || viewport.get().height)
+                            .min_h(px(0.0))
+                .child(
                     view()
                         .flex_row()
+                        .flex_shrink_0()
+                        .gap_2()
                         .px_3()
                         .py_1()
                         .bg(move || theme().muted)
                         .border_b_1()
                         .border_color(move || theme().border)
-                        .child(commands::button(&sort_name).flex_1().child(text("Name")))
+                        .child(columns::header(widths, Column::Name, sort_name.clone(), "Name", name_width, busy, wide))
                         .child(when(
                             move || wide.get(),
-                            move || commands::button(&sort_type).child(text("Type")).w(px(85.0)),
+                            move || columns::header(widths, Column::Type, sort_type.clone(), "Type", type_width, busy, wide),
                         ))
                         .child(
-                            commands::button(&sort_size)
-                                .w(px(110.0))
-                                .child(text("Size (bytes)")),
+                            columns::header(widths, Column::Size, sort_size.clone(), "Size (bytes)", size_width, busy, wide),
                         )
-                        .child(view().w(px(36.0))),
+                        .child(view().w(px(28.0)).flex_shrink_0()),
                 )
                 .child(
                     virtual_list(
@@ -572,6 +617,7 @@ pub fn browser(
                             };
                             view()
                                 .flex_row()
+                                .w(move || px(table_width()))
                                 .items_center()
                                 .border_b_1()
                                 .border_color(move || theme().border)
@@ -605,7 +651,8 @@ pub fn browser(
                                         })
                                         .flex_row()
                                         .items_center()
-                                        .flex_1()
+                                        .w(move || px(table_width() - 36.0))
+                                        .flex_shrink_0()
                                         .min_w(px(0.0))
                                         .gap_2()
                                         .px_3()
@@ -636,7 +683,8 @@ pub fn browser(
                                                 row().map(|entry| entry.name).unwrap_or_default()
                                             })
                                             .number_of_lines(1)
-                                            .flex_1()
+                                            .w(move || px((name_width() - 48.0).max(0.0)))
+                                            .flex_shrink_0()
                                             .min_w(px(0.0))
                                             .pr_2(),
                                         )
@@ -649,7 +697,9 @@ pub fn browser(
                                                         .unwrap_or_default()
                                                 })
                                                 .number_of_lines(1)
-                                                .w(px(85.0))
+                                                .w(move || px(type_width()))
+                                                .px_2()
+                                                .flex_shrink_0()
                                             },
                                         ))
                                         .child(
@@ -659,11 +709,13 @@ pub fn browser(
                                                     .map(|size| size.to_string())
                                                     .unwrap_or_else(|| "—".into())
                                             })
-                                            .w(px(110.0)),
+                                            .w(move || px(size_width()))
+                                            .px_2()
+                                            .flex_shrink_0(),
                                         ),
                                 )
                                 .child(
-                                    view().w(px(36.0)).child(
+                                    view().w(px(36.0)).flex_shrink_0().child(
                                         button()
                                             .accessibility_label(move || {
                                                 row().map(|entry| {
@@ -695,7 +747,10 @@ pub fn browser(
                         },
                     )
                     .estimated_item_size(px(36.0))
-                    .flex_1(),
+                    .flex_1()
+                    .min_h(px(0.0)),
+                ),
+                        ),
                 ),
         )
 }

@@ -2395,3 +2395,376 @@ test('Cancel during an OPFS write waits for abort and reports retained partial o
   assert.equal(downloads.length, 0);
   t.diagnostic('Write timing injected around real OPFS writable; abort and retained empty file verified, external directory picker not tested.');
 });
+
+const detailColumnNames = ['Name', 'Type', 'Size (bytes)', 'Packed (bytes)'];
+const resizeColumn = (page, name) => page.getByLabel(`Resize ${name} column`, { exact: true });
+
+function detailSortButton(page, name) {
+  return resizeColumn(page, name).locator('..').getByRole('button');
+}
+
+async function detailHeader(page, name) {
+  const handle = resizeColumn(page, name);
+  await expect(handle).toHaveCount(1);
+  return handle.evaluate((node, name) => {
+    // The labeled nsh handle and sort button share a column cell, not the whole header.
+    for (let cell = node.parentElement; cell; cell = cell.parentElement) {
+      const buttons = [...cell.querySelectorAll('[role="button"],button')];
+      if (buttons.length === 1) {
+        const { x, y, width, height } = cell.getBoundingClientRect();
+        return { x, y, width, height };
+      }
+    }
+    throw new Error(`No header cell for ${name}`);
+  }, name);
+}
+
+async function detailScroller(page, action, value = 0) {
+  return page.getByRole('button', { name: 'Name', exact: true }).evaluate((node, { action, value }) => {
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      const overflow = getComputedStyle(parent).overflowX;
+      if ((overflow === 'auto' || overflow === 'scroll') && parent.scrollWidth > parent.clientWidth + 1) {
+        if (action === 'set') parent.scrollLeft = value;
+        const { x, width } = parent.getBoundingClientRect();
+        return { left: parent.scrollLeft, maximum: parent.scrollWidth - parent.clientWidth, x, width };
+      }
+    }
+    throw new Error('Detailed list must have an overflowing horizontal scroll container');
+  }, { action, value });
+}
+
+async function dragDetailColumn(page, name, delta) {
+  await expect(resizeColumn(page, name)).toBeEnabled();
+  await resizeColumn(page, name).scrollIntoViewIfNeeded();
+  const handle = await resizeColumn(page, name).boundingBox();
+  assert.ok(handle && handle.width > 0 && handle.height > 0);
+  const before = await detailHeader(page, name);
+  const x = handle.x + handle.width / 2, y = handle.y + handle.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  try { await page.mouse.move(x + delta, y, { steps: 16 }); }
+  finally { await page.mouse.up(); }
+  await expect.poll(async () => Math.abs((await detailHeader(page, name)).width - before.width - delta)).toBeLessThan(3);
+  return (await detailHeader(page, name)).width;
+}
+
+async function detailWidths(page) {
+  return Promise.all(detailColumnNames.map(async name => (await detailHeader(page, name)).width));
+}
+
+async function expectDetailWidths(page, expected) {
+  await expect.poll(async () => Math.max(...(await detailWidths(page)).map((width, index) => Math.abs(width - expected[index])))).toBeLessThan(2);
+}
+
+async function expectDetailAlignment(page) {
+  const headers = await Promise.all(detailColumnNames.map(name => detailHeader(page, name)));
+  const rows = page.getByRole('checkbox');
+  assert.ok(await rows.count(), 'alignment must check actual rows');
+  for (const row of await rows.all()) {
+    const path = await row.getAttribute('aria-label');
+    const directory = path.endsWith('/');
+    const basename = path.replace(/\/$/, '').split('/').at(-1);
+    const type = directory ? 'Folder' : basename.includes('.') ? basename.split('.').at(-1).toUpperCase() : 'File';
+    const cells = [await row.boundingBox(), await row.getByLabel(type, { exact: true }).boundingBox(),
+      await row.getByLabel(/^Size in bytes:/).boundingBox(), await row.getByLabel(/^Packed bytes:/).boundingBox()];
+    assert.ok(cells.every(Boolean), `all ${path} cells must be laid out`);
+    for (let index = 0; index < headers.length; index++) {
+      assert.ok(Math.abs(cells[index].x - headers[index].x) < 3,
+        `${path}: ${detailColumnNames[index]} starts at ${cells[index].x}, header at ${headers[index].x}`);
+      if (index > 0) assert.ok(Math.abs(cells[index].width - headers[index].width) < 3,
+        `${path}: ${detailColumnNames[index]} body/header widths differ`);
+      if (index > 0) {
+        const textInset = locator => locator.evaluate(node => {
+          const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+          let text;
+          while ((text = walker.nextNode())) {
+            if (!text.textContent.trim()) continue;
+            const range = document.createRange();
+            range.selectNodeContents(text);
+            const rectangle = range.getBoundingClientRect();
+            if (rectangle.width) return rectangle.x - node.getBoundingClientRect().x;
+          }
+          throw new Error('Column has no visible text');
+        });
+        const bodyCell = index === 1 ? row.getByLabel(type, { exact: true })
+          : row.getByLabel(index === 2 ? /^Size in bytes:/ : /^Packed bytes:/);
+        const headerInset = await textInset(detailSortButton(page, detailColumnNames[index]));
+        const bodyInset = await textInset(bodyCell);
+        assert.ok(Math.abs(headerInset - bodyInset) < 2,
+          `${path}: ${detailColumnNames[index]} text inset differs: header=${headerInset}, body=${bodyInset}`);
+      }
+    }
+    assert.ok(Math.abs(cells[1].x - cells[0].x - headers[0].width) < 3,
+      `${path}: Name cell width must include its checkbox and match the header`);
+  }
+}
+
+async function saveResizedColumns(page, name) {
+  const { createHash } = await import('node:crypto');
+  const directory = fileURLToPath(new URL('../../target/', import.meta.url));
+  const sourceHashes = {};
+  for (const source of ['Cargo.lock', 'crates/peazip-ui/src/columns.rs', 'crates/peazip-ui/src/explorer.rs',
+    'crates/peazip-ui/src/lib.rs', 'crates/peazip-ui/src/navigation.rs', 'crates/peazip-ui/src/filesystem.rs',
+    'web/tests/browser.test.mjs', 'target/web-dist/peazip.wasm']) {
+    sourceHashes[source] = createHash('sha256').update(await readFile(new URL(`../../${source}`, import.meta.url))).digest('hex');
+  }
+  const scroll = await detailScroller(page, 'read');
+  assert.ok(scroll.maximum > 0 && scroll.left > 0, 'screenshot must prove resized and horizontally scrolled state');
+  const metadata = { viewport: page.viewportSize(),
+    theme: await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+    widths: await detailWidths(page), scroll, sourceHashes,
+    rows: await page.getByRole('checkbox').evaluateAll(nodes => nodes.map(node => ({
+      path: node.getAttribute('aria-label'), checked: node.getAttribute('aria-checked'),
+    }))),
+  };
+  await page.screenshot({ path: resolve(directory, `${name}.png`), animations: 'disabled' });
+  await writeFile(resolve(directory, `${name}.json`), JSON.stringify(metadata, null, 2) + '\n');
+}
+
+test('Detailed columns drag and scroll together without changing partial/hidden selection or extracted bytes', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree, downloads } = await extractionPage(t, true, { viewport: { width: 1024, height: 600 }, colorScheme: 'light' });
+  const pending = page.waitForEvent('filechooser');
+  await button('Open archive…').click();
+  await (await pending).setFiles(fileURLToPath(new URL('../../tests/fixtures/sample.tar', import.meta.url)));
+  await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+  await button('Folder view').click();
+  const docs = page.getByRole('checkbox', { name: 'docs/', exact: true });
+  await docs.click();
+  await button('Open folder docs/').click();
+  const chinese = page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true });
+  await chinese.click();
+  await button('Archive root').click();
+  await expect(docs).toHaveAttribute('aria-checked', 'mixed');
+  const other = page.getByRole('checkbox', { name: 'other.txt', exact: true });
+  await other.click();
+  await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+  for (const name of detailColumnNames) await expect(resizeColumn(page, name)).toBeEnabled();
+  await expectDetailAlignment(page);
+  await dragDetailColumn(page, 'Name', 240);
+  const widths = await detailWidths(page);
+  const scroll = await detailScroller(page, 'read');
+  assert.ok(scroll.maximum > 100, `drag must make the detailed table scrollable: ${JSON.stringify(scroll)}`);
+  await detailScroller(page, 'set', 0);
+  const headerBefore = await detailHeader(page, 'Name');
+  const rowBefore = await other.boundingBox();
+  const packedBefore = await other.getByLabel(/^Packed bytes:/).boundingBox();
+  const amount = Math.min(160, scroll.maximum);
+  await detailScroller(page, 'set', amount);
+  await expect.poll(async () => (await detailScroller(page, 'read')).left).toBeGreaterThan(amount - 2);
+  const headerAfter = await detailHeader(page, 'Name');
+  const rowAfter = await other.boundingBox();
+  const packedAfter = await other.getByLabel(/^Packed bytes:/).boundingBox();
+  assert.ok(Math.abs(headerBefore.x - headerAfter.x - amount) < 3, 'header must move by the horizontal scroll amount');
+  assert.ok(Math.abs(rowBefore.x - rowAfter.x - amount) < 3, 'row must move with its header');
+  assert.ok(Math.abs(packedBefore.x - packedAfter.x - amount) < 3, 'packed cell must share the same scroll offset');
+  await expectDetailAlignment(page);
+  await saveResizedColumns(page, 'columns-resized-scrolled-1024-light');
+  await expect(docs).toHaveAttribute('aria-checked', 'mixed');
+  await expect(other).toBeChecked();
+  await detailScroller(page, 'set', 0);
+  await button('All entries').click();
+  await expect(page.getByRole('checkbox')).toHaveCount(5);
+  await expectDetailWidths(page, widths);
+  await expectDetailAlignment(page);
+  await expect(chinese).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'docs/nested/data.bin', exact: true })).toBeChecked();
+  await button('Size (bytes)').click();
+  await expectDetailWidths(page, widths);
+  await expectDetailAlignment(page);
+  const filter = page.getByRole('textbox', { name: 'Filter names', exact: true });
+  await filter.fill('你好');
+  await filter.press('Enter');
+  await expect(page.getByRole('checkbox')).toHaveCount(1);
+  await expect(chinese).not.toBeChecked();
+  await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+  await expectDetailWidths(page, widths);
+  await expectDetailAlignment(page);
+  await button('Extract…').click();
+  const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
+  await expect(modal.getByRole('radio', { name: 'Selected entries', exact: true })).toBeChecked();
+  const output = await finishExtraction(page, button);
+  assert.deepEqual(await tree(), { ...sentinelTree, [output]: {
+    docs: { empty: {}, nested: { 'data.bin': [0, 127, 255] } },
+    'other.txt': Array.from(Buffer.from('not selected\n')),
+  } }, 'resizing, filtering and horizontal scrolling must not alter selected paths or binary bytes');
+  assert.equal(downloads.length, 0);
+  await button('Clear filter').click();
+  await button('Folder view').click();
+  await expect(docs).toHaveAttribute('aria-checked', 'mixed');
+  await expect(other).toBeChecked();
+  await expectDetailWidths(page, widths);
+  await expectDetailAlignment(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await dragDetailColumn(page, 'Name', 300);
+  const desktopScroll = await detailScroller(page, 'read');
+  assert.ok(desktopScroll.maximum > 0);
+  await detailScroller(page, 'set', desktopScroll.maximum);
+  await expectDetailAlignment(page);
+  await saveResizedColumns(page, 'columns-resized-scrolled-1440-dark');
+  t.diagnostic('New resized/scrolled desktop screenshots and viewport/theme/source/Wasm hashes: target/columns-resized-scrolled-{1024-light,1440-dark}.{png,json}');
+});
+
+test('Detailed column keyboard resizing uses 10/50 pixel steps and Home restores automatic widths', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await navigationPage(t, { width: 1024, height: 900 });
+  await choose();
+  const automatic = await detailWidths(page);
+  for (const [index, name] of detailColumnNames.entries()) {
+    const handle = resizeColumn(page, name);
+    await handle.scrollIntoViewIfNeeded();
+    await handle.focus();
+    await expect(handle).toBeFocused();
+    const before = (await detailHeader(page, name)).width;
+    for (const [key, delta] of [['ArrowRight', 10], ['Shift+ArrowRight', 60], ['ArrowLeft', 50], ['Shift+ArrowLeft', 0]]) {
+      await page.keyboard.press(key);
+      await expect.poll(async () => Math.abs((await detailHeader(page, name)).width - before - delta)).toBeLessThan(2);
+      await expect(page.getByRole('checkbox')).toHaveCount(2);
+      await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+    }
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Home');
+    await expect.poll(async () => Math.abs((await detailHeader(page, name)).width - automatic[index])).toBeLessThan(2);
+  }
+  await dragDetailColumn(page, 'Name', 200);
+  const grown = (await detailHeader(page, 'Name')).width;
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect.poll(async () => Math.abs((await detailHeader(page, 'Name')).width - grown)).toBeLessThan(2);
+  await resizeColumn(page, 'Name').focus();
+  await page.keyboard.press('Home');
+  await expect.poll(async () => (await detailHeader(page, 'Name')).width).toBeGreaterThan(automatic[0] + 100);
+  const reset = await detailWidths(page);
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await expectDetailWidths(page, automatic);
+  assert.ok(reset[0] > automatic[0], 'Home must restore viewport-responsive automatic Name width');
+  await expectDetailAlignment(page);
+  await expect(button('Open archive…')).toBeEnabled();
+});
+
+test('Narrow detailed lists ignore saved widths, hide resize handles and keep Size/Packed inside the viewport', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await navigationPage(t, { width: 1024, height: 900 });
+  await choose();
+  await dragDetailColumn(page, 'Name', 200);
+  const custom = await detailWidths(page);
+  for (const width of [360, 430, 759]) {
+    await page.setViewportSize({ width, height: 800 });
+    for (const name of detailColumnNames) await expect(resizeColumn(page, name)).toHaveCount(0);
+    await expect(button('Type')).toHaveCount(0);
+    await expect(button('Size (bytes)')).toBeVisible();
+    await expect(button('Packed (bytes)')).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    for (const row of await page.getByRole('checkbox').all()) {
+      const cell = await row.getByLabel(/^Size in bytes:/).boundingBox();
+      assert.ok(cell.x >= -1 && cell.x + cell.width <= width + 1, 'narrow Size must remain on screen despite saved widths');
+    }
+    await button('Layout').click();
+    await page.getByRole('menuitemcheckbox', { name: 'Sort by packed size', exact: true }).click();
+    await expect(button('Packed (bytes)')).toBeVisible();
+    await expect(button('Size (bytes)')).toHaveCount(0);
+    for (const row of await page.getByRole('checkbox').all()) {
+      const cell = await row.getByLabel(/^Packed bytes:/).boundingBox();
+      assert.ok(cell.x >= -1 && cell.x + cell.width <= width + 1, 'narrow Packed must remain on screen');
+    }
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await button('Layout').click();
+    await page.getByRole('menuitemcheckbox', { name: 'Sort by name', exact: true }).click();
+  }
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await expectDetailWidths(page, custom);
+  await expectDetailAlignment(page);
+});
+
+test('Detailed column handles cannot resize through a modal or while a real archive worker is busy', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await navigationPage(t, { width: 1024, height: 900 });
+  await choose();
+  const before = await detailWidths(page);
+  await button('Create archive…').click();
+  const modal = page.getByRole('group', { name: 'Create archive', exact: true });
+  await expect(modal).toBeVisible();
+  for (const name of detailColumnNames) await expect(resizeColumn(page, name)).toBeDisabled();
+  await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expectDetailWidths(page, before);
+  let release, intercepted = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async route => {
+    intercepted = true;
+    await gate;
+    await route.continue().catch(() => {});
+  });
+  try {
+    await button('Test archive').click();
+    await expect.poll(() => intercepted).toBe(true);
+    await expect(page.getByText('Testing archive…', { exact: true })).toBeVisible();
+    for (const name of detailColumnNames) await expect(resizeColumn(page, name)).toBeDisabled();
+    const handle = resizeColumn(page, 'Name');
+    const box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    try { await page.mouse.move(box.x + 100, box.y + box.height / 2, { steps: 8 }); }
+    finally { await page.mouse.up(); }
+    await expectDetailWidths(page, before);
+    await button('Cancel').click();
+    await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+  for (const name of detailColumnNames) await expect(resizeColumn(page, name)).toBeEnabled();
+  await expectDetailWidths(page, before);
+  await expectDetailAlignment(page);
+});
+
+test('Detailed overflowing virtual list reaches its final directory and opens it after scrolling both axes', { timeout: 120_000 }, async (t) => {
+  const { page, button } = await extractionPage(t, true, { viewport: { width: 1024, height: 700 } });
+  const directories = Array.from({ length: 180 }, (_, index) => [`dir-${String(index).padStart(3, '0')}/`, '']);
+  const file = await extractionFixture([...directories, ['z-last/', ''], ['z-last/payload.txt', 'last directory payload']]);
+  await button('Folder view').click();
+  const picker = page.waitForEvent('filechooser');
+  await button('Open archive…').click();
+  await (await picker).setFiles(file);
+  await expect(page.getByText('182 entries', { exact: true })).toBeVisible();
+  const first = page.getByRole('checkbox', { name: 'dir-000/', exact: true });
+  await expect(first).toBeVisible();
+  const initialRows = await page.getByRole('checkbox').count();
+  assert.ok(initialRows < 181, 'large directory fixture must actually exercise virtualized rows');
+  await dragDetailColumn(page, 'Name', 240);
+  const horizontal = await detailScroller(page, 'read');
+  assert.ok(horizontal.maximum > 100);
+  await detailScroller(page, 'set', horizontal.maximum);
+  const vertical = await first.evaluateHandle(node => {
+    for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      if (['auto', 'scroll'].includes(getComputedStyle(ancestor).overflowY)
+          && ancestor.scrollHeight > ancestor.clientHeight + 1) return ancestor;
+    }
+    throw new Error('Virtualized body has no vertical scroller');
+  });
+  try {
+    const box = await vertical.asElement().boundingBox();
+    const viewport = await detailScroller(page, 'read');
+    const x = Math.min(viewport.x + viewport.width - 24, 1000);
+    const y = box.y + Math.min(box.height / 2, 120);
+    await page.mouse.move(x, y);
+    await page.mouse.wheel(0, 100000);
+    await expect.poll(() => vertical.evaluate(node => node.scrollTop)).toBeGreaterThan(100);
+    await expect.poll(() => vertical.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(3);
+    const last = page.getByRole('checkbox', { name: 'z-last/', exact: true });
+    const openLast = button('Open folder z-last/');
+    await expect(last).toBeVisible();
+    await expect(openLast).toBeInViewport({ ratio: 1 });
+    const openBox = await openLast.boundingBox();
+    const scrollBox = await detailScroller(page, 'read');
+    assert.ok(openBox.x >= scrollBox.x - 1 && openBox.x + openBox.width <= scrollBox.x + scrollBox.width + 1,
+      'the final directory open button must be fully inside the horizontal table viewport');
+    assert.ok(openBox.y >= box.y - 1 && openBox.y + openBox.height <= box.y + box.height + 1,
+      'the final directory row must not be clipped below the virtualized body');
+    await expectDetailAlignment(page);
+    await openLast.click();
+    await expect(page.getByRole('textbox', { name: 'Archive path', exact: true })).toHaveValue('z-last/');
+    await expect(page.getByRole('checkbox')).toHaveCount(1);
+    await expect(page.getByRole('checkbox', { name: 'z-last/payload.txt', exact: true })).toBeVisible();
+    await expect(page.getByRole('checkbox', { name: 'z-last/payload.txt', exact: true })
+      .getByLabel(`Size in bytes: ${Buffer.byteLength('last directory payload')}`, { exact: true })).toBeVisible();
+    await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+  } finally {
+    await vertical.dispose();
+  }
+});
