@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def archive_licenses(metadata):
-    for name in ("sevenz-turbo", "lzma-turbo", "crc-turbo"):
+    for name in ("sevenz-turbo", "lzma-turbo", "crc-turbo", "regex", "regex-automata", "regex-syntax", "aho-corasick", "memchr"):
         package = next(p for p in metadata["packages"] if p["name"] == name)
         root = Path(package["manifest_path"]).parent
         for pattern in ("LICENSE*", "NOTICE*", "CONTRIBUTORS*"):

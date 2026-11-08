@@ -25,6 +25,7 @@ mod explorer;
 mod extract_dialog;
 mod icons;
 mod menus;
+mod name_filter;
 mod navigation;
 
 type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>, ArchiveFormat);
@@ -138,6 +139,8 @@ pub fn App() -> impl IntoElement {
     let owner = Owner::current();
     let creating = signal(None::<bool>);
     let extracting = signal(false);
+    let editing_locked = signal(false);
+    effect(move || editing_locked.set(busy.get() || creating.get().is_some() || extracting.get()));
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
@@ -877,7 +880,14 @@ pub fn App() -> impl IntoElement {
                         if query.is_empty() {
                             location
                         } else {
-                            format!("{location} · Names contain: {query}")
+                            format!(
+                                "{location} · {}: {query}",
+                                if controls.wildcards.get_untracked() {
+                                    "Name mask"
+                                } else {
+                                    "Names contain"
+                                }
+                            )
                         }
                     },
                 }));
@@ -1012,7 +1022,7 @@ pub fn App() -> impl IntoElement {
             move || {
                 filesystem::browser(
                     files,
-                    busy,
+                    editing_locked,
                     controls.sort,
                     pane_commands.clone(),
                     move |id| disk.open_entry(id),
@@ -1026,7 +1036,7 @@ pub fn App() -> impl IntoElement {
                 explorer::explorer(explorer::Explorer {
                     entries,
                     selected,
-                    busy,
+                    busy: editing_locked,
                     name: path,
                     navigation,
                     archive_version,
@@ -1053,7 +1063,7 @@ pub fn App() -> impl IntoElement {
         .child(explorer::explorer(explorer::Explorer {
             entries,
             selected,
-            busy,
+            busy: editing_locked,
             name: path,
             navigation,
             archive_version,

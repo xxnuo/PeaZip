@@ -1771,6 +1771,57 @@ for (const width of [1024, 360]) {
   });
 }
 
+for (const width of [1024, 360]) {
+  test(`Wildcard name mode handles sets, errors and frozen extraction at ${width}px`, { timeout: 120_000 }, async (t) => {
+    const { page, button, tree } = await extractionPage(t, true, { viewport: { width, height: 800 }, isMobile: width < 600, hasTouch: width < 600 });
+    const picker = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await picker).setFiles(await extractionFixture([['docs/a1.txt', 'first'], ['docs/a2.TXT', 'second'], ['docs/a3.bin', 'third'], ['outside.txt', 'outside'], ['literal[1].txt', 'literal']]));
+    await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+    const filter = page.getByRole('textbox', { name: 'Filter names', exact: true });
+    const mode = page.getByRole('switch', { name: 'Use wildcards', exact: true });
+    await expect(mode).not.toBeChecked();
+    await page.getByRole('checkbox', { name: 'outside.txt', exact: true }).click();
+    await filter.fill('a[1-2].?xt');
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    await mode.click();
+    await expect(mode).toBeChecked();
+    await expect(page.getByRole('checkbox')).toHaveCount(2);
+    await filter.press('Enter');
+    await button('Select all').click();
+    await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+    await button('Extract…').click();
+    const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
+    await expect(mode).toBeDisabled();
+    await expect(modal.getByText(/Name mask: a\[1-2\]\.\?xt/)).toBeVisible();
+    await modal.getByRole('radio', { name: 'Displayed entries', exact: true }).click();
+    const output = await finishExtraction(page, button);
+    const expected = { ...sentinelTree, [output]: { docs: { 'a1.txt': Array.from(Buffer.from('first')), 'a2.TXT': Array.from(Buffer.from('second')) } } };
+    assert.deepEqual(await tree(), expected);
+    await filter.fill('[a-]');
+    await expect(page.getByText('Invalid name mask: unclosed character set.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
+    await button('Clear selection').click();
+    await filter.press('Enter');
+    await button('Extract…').click();
+    await expect(modal.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+    await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(modal).toHaveCount(0);
+    await filter.fill('a[!1].*');
+    await expect(page.getByRole('checkbox')).toHaveCount(2);
+    const screenshot = fileURLToPath(new URL(`../../target/wildcard-${width}.png`, import.meta.url));
+    await page.screenshot({ path: screenshot });
+    await mode.click();
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    await filter.fill('literal[1]');
+    await expect(page.getByRole('checkbox', { name: 'literal[1].txt', exact: true })).toBeVisible();
+    await button('Clear filter').click();
+    await expect(page.getByRole('checkbox')).toHaveCount(5);
+    assert.deepEqual(await tree(), expected);
+  });
+}
+
 async function packedFixture() {
   const { stdout } = await promisify(execFile)('uv', ['run', 'python', '-c', `
 import base64, io, json, zipfile

@@ -174,8 +174,8 @@ set_filter() {
  if coords=$(locate '^Filter$' 0 100); then
   read -r x y <<< "$coords"
  else
-  read -r x y < <(locate '^filter$' 0 100)
-  x=$((x-110))
+  read -r x y < <(locate '^Use$' 0 100)
+  x=$((x-75))
  fi
  xdotool mousemove "$x" "$y" click 1 key ctrl+a
  xdotool type --clearmodifiers --delay 0 "$1"
@@ -280,6 +280,50 @@ for archive in sample.7z sample.tar; do
   cmp "$artifacts/before-no-match.manifest" "$artifacts/after-no-match.manifest"
   pass literal-no-glob-no-match-displayed-disabled-no-fallback
   clear_filter
+  # Short wildcard-mode extension; leave literal/folder mode restored below.
+  menu_action Layout '^All$'
+  shown 6 6
+  select_row '^docs/nested/data.bin$'
+  selection_count 1
+  set_filter '*.txt'
+  shown 0 6
+  screen wildcard-literal-zero
+  click_word '^Use$' 0 100
+  shown 2 6
+  selection_count 1
+  screen wildcard-star-txt
+  set_filter '[o]ther.?xt'
+  shown 1 6
+  row '^other.txt$' > /dev/null
+  selection_count 1
+  xdotool key Return
+  open_extract
+  choose_extract Displayed Full
+  output_name "$outputs/wildcard-other"
+  wait_status 'Extracted 1 entries'
+  cmp "$run_dir/ref-sample.7z/other.txt" "$outputs/wildcard-other/other.txt"
+  test "$(find "$outputs/wildcard-other" -mindepth 1 | wc -l)" -eq 1
+  selection_count 1
+  screen wildcard-displayed-other-bytes
+  set_filter '[a-]'
+  shown 0 6
+  ocr
+  awk -F '\t' '$1==5{printf "%s ",$12}' "$artifacts/current.tsv" | grep -q 'Invalid name mask'
+  selection_count 1
+  screen wildcard-invalid-mask
+  click_word '^Use$' 0 100
+  shown 0 6
+  ocr
+  ! locate '^Invalid$' 0 100 > /dev/null
+  clear_filter
+  shown 6 6
+  selection_count 1
+  checkbox 'docs/nested/data.bin' checked
+  screen wildcard-off-clear-restored
+  menu_action Edit '^Clear$'
+  menu_action Layout '^All$'
+  shown 3 3
+  pass wildcard-star-class-invalid-literal-restore-hidden-selection-and-displayed-bytes
  fi
  set_filter nested
  xdotool key Return

@@ -5,7 +5,7 @@ use peazip_native::{DirectoryEntry, DirectorySnapshot, EntryKind};
 
 use crate::{
     commands::{self, CommandId, Commands},
-    navigation::{Sort, name_matches},
+    navigation::Sort,
 };
 use nsh_base::{button, checkbox, input, theme, toolbar};
 use nsh_core::element::{AutoCapitalize, Position, SubmitBehavior};
@@ -122,6 +122,8 @@ pub struct Files {
     pub history: Signal<History>,
     pub draft: Signal<String>,
     pub filter: Signal<String>,
+    pub wildcards: Signal<bool>,
+    pub pattern: Memo<crate::name_filter::Pattern>,
     pub input: ElementRef,
     pub content: ElementRef,
     pub version: Signal<u64>,
@@ -129,6 +131,10 @@ pub struct Files {
 
 impl Files {
     pub fn new() -> Self {
+        let filter = signal(String::new());
+        let wildcards = signal(false);
+        let pattern =
+            computed(move || crate::name_filter::Pattern::new(&filter.get(), wildcards.get()));
         Self {
             active: signal(false),
             context: signal(false),
@@ -136,7 +142,9 @@ impl Files {
             selected: signal(BTreeSet::new()),
             history: signal(History::default()),
             draft: signal(String::new()),
-            filter: signal(String::new()),
+            filter,
+            wildcards,
+            pattern,
             input: element_ref(),
             content: element_ref(),
             version: signal(0),
@@ -144,7 +152,7 @@ impl Files {
     }
 
     pub fn visible_ids(&self) -> Vec<usize> {
-        let filter = self.filter.get();
+        let pattern = self.pattern.get();
         self.current.with(|current| {
             current
                 .as_ref()
@@ -152,7 +160,7 @@ impl Files {
                     view.0
                         .entries()
                         .iter()
-                        .filter(|entry| name_matches(&entry.display_name, &filter))
+                        .filter(|entry| pattern.matches(&entry.display_name))
                         .map(|entry| entry.id)
                         .collect()
                 })
@@ -287,14 +295,14 @@ pub fn browser(
     go: impl Fn(PathBuf) + Copy + 'static,
 ) -> impl IntoElement {
     let order = computed(move || {
-        let filter = files.filter.get();
+        let pattern = files.pattern.get();
         files.current.with(|current| {
             current
                 .as_ref()
                 .map(|view| {
                     let entries = view.0.entries();
                     let mut order = ordered_entries(entries, sort.get());
-                    order.retain(|&index| name_matches(&entries[index].display_name, &filter));
+                    order.retain(|&index| pattern.matches(&entries[index].display_name));
                     order
                 })
                 .unwrap_or_default()
@@ -384,6 +392,10 @@ pub fn browser(
                         .px_2()
                         .py_1(),
                 )
+                .child(checkbox().role(Some(AccessibilityRole::Switch)).accessibility_label("Use wildcards").checked(move || files.wildcards.get()).disabled(move || busy.get())
+                    .on_change(move |value: &bool| {if !busy.get_untracked(){files.wildcards.set(*value);}}).flex_row().items_center().gap_2().px_2().py_1()
+                    .indicator(view().size_4().border_1().border_color(move || theme().border).items_center().justify_center().child(when(move || files.wildcards.get(), || view().size_2().bg(move || theme().foreground))))
+                    .child(text("Use wildcards")))
                 .child(
                     button()
                         .accessibility_label("Clear filter")
@@ -409,9 +421,10 @@ pub fn browser(
                     )
                 })),
         )
+        .child(when(move || files.pattern.with(|pattern| pattern.error().is_some()), move || text(move || files.pattern.with(|pattern| pattern.error().unwrap_or_default().to_owned())).px_3().py_1().text_color(move || theme().destructive)))
         .child(when(
             move || !files.filter.with(String::is_empty),
-            || text("Names contain the text (case insensitive). Hidden selections remain selected for Open selected and Create ZIP.")
+            move || text(move || if files.wildcards.get() { "Name masks use *, ?, [abc], [a-z] and [!abc] (case insensitive). Hidden selections remain selected for Open selected and Create ZIP." } else { "Names contain the text (case insensitive). Hidden selections remain selected for Open selected and Create ZIP." })
                 .px_3()
                 .py_1()
                 .text_color(move || theme().muted_foreground),

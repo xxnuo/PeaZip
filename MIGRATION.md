@@ -285,3 +285,15 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 
 - 真实 Linux GTK/X11 筛选流程通过，记录 `target/linux-filter/run2.log`：7z/TAR 实时名称筛选、隐藏选择保留、可见全选/反选、筛选目录范围解压字节、无匹配 Displayed 禁止确认且不回退 All、成功导航清筛选，以及本地目录稳定 ID 选择创建 ZIP 的独立内容对照均通过。源文件与既有输出哨兵保持；新增脚本纳入 Linux CI，远程 CI 尚未执行。首轮仅因 OCR 将零读为 O 停止，最终脚本单独识别计数并保留实际文件/门禁检查。
 - 汇总源码哈希及验证记录在 `target/filter-evidence.json`。通配掩码、递归搜索、更多高级过滤、六平台完整实机及原版界面验收仍保留为未完成。
+
+## 通配名称掩码（UI-FILTER-02）
+
+- 归档与本地目录增加独立 Use wildcards 开关，默认仍为字面匹配；切换不改选择，导航/Clear 只清查询并保留当前会话模式。掩码不区分大小写、按子串匹配，支持 `*`、`?`、`[abc]`、`[!abc]`、`[a-z]`，反向范围按正向处理；类内星号/问号为字面字符，反斜杠不作转义，类中 `^` 为普通成员。空/未闭合类显示错误及零匹配，不触发输出；用户可修正、切回字面模式或明确选择 All。
+- 原版参考固定 `peach.pas:42709` 的 MatchesMask 包裹查询；具体字符类语法另核对官方 Lazarus 4.2 `components/lazutils/masks.pas`（https://github.com/fpc/Lazarus/blob/lazarus_4_2/components/lazutils/masks.pas）。PeaZip 未固定 Lazarus revision，因此不声称与其发行二进制所有 Unicode 边界完全一致；原版地址输入联动、高级过滤与选择缓存行为仍有既有差异。当前输入无效时明确反馈，不沿用 Lazarus 的未捕获异常行为。
+- 复用锁文件已有 regex 1.13.1，查询解析后将所有字面字符/字符类端点转换为 scalar 转义，不向用户开放正则表达式。每个查询/模式只编译一次并缓存，原始查询最多 256 字符，NFA/DFA 分别限制 1 MiB；匹配使用 `is_match` 的有界复杂度路径而非指数回溯。上述限制不是整个进程的内存峰值承诺。新增依赖及传递依赖许可证纳入 Web/Android/iOS 打包复制。
+- 表单打开期间，后台列表输入、筛选模式、行选择和导航统一使用 editing_locked，涵盖 busy、创建和解压表单；共享命令保留原有执行门禁。解压请求继续冻结字节、路径集、查询与模式说明，不因后台变化重算。匹配目录包含后代，隐藏选择保留，All/Selected/Displayed 语义不变。
+- 工作区 285 次测试执行、完整 Web 99 项通过；主机/WASM/Android target Clippy、格式检查及 Android APK 构建通过。新增 7 项 App 测试、3 项 matcher 测试与 2 项真实浏览器流程覆盖字符集合/取反/范围、字面正则元字符、非法模式、Unicode 长度扩展与缓存资格、隐藏选择和实际导出字节、FS 稳定 ID 与独立模式、busy/modal 的明确禁用状态。截图覆盖 1024/360，证据 `target/wildcard-workspace-final.log`、`wildcard-web-tests.log`。
+- 本轮未新增 Android 实机、Windows/iOS 构建运行验收，未将该筛选增量视为完整原版搜索或六平台验收完成。
+
+- 最终 Linux GTK/X11 完整筛选流程通过，记录 `target/linux-wildcards/final.log`：字面 `*.txt` 无匹配、启用通配后匹配 txt、字符类/问号掩码筛选 other.txt 的 Displayed 解压内容、无效类错误及零行、切回字面/Clear 恢复、隐藏选择保持均已验证，并通过原 7z/TAR/文件夹筛选与 ZIP 创建字节回归。最终运行时应用和脚本源哈希与待提交内容一致，脚本沿用已有 Linux CI 入口；远程 CI 未运行。
+- 完成对话框关闭后的两个定向浏览器复验并重新生成 1024/360 截图，均通过。各验证及源码哈希汇总 `target/wildcard-evidence.json`。高级过滤、递归搜索及六平台完整运行/界面验收仍未完成。

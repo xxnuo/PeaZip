@@ -14,6 +14,8 @@ pub(crate) struct Controls {
     pub sort: Signal<Sort>,
     pub draft: Signal<String>,
     pub filter: Signal<String>,
+    pub wildcards: Signal<bool>,
+    pub pattern: Memo<crate::name_filter::Pattern>,
     pub input: ElementRef,
     pub content: ElementRef,
     pub visible: Memo<Vec<BrowserRow>>,
@@ -24,12 +26,14 @@ impl Controls {
         let flat = signal(false);
         let sort = signal(Sort::NameAsc);
         let filter = signal(String::new());
+        let wildcards = signal(false);
+        let pattern =
+            computed(move || crate::name_filter::Pattern::new(&filter.get(), wildcards.get()));
         let visible = computed(move || {
             entries.with(|items| {
                 let mut rows = navigation
                     .with(|state| navigation::rows(items, state.current(), flat.get(), sort.get()));
-                let query = filter.get();
-                rows.retain(|row| navigation::name_matches(&row.name, &query));
+                pattern.with(|pattern| rows.retain(|row| pattern.matches(&row.name)));
                 rows
             })
         });
@@ -38,6 +42,8 @@ impl Controls {
             sort,
             draft: signal("/".into()),
             filter,
+            wildcards,
+            pattern,
             input: element_ref(),
             content: element_ref(),
             visible,
@@ -72,6 +78,8 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
         sort,
         draft,
         filter,
+        wildcards,
+        pattern,
         input: path_input,
         content,
         visible,
@@ -154,10 +162,17 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                 .max_length(256).auto_capitalize(AutoCapitalize::None).auto_correct(false).submit_behavior(SubmitBehavior::Submit)
                 .on_submit(move |_: &str| {filter_input.blur(); content.focus();}).disabled(move || busy.get()).flex_1().min_w(px(120.0))
                 .border_1().border_color(move || theme().border).px_2().py_1())
+            .child(checkbox().role(Some(AccessibilityRole::Switch)).accessibility_label("Use wildcards").checked(move || wildcards.get()).disabled(move || busy.get())
+                .on_change(move |value: &bool| { if !busy.get_untracked(){wildcards.set(*value);} }).flex_row().items_center().gap_2().px_2().py_1()
+                .indicator(view().size_4().border_1().border_color(move || theme().border).items_center().justify_center().child(when(move || wildcards.get(), || view().size_2().bg(move || theme().foreground))))
+                .child(text("Use wildcards")))
             .child(button().accessibility_label("Clear filter").disabled(move || busy.get() || filter.with(String::is_empty))
                 .on_press(move || {if !busy.get_untracked(){filter.set(String::new());filter_input.blur();content.focus();}}).px_2().py_1().child(text("Clear filter")))
             .child(text(move || format!("{} of {} rows shown", visible.with(Vec::len), entries.with(|items| navigation.with(|state| navigation::rows(items,state.current(),flat.get(),Sort::NameAsc).len()))))))
-        .child(when(move || !filter.with(String::is_empty), || text("Names contain the text (case insensitive). Matching folders include their contents. Hidden selections are retained.").px_3().py_1().text_color(move || theme().muted_foreground)))
+        .child(when(move || pattern.with(|pattern| pattern.error().is_some()), move || text(move || pattern.with(|pattern| pattern.error().unwrap_or_default().to_owned())).px_3().py_1().text_color(move || theme().destructive)))
+        .child(when(move || !filter.with(String::is_empty), move || text(move || if wildcards.get() {
+            "Name masks use *, ?, [abc], [a-z] and [!abc] (case insensitive). Matching folders include their contents. Hidden selections are retained."
+        } else { "Names contain the text (case insensitive). Matching folders include their contents. Hidden selections are retained." }).px_3().py_1().text_color(move || theme().muted_foreground)))
         .child(toolbar().flex_row().flex_wrap().gap_3().px_3().py_1().border_b_1().border_color(move || theme().border)
             .child(commands::button(&toggle_flat).child(text(move || if flat.get() { "Folder view" } else { "All entries" })))
             .child(commands::button(&select_all).child(text("Select all")))

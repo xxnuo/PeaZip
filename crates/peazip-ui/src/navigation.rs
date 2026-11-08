@@ -247,10 +247,6 @@ pub(crate) fn selection_paths(row: &BrowserRow, entries: &[Entry]) -> Vec<String
         .collect()
 }
 
-pub(crate) fn name_matches(name: &str, query: &str) -> bool {
-    query.is_empty() || name.to_lowercase().contains(&query.to_lowercase())
-}
-
 pub(crate) fn displayed_paths(entries: &[Entry], rows: &[BrowserRow]) -> Vec<String> {
     let roots = rows.iter().map(|row| row.path.clone()).collect();
     entries
