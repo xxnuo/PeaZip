@@ -241,3 +241,14 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - Linux 最终 GTK 流程通过，记录 `target/linux-displayed-extract/final.log`；真实 7z 字节核对确认 docs 范围不包含 other.txt，空视图阻止确认、显式 All 可用，平铺 Displayed 包含全归档；原路径方式和同名冲突重试继续通过。应用/脚本哈希与待提交内容一致。
 - Android 36 本机 Documents provider 实机完整通过，记录 `target/android-smoke/1dca19266819`、`displayed-extract-options-run.log`；docs Displayed 导出 4 个真实后代，平铺 Displayed 导出全归档 7 项，空目录取消/显式 All 正常，原选择及既有输出保持。最终 tested.apk 与本地产物哈希一致，PID 稳定无应用 fatal；专用测试文件和模拟器已清理。
 - Windows GNU check/release 与 PE/loader/hash 检查通过，产物 `target/windows-build/displayed-scope`；未验证 Windows 运行，iOS 本轮未增加验证。证据汇总 `target/displayed-evidence.json`。高级过滤、冲突处理和原版完整提取面板等既有缺口继续保留，未将这一交互补齐视为整个迁移完成。
+
+## 当前视图反选（UI-SELECT-01）
+
+- Edit 菜单与归档/桌面文件夹选择工具栏新增 Invert selection，共用命令资格和处理器；空视图、busy 与操作表单期间禁用。桌面增加 mod+I，使用 NotEditing 且不注册 native accelerator，编辑地址栏时不会反选文件；Web/移动端保留菜单与按钮入口。
+- 归档按当前完整逻辑列表所覆盖的有效文件和空目录取补集，视图外有效选择保持；隐式目录、平铺视图中重叠父子行和部分选中目录不会通过父目录重新包含已取消的子项。连续两次恢复有效内容集合。与既有取消子项行为相同，内部父目录缩写可能展开为叶子路径，因此不承诺恢复原缩写或原路径计数表示。
+- 桌面文件夹按当前不可变目录快照的稳定条目 ID 取补集，排序不改选择身份；操作本身不读写文件。新增端到端测试实际创建 ZIP 和提取 TAR 核对字节，检查目录外选择、部分目录、双次反选、输入焦点、modal/busy 与空视图门禁。
+- 原版对应 `peach.lfm:16949` 的 Edit/Invert selection 和 `peach.pas:33909` 的当前列表 0/1 取反。本实现对已有层级混合选择使用有效后代补集；原版创建/解压输入列表内的反选仍随完整操作面板迁移，当前表单期间不会误操作主列表。
+- 验证：工作区 238 次测试执行、Web 86 项、主机/WASM/Android target Clippy 与格式检查通过。浏览器以真实 Worker/OPFS 验证子目录反选保留外部选择、父子重叠不重新引入取消项及实际输出字节；菜单/工具栏与禁用资格一致。原生菜单测试确认新命令动态资格和编辑敏感项无系统 accelerator。
+- Linux 最终 GTK smoke 完整通过，`target/linux-invert-selection/run3.log` / `verification.json` 验证 Edit 反选、Ctrl+I 有效集合恢复、地址栏编辑时不反选、源归档 SHA 不变，原菜单/导航/Test/解压与哨兵继续通过。选择计数 OCR 改为沿用窄区域读取，保留实际 checkbox 像素与真实输出检查。源码/脚本哈希与待提交内容一致。
+- Android 菜单 smoke 完整通过，记录 `target/android-smoke/a88448c6afe5`、`invert-menu-run.log`；全范围 none/all/none、子目录部分选择补集、隐式 nested 文件状态、源字节/快照/Downloads 不变均检查，PID 稳定无应用 fatal，tested.apk 与本地产物一致。测试文件和专用模拟器已清理；仍仅覆盖本机 API36 Documents provider。
+- Windows GNU check/release、PE/loader/hash 验证通过，产物 `target/windows-build/invert-selection`；未增加 Windows 运行或 iOS 验证声明。证据汇总 `target/invert-evidence.json`。范围选择、键盘列表导航、右键/拖放及完整原版选择面板等缺口继续保留。

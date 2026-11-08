@@ -276,6 +276,7 @@ pub fn browser(
     let refresh = commands.get(CommandId::RefreshFolder).unwrap();
     let select_all = commands.get(CommandId::SelectAll).unwrap();
     let clear = commands.get(CommandId::ClearSelection).unwrap();
+    let invert = commands.get(CommandId::InvertSelection).unwrap();
     let sort_name = commands.get(CommandId::SortName).unwrap();
     let sort_size = commands.get(CommandId::SortSize).unwrap();
     view()
@@ -381,6 +382,7 @@ pub fn browser(
                 .border_b_1()
                 .border_color(move || theme().border)
                 .child(commands::button(&select_all).child(text(select_all.label)))
+                .child(commands::button(&invert).child(text(invert.label)))
                 .child(commands::button(&clear).child(text(clear.label)))
                 .child(text(move || {
                     format!("{} selected", files.selected.with(BTreeSet::len))

@@ -267,6 +267,23 @@ pub(crate) fn selection_state(
     )
 }
 
+pub(crate) fn invert_selected(
+    rows: &[BrowserRow],
+    entries: &[Entry],
+    selected: &mut BTreeSet<String>,
+) {
+    let affected: BTreeSet<_> = displayed_paths(entries, rows).into_iter().collect();
+    if affected.is_empty() {
+        return;
+    }
+    // Select leaves so a parent cannot reinclude an inverted child.
+    *selected = atomic_entries(entries)
+        .into_iter()
+        .filter(|entry| covered(&entry.path, selected) != affected.contains(&entry.path))
+        .map(|entry| entry.path.clone())
+        .collect();
+}
+
 pub(crate) fn set_selected(
     row: &BrowserRow,
     checked: bool,

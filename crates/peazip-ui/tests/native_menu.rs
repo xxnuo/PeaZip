@@ -128,8 +128,12 @@ fn real_app_mounts_native_menus_and_dispatches_live_archive_and_layout_actions()
     assert!(!app.action("File", "Close archive").enabled);
     assert!(!app.action("Tools", "Test archive").enabled);
     assert!(!app.action("Tools", "Extract…").enabled);
+    assert!(!app.action("Edit", "Invert selection").enabled);
     for (group, labels) in [
-        ("Edit", &["Select all", "Clear selection"][..]),
+        (
+            "Edit",
+            &["Select all", "Invert selection", "Clear selection"][..],
+        ),
         ("Browser", &["Back", "Forward", "Up", "Archive root"][..]),
     ] {
         for label in labels {
@@ -183,6 +187,43 @@ fn real_app_mounts_native_menus_and_dispatches_live_archive_and_layout_actions()
         app.action("File", "Close archive").enabled && app.action("Tools", "Test archive").enabled
     });
     assert!(app.action("Tools", "Extract…").enabled);
+    assert!(app.action("Edit", "Invert selection").enabled);
+    app.choose("Edit", "Invert selection");
+    app.until(|app, _| app.action("Edit", "Clear selection").enabled);
+    app.choose("Edit", "Invert selection");
+    app.until(|app, _| !app.action("Edit", "Clear selection").enabled);
+
+    let stale_invert = app.action("Edit", "Invert selection").id;
+    app.choose("File", "Open archive…");
+    let mut pending = None;
+    app.until(|app, batch| {
+        for item in &batch.items {
+            if let MountItem::Command {
+                id: ROOT_ID,
+                command: Command::FileRequest { id, request },
+            } = item
+            {
+                assert!(matches!(&**request, FileRequest::OpenDialog(_)));
+                pending = Some(*id);
+            }
+        }
+        pending.is_some() && !app.action("Edit", "Invert selection").enabled
+    });
+    app.engine.control().dispatch_event(
+        ROOT_ID,
+        EventKind::Menu,
+        EventPayload::Map(vec![("id", PayloadValue::Number(stale_invert as f64))]),
+    );
+    app.engine.control().dispatch_event(
+        ROOT_ID,
+        EventKind::FileRequest,
+        EventPayload::file_answer(pending.unwrap(), vec![]),
+    );
+    app.until(|app, _| app.action("Edit", "Invert selection").enabled);
+    assert!(
+        !app.action("Edit", "Clear selection").enabled,
+        "a stale inversion while busy must not select archive contents"
+    );
     app.choose("Edit", "Select all");
     app.until(|app, _| app.action("Edit", "Clear selection").enabled);
     app.choose("File", "Close archive");
@@ -190,6 +231,7 @@ fn real_app_mounts_native_menus_and_dispatches_live_archive_and_layout_actions()
         !app.action("File", "Close archive").enabled && !app.action("Tools", "Test archive").enabled
     });
     assert!(!app.action("Tools", "Extract…").enabled);
+    assert!(!app.action("Edit", "Invert selection").enabled);
     assert_eq!(std::fs::read(&source).unwrap(), fixture);
     assert_eq!(std::fs::read_dir(sandbox.path()).unwrap().count(), 1);
 }

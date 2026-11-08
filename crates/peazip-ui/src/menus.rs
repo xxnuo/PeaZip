@@ -14,7 +14,14 @@ const GROUPS: &[(&str, &[CommandId])] = &[
             CommandId::CloseArchive,
         ],
     ),
-    ("Edit", &[CommandId::SelectAll, CommandId::ClearSelection]),
+    (
+        "Edit",
+        &[
+            CommandId::SelectAll,
+            CommandId::InvertSelection,
+            CommandId::ClearSelection,
+        ],
+    ),
     (
         "Browser",
         &[
@@ -71,6 +78,7 @@ mod native {
                 if matches!(
                     command.id,
                     CommandId::SelectAll
+                        | CommandId::InvertSelection
                         | CommandId::ClearSelection
                         | CommandId::ToggleFlat
                         | CommandId::SortName

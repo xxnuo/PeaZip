@@ -15,6 +15,7 @@ pub enum CommandId {
     Test,
     Cancel,
     SelectAll,
+    InvertSelection,
     ClearSelection,
     Back,
     Forward,

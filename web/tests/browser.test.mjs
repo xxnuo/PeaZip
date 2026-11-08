@@ -802,7 +802,7 @@ test('Cancel during real worker WASM loading preserves snapshot; retry ignores s
     await choose('Create ZIP…', [{ name: 'cancelled.txt', mimeType: 'text/plain', buffer: Buffer.from('cancel me') }]);
     await expect.poll(() => intercepted).toBe(true);
     await expect(cancel).toBeEnabled();
-    for (const name of ['Create ZIP…', 'Open archive…', 'Download ZIP', 'Select all', 'Clear selection']) await expect(button(name)).toBeDisabled();
+    for (const name of ['Create ZIP…', 'Open archive…', 'Download ZIP', 'Select all', 'Invert selection', 'Clear selection']) await expect(button(name)).toBeDisabled();
     await cancel.click();
     await expect(page.getByText('Creation cancelled.', { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.archiveWorkers[1].terminated)).toBe(true);
@@ -1362,7 +1362,7 @@ for (const cancellation of ['Cancel', 'pagehide']) {
       await expect.poll(() => intercepted).toBe(true);
       await expect(page.getByText('Testing archive…', { exact: true })).toBeVisible();
       await expect(button('Cancel')).toBeEnabled();
-      for (const name of ['Test archive', 'Open archive…', 'Create ZIP…', 'Download ZIP', 'Extract…', 'Select all', 'Clear selection']) await expect(button(name)).toBeDisabled();
+      for (const name of ['Test archive', 'Open archive…', 'Create ZIP…', 'Download ZIP', 'Extract…', 'Select all', 'Invert selection', 'Clear selection']) await expect(button(name)).toBeDisabled();
       if (cancellation === 'Cancel') await button('Cancel').click();
       else await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
       await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
@@ -1807,6 +1807,51 @@ test('Displayed extraction follows the current folder, handles implicit director
   const flatView = await finishExtraction(page, button);
   assert.deepEqual(await tree(), { ...expected, [flatView]: allTree });
   await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+});
+
+test('Invert selection affects current folder contents while keeping selections outside the view', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree } = await extractionPage(t);
+  await expect(button('Invert selection')).toBeDisabled();
+  await choose(await extractionFixture([['docs/a.txt', 'first'], ['docs/b.txt', 'second'], ['outside.txt', 'outside']]));
+  await page.getByRole('checkbox', { name: 'docs/a.txt', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'outside.txt', exact: true }).click();
+  await button('Folder view').click();
+  await button('Open folder docs/').click();
+  await expect(page.getByRole('checkbox', { name: 'docs/b.txt', exact: true })).toBeVisible();
+  await button('Invert selection').click();
+  await expect(page.getByRole('checkbox', { name: 'docs/a.txt', exact: true })).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'docs/b.txt', exact: true })).toBeChecked();
+  await button('Extract…').click();
+  await expect(button('Invert selection')).toBeDisabled();
+  const output = await finishExtraction(page, button);
+  assert.deepEqual(await tree(), { ...sentinelTree, [output]: { docs: { 'b.txt': Array.from(Buffer.from('second')) }, 'outside.txt': Array.from(Buffer.from('outside')) } });
+  await button('Invert selection').click();
+  await expect(page.getByRole('checkbox', { name: 'docs/a.txt', exact: true })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'docs/b.txt', exact: true })).not.toBeChecked();
+  await button('Archive root').click();
+  await expect(page.getByRole('checkbox', { name: 'outside.txt', exact: true })).toBeChecked();
+  await button('Edit').click();
+  await page.getByRole('menuitem', { name: 'Invert selection', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: 'outside.txt', exact: true })).not.toBeChecked();
+  await button('All entries').click();
+  await expect(page.getByRole('checkbox', { name: 'docs/b.txt', exact: true })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'docs/a.txt', exact: true })).not.toBeChecked();
+});
+
+test('Invert selection handles overlapping parent rows without reintroducing deselected descendants', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree } = await extractionPage(t);
+  await choose(await extractionFixture([['docs/', ''], ['docs/a.txt', 'first'], ['docs/b.txt', 'second']]));
+  await page.getByRole('checkbox', { name: 'docs/', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'docs/a.txt', exact: true }).click();
+  await button('Invert selection').click();
+  await expect(page.getByRole('checkbox', { name: 'docs/a.txt', exact: true })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'docs/b.txt', exact: true })).not.toBeChecked();
+  await button('Extract…').click();
+  const output = await finishExtraction(page, button);
+  assert.deepEqual(await tree(), { ...sentinelTree, [output]: { docs: { 'a.txt': Array.from(Buffer.from('first')) } } });
+  await button('Invert selection').click();
+  await expect(page.getByRole('checkbox', { name: 'docs/a.txt', exact: true })).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'docs/b.txt', exact: true })).toBeChecked();
 });
 
 test('Files-only duplicate names fail before output and Full paths retry preserves archive selection', { timeout: 120_000 }, async (t) => {

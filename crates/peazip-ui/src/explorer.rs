@@ -75,6 +75,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
     let root = commands.get(CommandId::Root).unwrap();
     let select_all = commands.get(CommandId::SelectAll).unwrap();
     let clear_selection = commands.get(CommandId::ClearSelection).unwrap();
+    let invert = commands.get(CommandId::InvertSelection).unwrap();
     let toggle_flat = commands.get(CommandId::ToggleFlat).unwrap();
     let sort_name = commands.get(CommandId::SortName).unwrap();
     let sort_size = commands.get(CommandId::SortSize).unwrap();
@@ -137,6 +138,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
         .child(toolbar().flex_row().flex_wrap().gap_3().px_3().py_1().border_b_1().border_color(move || theme().border)
             .child(commands::button(&toggle_flat).child(text(move || if flat.get() { "Folder view" } else { "All entries" })))
             .child(commands::button(&select_all).child(text("Select all")))
+            .child(commands::button(&invert).child(text("Invert selection")))
             .child(commands::button(&clear_selection).child(text("Clear selection")))
             .child(text(move || format!("{} selected",selected.with(BTreeSet::len)))))
         .child(view().flex_row().flex_1().min_h(px(0.0))

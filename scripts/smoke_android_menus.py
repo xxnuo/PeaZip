@@ -1,6 +1,8 @@
 """Verify real Android menu sheets; run only after the APK and AVD are ready."""
 
+import hashlib
 import re
+import shutil
 import sys
 
 import smoke_android
@@ -74,7 +76,11 @@ class MenuSmoke(smoke_android.Smoke):
         if not self.args.apk or not self.args.apk.is_file():
             raise RuntimeError("Pass --apk pointing to the rebuilt menu APK")
         self.adb("get-state")
-        self.adb("install", "-r", str(self.args.apk.resolve()))
+        apk = self.out / "tested.apk"
+        shutil.copyfile(self.args.apk.resolve(), apk)
+        (self.out / "apk.sha256").write_text(f"{hashlib.sha256(apk.read_bytes()).hexdigest()}  {apk.name}\n")
+        print(f"Menu smoke artifacts: {self.out}", flush=True)
+        self.adb("install", "-r", str(apk.resolve()))
         self.adb("shell", "am", "force-stop", smoke_android.PACKAGE)
         self.started = self.adb("shell", "date", "'+%m-%d %H:%M:%S.000'").strip()
         self.adb("shell", "am", "start", "-n",
@@ -145,10 +151,53 @@ class MenuSmoke(smoke_android.Smoke):
         self.menu_select("Edit", "Clear selection")
         self.rows(visible)
         self.label("0 selected")
+        self.menu_select("Browser", "Archive root")
+        root_rows = {"docs/": False, "other.txt": False}
+        self.rows(root_rows)
+        before_invert = self.state()
+        downloads_before_invert = self.adb("shell", "ls", "-laR", "/sdcard/Download")
+        self.menu_select("Edit", "Invert selection")
+        self.rows(dict.fromkeys(root_rows, True))
+        # Four actual leaves: the empty directory and three files; docs/ is covered by them.
+        self.label("4 selected")
+        self.save("menus-invert-all")
+        self.menu_select("Edit", "Invert selection")
+        self.rows(root_rows)
+        self.label("0 selected")
+        if self.state() != before_invert:
+            raise AssertionError("Double invert did not restore the unselected archive snapshot")
+        self.save("menus-invert-none")
+        self.menu_select("Browser", "Back")
+        self.rows(visible)
         self.tap("docs/你好.txt")
         visible["docs/你好.txt"] = True
         self.rows(visible)
         self.label("1 selected")
+        partial = self.state()
+        inverted = {path: not checked for path, checked in visible.items()}
+        self.menu_select("Edit", "Invert selection")
+        self.rows(inverted)
+        self.label("2 selected")
+        self.save("menus-invert-partial")
+        self.tap("Open folder docs/nested/")
+        self.rows({"docs/nested/data.bin": True})
+        self.label("2 selected")
+        self.menu_select("Browser", "Up")
+        self.rows(inverted)
+        self.menu_select("Edit", "Invert selection")
+        self.rows(visible)
+        self.label("1 selected")
+        if self.state() != partial:
+            raise AssertionError("Double invert did not restore the partial archive snapshot")
+        self.label(name)
+        self.label(f"{len(contents)} entries")
+        if self.adb("shell", "ls", "-laR", "/sdcard/Download") != downloads_before_invert:
+            raise AssertionError("Invert selection changed Downloads")
+        if self.adb("exec-out", "cat", remote, binary=True) != fixture.read_bytes():
+            raise AssertionError("Invert selection changed the source archive bytes")
+        self.save("menus-invert-partial-restored")
+        print("PASS Edit Invert selection: none/all/none, partial complement in the current folder; "
+              "implicit nested file checked, source/snapshot preserved", flush=True)
         self.test_archive(name, contents, 0, "menus-tested",
                           test_action=lambda: self.menu_select("Tools", "Test archive"))
 
@@ -234,7 +283,7 @@ class MenuSmoke(smoke_android.Smoke):
         self.save("menus-complete")
         self.health()
         print("PASS Android menu sheets: disabled states, File Open/Save cancel/Close, "
-              "Browser navigation/path focus/Enter blur, Edit selection, Layout view/sort, Tools read-only Test, "
+              "Browser navigation/path focus/Enter blur, Edit selection/invert, Layout view/sort, Tools read-only Test, "
               "Back/outside dismissal, About", flush=True)
 
 

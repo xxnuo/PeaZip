@@ -273,6 +273,21 @@ pub fn App() -> impl IntoElement {
         });
     };
 
+    let can_select = move || {
+        if busy.get() {
+            return false;
+        }
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        if files.active.get() {
+            return files.current.with(|current| {
+                current
+                    .as_ref()
+                    .is_some_and(|view| !view.0.entries().is_empty())
+            });
+        }
+        !controls.visible.with(Vec::is_empty)
+    };
+
     let mut all = vec![
         desktop_shortcut(
             Command::new(CommandId::Open, "Open archive…", move || !busy.get(), open).icon("open"),
@@ -341,44 +356,58 @@ pub fn App() -> impl IntoElement {
         )
         .icon("test"),
         keyboard_shortcut(
+            Command::new(CommandId::SelectAll, "Select all", can_select, move || {
+                #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+                if files.active.get_untracked() {
+                    files.selected.set(files.current.with(|current| {
+                        current
+                            .as_ref()
+                            .map(|view| view.0.entries().iter().map(|entry| entry.id).collect())
+                            .unwrap_or_default()
+                    }));
+                    return;
+                }
+                selected.set(entries.with(|items| {
+                    controls.visible.with(|rows| {
+                        rows.iter()
+                            .flat_map(|row| navigation::selection_paths(row, items))
+                            .collect()
+                    })
+                }));
+            }),
+            "mod+a",
+        ),
+        desktop_shortcut(
             Command::new(
-                CommandId::SelectAll,
-                "Select all",
-                move || {
-                    if busy.get() {
-                        return false;
-                    }
-                    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-                    if files.active.get() {
-                        return files.current.with(|current| {
-                            current
-                                .as_ref()
-                                .is_some_and(|view| !view.0.entries().is_empty())
-                        });
-                    }
-                    !controls.visible.with(Vec::is_empty)
-                },
+                CommandId::InvertSelection,
+                "Invert selection",
+                can_select,
                 move || {
                     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
                     if files.active.get_untracked() {
-                        files.selected.set(files.current.with(|current| {
-                            current
-                                .as_ref()
-                                .map(|view| view.0.entries().iter().map(|entry| entry.id).collect())
-                                .unwrap_or_default()
-                        }));
+                        if let Some(view) = files.current.get_untracked() {
+                            files.selected.update(|selected| {
+                                *selected = view
+                                    .0
+                                    .entries()
+                                    .iter()
+                                    .map(|entry| entry.id)
+                                    .filter(|id| !selected.contains(id))
+                                    .collect();
+                            });
+                        }
                         return;
                     }
-                    selected.set(entries.with(|items| {
+                    entries.with(|items| {
                         controls.visible.with(|rows| {
-                            rows.iter()
-                                .flat_map(|row| navigation::selection_paths(row, items))
-                                .collect()
+                            selected.update(|selected| {
+                                navigation::invert_selected(rows, items, selected);
+                            })
                         })
-                    }));
+                    });
                 },
             ),
-            "mod+a",
+            "mod+i",
         ),
         keyboard_shortcut(
             Command::new(

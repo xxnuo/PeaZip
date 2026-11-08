@@ -23,6 +23,7 @@ run_dir=$(mktemp -d "$3/run-XXXXXX")
 artifacts="$run_dir/artifacts"
 mkdir -p "$artifacts" "$run_dir/reference"
 printf 'preserve-me\n' > "$run_dir/sentinel.txt"
+sha256sum "$fixture" > "$artifacts/source-before-invert.sha256"
 "$binary" > "$artifacts/gtk.log" 2>&1 &
 app_pid=$!
 cleanup() { kill "$app_pid" 2>/dev/null || true; wait "$app_pid" 2>/dev/null || true; }
@@ -78,9 +79,30 @@ menu_action() {
 selection_count() {
   ocr
   read -r selected_x selected_y < <(locate selected)
-  convert "$artifacts/current.png" -crop "${width}x30+0+$((selected_y-10))" +repage -resize 300% "$artifacts/selection.png"
-  tesseract "$artifacts/selection.png" "$artifacts/selection" --psm 6 2> "$artifacts/selection-ocr.log"
+  read -r word_left word_width < <(awk -F '\t' '$12=="selected" {x=int($7/3);w=int($9/3)} END{print x,w}' "$artifacts/current.tsv")
+  convert "$artifacts/current.png" -crop "$((word_width+40))x30+$((word_left-25))+$((selected_y-10))" +repage -resize 300% "$artifacts/selection.png"
+  tesseract "$artifacts/selection.png" "$artifacts/selection" --psm 7 2> "$artifacts/selection-ocr.log"
   grep -Eq "(^| )$1 selected" "$artifacts/selection.txt"
+}
+checkbox_state() {
+  local word=$1 expected=$2 tag=$3
+  ocr
+  # Name column and row labels locate the whole indicator. Its dark fill is
+  # 8x8 for checked, 8x2 for mixed, and empty for unchecked in this GTK theme.
+  name_left=$(awk -F '\t' '$12=="Name" {print int($7/3);exit}' "$artifacts/current.tsv")
+  read -r row_x row_y < <(locate "$word" 180)
+  convert "$artifacts/current.png" -crop "20x20+$((name_left-4))+$((row_y-10))" +repage "$artifacts/$tag-$word-checkbox.png"
+  dark_pixels=$(convert "$artifacts/$tag-$word-checkbox.png" -colorspace Gray -threshold 35% -format '%[fx:round((1-mean)*w*h)]' info:)
+  case "$expected" in
+    checked) test "$dark_pixels" -ge 40 ;;
+    unchecked) test "$dark_pixels" -le 4 ;;
+  esac
+  printf '%s %s=%s dark_pixels=%s pass\n' "$tag" "$word" "$expected" "$dark_pixels" >> "$artifacts/invert-results.txt"
+}
+root_checkbox_state() {
+  checkbox_state docs "$2" "$1"
+  checkbox_state other.txt "$3" "$1"
+  screen "$1"
 }
 keyboard_select() {
   local expected=$1 label=$2
@@ -179,6 +201,17 @@ keyboard_select 2 after-clear-blank
 menu_action Edit Clear
 capture_sizes archive
 capture_native_menus
+click_word docs 180
+root_checkbox_state invert-before checked unchecked
+menu_action Edit Invert
+root_checkbox_state invert-menu unchecked checked
+xdotool key ctrl+i
+sleep .4
+# Parent-prefix selection may normalize to leaves; compare effective checks,
+# rather than requiring its internal selected-path count to return to one.
+root_checkbox_state invert-twice-restored checked unchecked
+sha256sum -c "$artifacts/source-before-invert.sha256"
+menu_action Edit Clear
 menu_action Edit Select
 selection_count 2
 menu_action Edit Clear
@@ -193,6 +226,15 @@ ocr
 # OCR can include the input caret as a trailing vertical bar.
 awk -F '\t' '$12 ~ /^nativefocusprobe[|]?$/ {found=1} END{exit !found}' "$artifacts/current.tsv"
 screen 16-native-focus-path
+xdotool key ctrl+i
+sleep .4
+root_checkbox_state invert-while-editing unchecked unchecked
+selection_count 0
+sha256sum -c "$artifacts/source-before-invert.sha256"
+# Restore editor focus for the separate existing Ctrl+A editing test; Ctrl+I
+# is allowed to retain the text widget's own focus-navigation behavior.
+xdotool key ctrl+l
+sleep .3
 xdotool key ctrl+a
 xdotool type --clearmodifiers /
 xdotool key Return
@@ -366,5 +408,7 @@ done
 ! xdotool search --onlyvisible --name '^Open archive$' >/dev/null
 kill -0 "$app_pid"
 if grep -Ei 'panic|critical|segmentation|could not open archive|could not extract archive|could not test archive' "$artifacts/gtk.log"; then exit 1; fi
+sha256sum -c "$artifacts/source-before-invert.sha256"
+printf 'GUI_INVERT_MENU_SHORTCUT_EDITOR_GUARD_OK\n'
 printf 'GUI_CONTENT_FOCUS_REGRESSIONS_OK\n'
 printf 'GUI_NATIVE_MENUS_SHORTCUTS_NAVIGATION_TEST_EXTRACT_CLOSE_OK %s\n' "$run_dir"
