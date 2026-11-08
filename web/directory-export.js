@@ -1,4 +1,5 @@
 const MAX_ENTRIES = 4096;
+const MAX_OUTPUT_ITEMS = 16384;
 const MAX_PATH = 1024;
 const MAX_FILE = 16 * 1024 * 1024;
 const MAX_PAYLOAD = 64 * 1024 * 1024;
@@ -50,7 +51,7 @@ export function parseEntries(packet) {
       if (previous && (previous.name !== original || previous.kind !== type ||
           (explicit && previous.explicit))) throw new Error('Duplicate path or file-parent conflict');
       nodes.set(key, { name: original, kind: type, explicit: explicit || previous?.explicit });
-      if (nodes.size > MAX_ENTRIES) throw new Error('Directory tree entry limit exceeded');
+      if (nodes.size > MAX_OUTPUT_ITEMS) throw new Error('Directory tree entry limit exceeded');
     }
     entries.push({ path, parts, kind, data: packet.slice(offset, offset + dataLength) });
     offset += dataLength;

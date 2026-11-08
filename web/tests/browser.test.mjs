@@ -3184,3 +3184,96 @@ test('Column visibility Layout nine commands are reachable and dismiss correctly
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
 });
+
+test('Expanded filesystem budget rejects Full paths before output but permits Files only retry of the same 257-file archive', { timeout: 240_000 }, async (t) => {
+  const count = 257;
+  const entries = Array.from({ length: count }, (_, index) => {
+    const id = String(index).padStart(3, '0');
+    return [[`d${id}`, ...Array(63).fill('a'), `file-${id}.txt`].join('/'), ''];
+  });
+  const physical = new Set(entries.flatMap(([path]) => {
+    const parts = path.split('/');
+    return parts.map((_, index) => parts.slice(0, index + 1).join('/'));
+  }));
+  const basenames = entries.map(([path]) => path.split('/').at(-1));
+  assert.equal(new Set(basenames).size, count);
+  assert.equal(physical.size, 16_705);
+  assert.ok(entries.every(([path]) => Buffer.byteLength(path) < 1024));
+  assert.ok(count < 4096 && physical.size > 16_384);
+  const archive = await extractionFixture(entries);
+  const { page, button, tree, downloads } = await extractionPage(t, true, { viewport: { width: 1024, height: 600 } });
+  const picker = page.waitForEvent('filechooser');
+  await button('Open archive…').click();
+  await (await picker).setFiles(archive);
+  await expect(page.getByText(`${count} entries`, { exact: true })).toBeVisible();
+  await expect(button('Open archive…')).toBeEnabled();
+  await expect.poll(() => page.evaluate(() => window.listWorkers)).toEqual([{ terminated: true, codes: [1] }]);
+  assert.ok(await page.getByRole('checkbox').count() > 0);
+  assert.ok(await page.getByRole('checkbox').count() < count, 'assert metadata count, not all virtualized rows in the DOM');
+  const selected = page.getByRole('checkbox', { name: entries[0][0], exact: true });
+  await selected.click();
+  await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+  const baseline = await tree();
+  const snapshot = await downloadArchive(page, button('Download ZIP'));
+  assert.deepEqual(snapshot.bytes, archive.buffer);
+  const downloadsBefore = downloads.length;
+  await page.evaluate(() => {
+    window.budgetOutputCreates = [];
+    const prototype = FileSystemDirectoryHandle.prototype;
+    for (const [method, kind] of [['getDirectoryHandle', 'directory'], ['getFileHandle', 'file']]) {
+      const original = prototype[method];
+      prototype[method] = function (name, options) {
+        // The picker reopens the already-owned parent; count all actual output creation requests.
+        if (options?.create && name !== window.testDirectoryName) window.budgetOutputCreates.push({ kind, name });
+        return original.call(this, name, options);
+      };
+    }
+  });
+  await button('Test archive').click();
+  await expect(page.getByText(`Tested ${count} entries (0 bytes). Content checksums: ${count}/${count} files.`, { exact: true })).toBeVisible();
+  await expect(button('Test archive')).toBeEnabled();
+  await expect(selected).toBeChecked();
+  assert.deepEqual(await tree(), baseline);
+  assert.deepEqual(await page.evaluate(() => window.budgetOutputCreates), [], 'listing and testing must not create output');
+
+  await button('Extract…').click();
+  const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
+  await modal.getByRole('radio', { name: 'All entries', exact: true }).click();
+  await modal.getByRole('radio', { name: 'Full paths', exact: true }).click();
+  await modal.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByText(/^Could not extract archive:.*expanded filesystem items/)).toBeVisible();
+  await expect(button('Extract…')).toBeEnabled();
+  await expect(selected).toBeChecked();
+  await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+  assert.deepEqual(await page.evaluate(() => window.budgetOutputCreates), [], 'Full paths must fail before any output directory or file is requested');
+  assert.deepEqual(await tree(), baseline);
+  await expect.poll(() => page.evaluate(() => window.extractionWorkers)).toEqual([{ terminated: true, codes: [0] }]);
+  assert.equal(downloads.length, downloadsBefore, 'rejection must not download or publish output');
+  assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot, 'rejection preserves the original archive bytes');
+
+  await button('Extract…').click();
+  await modal.getByRole('radio', { name: 'All entries', exact: true }).click();
+  await modal.getByRole('radio', { name: 'Files only (no folders)', exact: true }).click();
+  await modal.getByRole('button', { name: 'Continue', exact: true }).click();
+  const report = page.getByLabel(new RegExp(`^Extracted ${count} entries to PeaZip-[0-9a-f-]{36}$`));
+  await expect(report).toBeVisible({ timeout: 180_000 });
+  await expect(button('Extract…')).toBeEnabled();
+  const folder = (await report.getAttribute('aria-label')).split(' to ')[1];
+  const actual = await tree();
+  assert.deepEqual(Object.keys(actual).sort(), [...Object.keys(baseline), folder].sort());
+  for (const [name, bytes] of Object.entries(baseline)) assert.deepEqual(actual[name], bytes);
+  assert.equal(Object.keys(actual[folder]).length, count);
+  assert.deepEqual(Object.keys(actual[folder]).sort(), [...basenames].sort());
+  assert.ok(Object.values(actual[folder]).every(bytes => Array.isArray(bytes) && bytes.length === 0),
+    'every flattened descendant must be an actual empty file, never a directory');
+  const creates = await page.evaluate(() => window.budgetOutputCreates);
+  assert.deepEqual(creates.filter(item => item.kind === 'directory'), [{ kind: 'directory', name: folder }]);
+  assert.equal(creates.filter(item => item.kind === 'file').length, count);
+  await expect(selected).toBeChecked();
+  await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.extractionWorkers)).toEqual([
+    { terminated: true, codes: [0] }, { terminated: true, codes: [1] },
+  ]);
+  assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
+  t.diagnostic(`Actual ZIP: ${count} empty files, ${physical.size} expanded nodes; Full paths made zero output calls; Files only wrote ${count} unique files through real OPFS.`);
+});

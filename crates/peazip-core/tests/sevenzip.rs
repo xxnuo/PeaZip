@@ -425,12 +425,13 @@ fn metadata_paths_duplicates_anti_items_and_implicit_parents_precede_selection()
     let bytes = streamless(&[("a/b/file", false)], false);
     let limits = Limits {
         max_entries: 2,
+        max_output_items: 2,
         ..Limits::default()
     };
     assert!(list_archive(&bytes, limits).is_ok());
     assert!(matches!(
         extract_archive(&bytes, limits),
-        Err(Error::Limit("output entry count"))
+        Err(Error::Limit("expanded filesystem items"))
     ));
     assert!(
         extract_selected_archive(&bytes, &[], limits)

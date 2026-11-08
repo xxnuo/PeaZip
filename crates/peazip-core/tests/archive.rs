@@ -452,12 +452,13 @@ fn extraction_counts_implicit_parent_directories_in_output_budget() {
     .unwrap();
     let limits = Limits {
         max_entries: 2,
+        max_output_items: 2,
         ..Limits::default()
     };
     assert!(list_zip(&zip, limits).is_ok());
     assert!(matches!(
         extract_selected_zip(&zip, &["a/b/file".into()], limits),
-        Err(Error::Limit("output entry count"))
+        Err(Error::Limit("expanded filesystem items"))
     ));
     assert_eq!(
         extract_selected_zip(&zip, &["plain".into()], limits).unwrap(),
@@ -469,7 +470,7 @@ fn extraction_counts_implicit_parent_directories_in_output_budget() {
         extract_zip(
             &zip,
             Limits {
-                max_entries: 3,
+                max_output_items: 3,
                 ..limits
             }
         )
@@ -482,10 +483,10 @@ fn extraction_counts_implicit_parent_directories_in_output_budget() {
         extract_zip(
             &zip,
             Limits {
-                max_entries: 3,
+                max_output_items: 3,
                 ..limits
             }
         ),
-        Err(Error::Limit("output entry count"))
+        Err(Error::Limit("expanded filesystem items"))
     ));
 }

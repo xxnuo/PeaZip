@@ -302,16 +302,17 @@ fn original_path_and_resource_limits_still_apply_before_flattening() {
         data: b"data".to_vec(),
     };
     let bytes = create_zip(&[entry], Limits::default()).unwrap();
-    assert!(matches!(
-        extract_selected_archive_with_options(
-            &bytes,
-            &["a/b/file".into()],
-            Limits {
-                max_entries: 2,
-                ..Limits::default()
-            },
-            FILES_ONLY
-        ),
-        Err(Error::Limit("output entry count"))
-    ));
+    let flat = extract_selected_archive_with_options(
+        &bytes,
+        &["a/b/file".into()],
+        Limits {
+            max_entries: 1,
+            max_output_items: 1,
+            ..Limits::default()
+        },
+        FILES_ONLY,
+    )
+    .unwrap();
+    assert_eq!(flat[0].path, "file");
+    assert_eq!(flat[0].data, b"data");
 }

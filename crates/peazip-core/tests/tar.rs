@@ -6,6 +6,7 @@ use peazip_core::{
 const DEFAULT: Limits = Limits {
     max_archive_bytes: 32 * 1024 * 1024,
     max_entries: 4096,
+    max_output_items: peazip_core::MAX_EXTRACTED_ITEMS,
     max_path_bytes: 1024,
     max_entry_bytes: 16 * 1024 * 1024,
     max_total_bytes: 64 * 1024 * 1024,
@@ -576,6 +577,7 @@ fn all_limits_apply_to_unselected_entries() {
             Limits {
                 max_archive_bytes: bytes.len() as u64,
                 max_entries: 2,
+                max_output_items: peazip_core::MAX_EXTRACTED_ITEMS,
                 max_path_bytes: 3,
                 max_entry_bytes: 5,
                 max_total_bytes: 10,
@@ -596,12 +598,13 @@ fn implicit_parent_output_budget_is_shared_with_zip() {
     ]);
     let limits = Limits {
         max_entries: 2,
+        max_output_items: 2,
         ..DEFAULT
     };
     assert!(list_archive(&bytes, limits).is_ok());
     assert!(matches!(
         extract_selected_archive(&bytes, &["a/b/file".into()], limits),
-        Err(Error::Limit("output entry count"))
+        Err(Error::Limit("expanded filesystem items"))
     ));
     assert_eq!(
         extract_selected_archive(&bytes, &["plain".into()], limits).unwrap(),

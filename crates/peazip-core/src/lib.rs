@@ -95,17 +95,21 @@ impl CreateOptions {
 pub struct Limits {
     pub max_archive_bytes: u64,
     pub max_entries: usize,
+    pub max_output_items: usize,
     pub max_path_bytes: usize,
     pub max_entry_bytes: u64,
     pub max_total_bytes: u64,
     pub max_compression_ratio: u64,
 }
 
+pub const MAX_EXTRACTED_ITEMS: usize = 16_384;
+
 impl Default for Limits {
     fn default() -> Self {
         Self {
             max_archive_bytes: 32 * 1024 * 1024,
             max_entries: 4096,
+            max_output_items: MAX_EXTRACTED_ITEMS,
             max_path_bytes: 1024,
             max_entry_bytes: 16 * 1024 * 1024,
             max_total_bytes: 64 * 1024 * 1024,
@@ -365,7 +369,9 @@ pub fn list_archive_with_format(
 }
 
 pub fn extract_archive(bytes: &[u8], limits: Limits) -> Result<Vec<MemoryEntry>, Error> {
-    extract_matching_archive(bytes, None, limits)
+    let output = extract_matching_archive(bytes, None, limits)?;
+    validate_extraction_entries(&output, limits)?;
+    Ok(output)
 }
 
 pub fn extract_selected_archive(
@@ -396,6 +402,7 @@ pub fn extract_selected_archive_with_options(
             entry.path = name.to_owned();
         }
     }
+    validate_extraction_entries(&output, limits)?;
     Ok(output)
 }
 
@@ -466,7 +473,9 @@ pub fn list_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, Error> {
 }
 
 pub fn extract_zip(bytes: &[u8], limits: Limits) -> Result<Vec<MemoryEntry>, Error> {
-    extract_matching(bytes, None, limits)
+    let output = extract_matching(bytes, None, limits)?;
+    validate_extraction_entries(&output, limits)?;
+    Ok(output)
 }
 
 fn test_zip(bytes: &[u8], limits: Limits) -> Result<TestReport, Error> {
@@ -504,7 +513,9 @@ pub fn extract_selected_zip(
     selected: &[String],
     limits: Limits,
 ) -> Result<Vec<MemoryEntry>, Error> {
-    extract_matching(bytes, Some(selected), limits)
+    let output = extract_matching(bytes, Some(selected), limits)?;
+    validate_extraction_entries(&output, limits)?;
+    Ok(output)
 }
 
 fn extract_matching(
@@ -513,7 +524,7 @@ fn extract_matching(
     limits: Limits,
 ) -> Result<Vec<MemoryEntry>, Error> {
     let entries = list_zip(bytes, limits)?;
-    let indices = selected_indices(&entries, selected, limits)?;
+    let indices = selected_indices(&entries, selected)?;
     let mut archive = ZipArchive::new(Cursor::new(bytes))?;
     let mut output = Vec::new();
     for i in indices {
@@ -536,11 +547,7 @@ fn extract_matching(
     Ok(output)
 }
 
-fn selected_indices(
-    entries: &[Entry],
-    selected: Option<&[String]>,
-    limits: Limits,
-) -> Result<Vec<usize>, Error> {
+fn selected_indices(entries: &[Entry], selected: Option<&[String]>) -> Result<Vec<usize>, Error> {
     let selected = selected.map(|paths| paths.iter().map(String::as_str).collect::<BTreeSet<_>>());
     if let Some(selected) = &selected {
         let names: BTreeSet<_> = entries.iter().map(|entry| entry.path.as_str()).collect();
@@ -551,7 +558,6 @@ fn selected_indices(
         }
     }
     let mut indices = Vec::new();
-    let mut output_paths = BTreeSet::new();
     for (i, entry) in entries.iter().enumerate() {
         if let Some(selected) = &selected
             && !selected.contains(entry.path.as_str())
@@ -561,21 +567,6 @@ fn selected_indices(
                 .any(|(at, _)| selected.contains(&entry.path[..=at]))
         {
             continue;
-        }
-        // Implicit parents consume filesystem entries too, even if the archive omits them.
-        let end = entry.path.trim_end_matches('/').len();
-        for boundary in entry
-            .path
-            .match_indices('/')
-            .map(|(at, _)| at)
-            .chain(std::iter::once(end))
-        {
-            output_paths.insert(entry.path[..boundary].to_owned());
-            check(
-                output_paths.len() as u64,
-                limits.max_entries as u64,
-                "output entry count",
-            )?;
         }
         indices.push(i);
     }
@@ -638,6 +629,27 @@ pub fn validate_memory_entries(entries: &[MemoryEntry], limits: Limits) -> Resul
             .checked_add(entry.data.len() as u64)
             .ok_or(Error::Limit("total bytes"))?;
         check(total, limits.max_total_bytes, "total bytes")?;
+    }
+    Ok(())
+}
+
+pub fn validate_extraction_entries(entries: &[MemoryEntry], limits: Limits) -> Result<(), Error> {
+    validate_memory_entries(entries, limits)?;
+    let mut nodes = BTreeSet::new();
+    for entry in entries {
+        let path = entry.path.trim_end_matches('/');
+        for end in path
+            .match_indices('/')
+            .map(|(index, _)| index)
+            .chain(std::iter::once(path.len()))
+        {
+            nodes.insert(&path[..end]);
+            check(
+                nodes.len() as u64,
+                limits.max_output_items as u64,
+                "expanded filesystem items",
+            )?;
+        }
     }
     Ok(())
 }

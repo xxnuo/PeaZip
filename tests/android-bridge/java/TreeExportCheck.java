@@ -47,7 +47,7 @@ public final class TreeExportCheck {
             parent = new TreeExport.Document("opaque:parent/path", "parent", TreeExport.DIRECTORY);
             children.put(parent.id, new ArrayList<>());
         }
-        public void check() throws IOException { if (destroyed) throw new IOException("cancelled"); }
+        public void check() throws IOException { calls++; if (destroyed) throw new IOException("cancelled"); }
         public TreeExport.Document parent() { calls++; return parent; }
         public List<TreeExport.Document> children(TreeExport.Document parent) throws Exception {
             calls++;
@@ -111,12 +111,24 @@ public final class TreeExportCheck {
     }
     static int checks;
     static void invalid(byte[] packet) throws Exception {
+        invalid(packet, null);
+    }
+    static void invalid(byte[] packet, String reason) throws Exception {
         Fake provider = new Fake();
         try { new TreeExport().run(packet, provider); throw new AssertionError("Accepted invalid packet"); }
         catch (IOException expected) {
-            if (provider.calls != 0 || provider.creates != 0) throw new AssertionError("Validation touched provider");
+            if (provider.calls != 0 || provider.creates != 0 || !provider.writes.isEmpty()) throw new AssertionError("Validation touched provider");
+            if (reason != null && !expected.getMessage().startsWith(reason)) throw expected;
             if (!expected.getMessage().contains("completed 0") || !expected.getMessage().contains("may remain")) throw expected;
         }
+        checks++;
+    }
+    static void parsedItems(byte[] packet, int count) throws Exception {
+        // Inspect only parsing so large valid trees do not exercise provider metadata budgets.
+        var parse = TreeExport.class.getDeclaredMethod("parse", byte[].class);
+        parse.setAccessible(true);
+        Map<?, ?> items = (Map<?, ?>) parse.invoke(null, (Object) packet);
+        if (items.size() != count) throw new AssertionError("Wrong physical item count: " + items.size());
         checks++;
     }
     public static void main(String[] args) throws Exception {
@@ -151,10 +163,22 @@ public final class TreeExportCheck {
         invalid(packet(new Entry("a", false, 16 * 1024 * 1024 + 1)));
         invalid(packet(new Entry("a", false, 16 * 1024 * 1024), new Entry("b", false, 16 * 1024 * 1024),
                 new Entry("c", false, 16 * 1024 * 1024), new Entry("d", false, 16 * 1024 * 1024), file("e")));
+        Entry[] medium = new Entry[2050];
+        for (int i = 0; i < medium.length; i++) medium[i] = file("d" + i + "/f");
+        parsedItems(packet(medium), 4100);
         Entry[] many = new Entry[4096];
         for (int i = 0; i < many.length; i++) many[i] = file("d" + i + "/x");
-        invalid(packet(many));
-        Entry[] tooMany = new Entry[4097]; Arrays.fill(tooMany, file("a")); invalid(packet(tooMany));
+        parsedItems(packet(many), 8192);
+        for (int i = 0; i < many.length; i++) many[i] = file("d" + i + "/a/b/f");
+        parsedItems(packet(many), 16384);
+        many[many.length - 1] = file("d4095/a/b/c/f");
+        invalid(packet(many), "Export including implicit directories exceeds 16384 items.");
+        Entry[] deep = new Entry[257];
+        for (int i = 0; i < deep.length; i++) deep[i] = file("d" + i + "/" + "x/".repeat(62) + "f");
+        invalid(packet(deep), "Export including implicit directories exceeds 16384 items.");
+        Entry[] tooMany = new Entry[4097];
+        for (int i = 0; i < tooMany.length; i++) tooMany[i] = file("f" + i);
+        invalid(packet(tooMany), "Export count exceeds limit.");
         for (String fault : List.of("permission", "notfound", "exists", "create", "rename", "type", "filedir", "idalias", "siblingalias",
                 "listingalias", "raced", "nonempty", "write", "close", "cancel")) {
             Fake fake = new Fake(); fake.fault = fault;

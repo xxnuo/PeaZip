@@ -1,6 +1,5 @@
-use peazip_core::{Limits, MemoryEntry, validate_memory_entries};
+use peazip_core::{Limits, MemoryEntry, validate_extraction_entries};
 use std::{
-    collections::BTreeSet,
     fs::{self, OpenOptions},
     io::Write,
     path::PathBuf,
@@ -10,24 +9,9 @@ pub(crate) fn stage_entries(
     entries: &[MemoryEntry],
     limits: Limits,
 ) -> Result<(tempfile::TempDir, PathBuf), String> {
-    validate_memory_entries(entries, limits).map_err(|error| error.to_string())?;
+    validate_extraction_entries(entries, limits).map_err(|error| error.to_string())?;
     if entries.is_empty() {
         return Err("No entries were selected for extraction.".into());
-    }
-    // Implicit parents must not expand a small member list into millions of directories.
-    let mut nodes = BTreeSet::new();
-    for entry in entries {
-        let path = entry.path.trim_end_matches('/');
-        for end in path
-            .match_indices('/')
-            .map(|(index, _)| index)
-            .chain(std::iter::once(path.len()))
-        {
-            nodes.insert(&path[..end]);
-            if nodes.len() > 16_384 {
-                return Err("Extraction expands beyond the 16384 filesystem item limit.".into());
-            }
-        }
     }
     let directory = tempfile::Builder::new()
         .prefix("peazip-extract-")
@@ -170,6 +154,6 @@ mod tests {
             .map(|index| file(&format!("{index}/a/b/c/d/e/file"), b""))
             .collect::<Vec<_>>();
         let error = stage_entries(&entries, Limits::default()).unwrap_err();
-        assert!(error.contains("filesystem item limit"));
+        assert!(error.contains("expanded filesystem items"));
     }
 }

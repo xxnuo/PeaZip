@@ -403,3 +403,15 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 工作区 360 次测试执行、Web 全量 133 项、Python 9 项、4 项 staging 测试通过；host/iOS/WASM Clippy、格式及 simulator/device release 检查通过。Android APK、Windows core/native/UI 测试交叉检查与 GNU release/PE/hash 通过，未实际运行 Windows/Android；device app 未签名且未真机运行。新物理节点上限仅用于 iOS 私有目录 staging，未据此宣称所有平台输出已有同样节点预算。
 - iOS CI 增加 --extract 四场景与实际导出树/xcresult/log artifact，仍只操作本步骤新建的专用 UDID，远程 CI 未执行。本轮没有修改 nsh，原版界面完整迁移、iOS 大文件流式与全部生命周期/提供方范围仍未完成。最终 source/build/test/tree hashes 汇总 target/ios-extract-evidence.json。
 - 最终交接证据另存 target/ios-extract-accepted，tested/current/installed App SHA256 均为 77ccd6f2b1d73096f8fd55cba83f85800a4071d5e32405aec6d3135ea4f5a32b；生产与 harness source hashes 一致，新增 private staging 和 provider 测试导出残留均为零。附加创建/保存回归在主线程请求冻结交接时中止，不计为完整通过，不表示用户暂停整体目标。
+
+
+## 解压物理节点预算分离与扁平路径修正（CORE-OUTPUT-ITEMS-01）
+
+- 现有 `selected_indices` 已统计隐式父目录并以 `max_entries` 拒绝过量输出，本轮不是补上原本不存在的防护。原检查同时把归档逻辑条目上限当作物理文件系统节点上限，并发生在 Files only 去路径之前，导致本可安全扁平提取的归档被过早拒绝。
+- Limits 新增独立 max_output_items，默认 MAX_EXTRACTED_ITEMS=16,384；max_entries 默认 4,096 仍限制归档逻辑成员。所有公开 All/Selected/options/legacy ZIP 提取入口在选择范围和最终路径映射之后调用共享 validate_extraction_entries，计数普通文件、显式目录及唯一隐式父目录（不含平台外层输出根）。可独立调整可信调用者的输出预算；Full paths 超限返回 Limit("expanded filesystem items")，不写任何目标，选择少量成员或改 Files only 可重试。创建、列表与完整性测试不根据输出目录展开量拒绝归档。
+- Files only 仍先完成原格式校验、所选数据/CRC/资源检查，再去目录、扁平映射、拒绝空文件集合与 basename 冲突，最后计数；没有用 flatten 绕过输入验证。iOS staging 复用同一 validator，删除本地重复计数算法。Web directory-export 和 Android TreeExport 的物理树第二层防御同步到 16,384，逻辑 packet count 仍为 4,096，Android 文档 ID/名称/MIME 和 4MiB metadata 独立限制不变，provider 因独立限制失败仍会明确反馈，不能推导所有 provider 都接受最大树。
+- 验证：工作区 364 次测试执行、Web 全量 134 项、Python 9 项通过；新 core 3 项覆盖独立可配置边界、显式/共享父目录只计一次、legacy ZIP 及 ZIP/TAR/TAR.GZ 的创建/list/test 仍可用、Fullpaths 拒绝与 FilesOnly 重试、选择缩小范围和 basename 冲突。原有各格式隐式目录预算测试迁到 max_output_items；原 FilesOnly 提前拒绝测试改为真实成功断言，不删除输入限额或 CRC 回归。
+- 原生落盘新 1 项使用 257 个普通成员及 16,448 个物理节点，Full paths 在任何目标/staging 出现前拒绝、哨兵/源字节不变，FilesOnly 重试实际写出 257 个文件，单支选择仍可 Full paths。Linux 同 3+1 项和 core/native 严格 Clippy 通过，证据 target/linux-output-node，当前源码/test hashes 一致。
+- 真实浏览器新流程验证 Open/Test 正常、Fullpaths 超限时 output 根不创建且 snapshot/selection/OPFS 树不变，再以 FilesOnly 真实写出 257 个唯一空文件。JS parser 单独验证 4,100 个物理节点接受与 16k 超限拒绝；Android TreeExport host 90 项覆盖精确 16,384 接受和多一节点拒绝、逻辑成员 4,097 拒绝，28 项 JNI 等桥接检查通过，属于 host/注入 provider 证据，不替代新 Android 设备运行。
+- 新 iOS simulator 包四项真实提取回归（All/Selected/FilesOnly/DisplayedFrozen）及目标目录每字节/空目录独立核对全部通过，记录 target/ios-outputbudget-extract。host/iOS/WASM Clippy、格式、Android APK、iOS simulator/device release、Windows core/native/UI 测试交叉编译及 GNU release/PE/hash 通过，Windows 与 Linux 构建前后 source hashes 一致。device app 未签名，未新增 Windows/Android 真机运行；不沿用其它平台测试外推支持范围。汇总 source/build/check hashes 见 target/output-node-evidence.json，完整六平台功能、界面和发布仍待完成。
+- iOS tested/current/installed 二进制 SHA256 均为 0c019a900c6f54d9d80c6c1097b6c462e4d69808d14464838798bea364c1d481，source/harness 哈希匹配；输入与真实导出按内容核对后清理，新 staging 残留零，核名关闭并删除本轮专用模拟器，未操作其它设备。Web 超限样本为 16,705 个物理节点，原生样本为 16,448；两者逻辑成员均为 257，未将不同样本节点数混为同一证据。

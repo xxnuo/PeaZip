@@ -128,7 +128,8 @@ test('rejects entire invalid packet before any filesystem call', async () => {
 
 test('count, payload, and implicit directory budgets', () => {
   assert.throws(() => parseEntries(packet(Array.from({ length: 4097 }, (_, i) => [1, `${i}/`]))));
-  assert.throws(() => parseEntries(packet(Array.from({ length: 2050 }, (_, i) => [0, `${i}/f`]))), /tree entry limit/);
+  assert.equal(parseEntries(packet(Array.from({ length: 2050 }, (_, i) => [0, `${i}/f`]))).length, 2050);
+  assert.throws(() => parseEntries(packet(Array.from({ length: 257 }, (_, i) => [0, `${i}/${'d/'.repeat(62)}file-${i}`]))), /tree entry limit/);
   const data = new Uint8Array(16 * 1024 * 1024);
   assert.throws(() => parseEntries(packet([...Array.from({ length: 4 }, (_, i) => [0, `${i}`, data]), [0, 'extra', Uint8Array.of(1)]])), /Payload limit/);
   assert.equal(parseEntries(packet(Array.from({ length: 4096 }, (_, i) => [0, `${i}`]))).length, 4096);

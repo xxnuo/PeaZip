@@ -18,6 +18,7 @@ import java.util.UUID;
 /** Packet validation and export policy, independent of Android for provider fault injection. */
 public final class TreeExport {
     static final int MAX_PACKET = 64 * 1024 * 1024 + 4096 * (12 + 1024) + 4;
+    static final int MAX_OUTPUT_ITEMS = 16384;
     // Bounds are UTF-16 code units; budgets include two bytes per unit plus object overhead.
     static final int MAX_ID = 4096, MAX_NAME = 1024, MAX_MIME = 256;
     static final int MAX_METADATA = 4 * 1024 * 1024;
@@ -147,7 +148,7 @@ public final class TreeExport {
                 String key = key(prefix);
                 Item item = items.get(key);
                 if (item == null) {
-                    if (items.size() == 4096) throw new IOException("Export including implicit directories exceeds 4096 entries.");
+                    if (items.size() == MAX_OUTPUT_ITEMS) throw new IOException("Export including implicit directories exceeds 16384 items.");
                     item = new Item(prefix, parent, parts[j], dir);
                     items.put(key, item);
                 } else if (!item.path.equals(prefix) || !item.dir || !dir || (last && item.explicit)) {

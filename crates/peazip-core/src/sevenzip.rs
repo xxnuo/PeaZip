@@ -382,7 +382,7 @@ pub(super) fn extract(
     limits: Limits,
 ) -> Result<Vec<MemoryEntry>, Error> {
     let (mut reader, entries) = open(bytes, limits)?;
-    let indices = selected_indices(&entries, selected, limits)?;
+    let indices = selected_indices(&entries, selected)?;
     let mut output: Vec<_> = indices
         .iter()
         .map(|&i| MemoryEntry {

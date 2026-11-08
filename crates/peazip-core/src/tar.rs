@@ -271,7 +271,7 @@ pub(super) fn extract(
     limits: Limits,
 ) -> Result<Vec<MemoryEntry>, Error> {
     let (entries, payloads) = scan(bytes, limits)?;
-    let indices = selected_indices(&entries, selected, limits)?;
+    let indices = selected_indices(&entries, selected)?;
     // TAR checksums cover headers only; copying a complete payload provides no CRC guarantee.
     Ok(indices
         .into_iter()
