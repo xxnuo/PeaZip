@@ -22,20 +22,29 @@ pub(crate) struct Controls {
     pub visible: Memo<Vec<BrowserRow>>,
     pub widths: ColumnWidths,
     pub visibility: ColumnVisibility,
+    pub smart_sort: Signal<bool>,
 }
 
 impl Controls {
     pub fn new(entries: Signal<Vec<Entry>>, navigation: Signal<BrowserState>) -> Self {
         let flat = signal(false);
         let sort = signal(Sort::NameAsc);
+        let smart_sort = signal(true);
         let filter = signal(String::new());
         let wildcards = signal(false);
         let pattern =
             computed(move || crate::name_filter::Pattern::new(&filter.get(), wildcards.get()));
         let visible = computed(move || {
             entries.with(|items| {
-                let mut rows = navigation
-                    .with(|state| navigation::rows(items, state.current(), flat.get(), sort.get()));
+                let mut rows = navigation.with(|state| {
+                    navigation::rows_with_smart_sort(
+                        items,
+                        state.current(),
+                        flat.get(),
+                        sort.get(),
+                        smart_sort.get(),
+                    )
+                });
                 pattern.with(|pattern| rows.retain(|row| pattern.matches(&row.name)));
                 rows
             })
@@ -52,6 +61,7 @@ impl Controls {
             visible,
             widths: ColumnWidths::new(),
             visibility: ColumnVisibility::new(),
+            smart_sort,
         }
     }
 }
@@ -90,6 +100,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
         visible,
         widths,
         visibility,
+        smart_sort,
     } = controls;
     let back = commands.get(CommandId::Back).unwrap();
     let forward = commands.get(CommandId::Forward).unwrap();
@@ -174,10 +185,16 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
     let folders = computed(move || {
         entries.with(|items| {
             navigation.with(|state| {
-                navigation::rows(items, state.current(), false, Sort::NameAsc)
-                    .into_iter()
-                    .filter(|row| row.is_dir)
-                    .collect::<Vec<_>>()
+                navigation::rows_with_smart_sort(
+                    items,
+                    state.current(),
+                    false,
+                    Sort::NameAsc,
+                    smart_sort.get(),
+                )
+                .into_iter()
+                .filter(|row| row.is_dir)
+                .collect::<Vec<_>>()
             })
         })
     });

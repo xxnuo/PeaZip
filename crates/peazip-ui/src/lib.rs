@@ -34,6 +34,7 @@ mod mobile_export;
 mod mobile_files;
 mod name_filter;
 mod navigation;
+mod smart_sort;
 
 type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>, ArchiveFormat);
 
@@ -751,6 +752,15 @@ pub fn App() -> impl IntoElement {
             .checked(move || controls.visibility.shown(column)),
         );
     }
+    all.push(
+        Command::new(
+            CommandId::SmartNameSorting,
+            "Smart file name sorting",
+            move || !busy.get(),
+            move || controls.smart_sort.update(|smart| *smart = !*smart),
+        )
+        .checked(move || controls.smart_sort.get()),
+    );
     all.push(keyboard_shortcut(
         Command::new(
             CommandId::AdjustColumns,
@@ -1135,7 +1145,7 @@ pub fn App() -> impl IntoElement {
                     editing_locked,
                     controls.sort,
                     pane_commands.clone(),
-                    (controls.widths, controls.visibility),
+                    (controls.widths, controls.visibility, controls.smart_sort),
                     move |id| disk.open_entry(id),
                     move |path| disk.go(path),
                 )

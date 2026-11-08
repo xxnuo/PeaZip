@@ -30,6 +30,7 @@ pub enum CommandId {
     SortType,
     SortPacked,
     AdjustColumns,
+    SmartNameSorting,
     ToggleTypeColumn,
     ToggleSizeColumn,
     TogglePackedColumn,

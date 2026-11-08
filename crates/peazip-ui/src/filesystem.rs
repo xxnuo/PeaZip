@@ -246,27 +246,46 @@ fn kind_label(kind: EntryKind) -> &'static str {
     }
 }
 
-fn ordered_entries(entries: &[DirectoryEntry], sort: Sort) -> Vec<usize> {
-    let mut order: Vec<_> = (0..entries.len()).collect();
-    order.sort_by(|&a, &b| {
-        let (a, b) = (&entries[a], &entries[b]);
+fn ordered_entries(entries: &[DirectoryEntry], sort: Sort, smart: bool) -> Vec<usize> {
+    let mut order: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let key = crate::smart_sort::comparison_key(
+                if entry.kind == EntryKind::Directory {
+                    entry.display_name.trim_end_matches('/')
+                } else {
+                    &entry.display_name
+                },
+                smart,
+            );
+            (index, key)
+        })
+        .collect();
+    order.sort_by(|(a, a_key), (b, b_key)| {
+        let (a, b) = (&entries[*a], &entries[*b]);
         matches!(b.kind, EntryKind::Directory)
             .cmp(&matches!(a.kind, EntryKind::Directory))
             .then_with(|| match sort {
-                Sort::NameAsc | Sort::PackedAsc | Sort::PackedDesc => {
-                    a.display_name.cmp(&b.display_name)
-                }
-                Sort::NameDesc => b.display_name.cmp(&a.display_name),
+                Sort::NameAsc | Sort::PackedAsc | Sort::PackedDesc => a_key.cmp(b_key),
+                Sort::NameDesc => b_key.cmp(a_key),
                 Sort::TypeAsc => kind_label(a.kind).cmp(kind_label(b.kind)),
                 Sort::TypeDesc => kind_label(b.kind).cmp(kind_label(a.kind)),
                 Sort::SizeAsc => a.size.cmp(&b.size),
                 Sort::SizeDesc => b.size.cmp(&a.size),
             })
+            .then_with(|| {
+                if matches!(sort, Sort::SizeAsc | Sort::SizeDesc) {
+                    std::cmp::Ordering::Equal
+                } else {
+                    a_key.cmp(b_key)
+                }
+            })
             .then_with(|| a.display_name.cmp(&b.display_name))
             .then_with(|| a.name.cmp(&b.name))
             .then_with(|| a.id.cmp(&b.id))
     });
-    order
+    order.into_iter().map(|(index, _)| index).collect()
 }
 
 struct Row {
@@ -292,11 +311,11 @@ pub fn browser(
     busy: Signal<bool>,
     sort: Signal<Sort>,
     commands: Commands,
-    columns: (ColumnWidths, ColumnVisibility),
+    columns: (ColumnWidths, ColumnVisibility, Signal<bool>),
     open_entry: impl Fn(usize) + Copy + 'static,
     go: impl Fn(PathBuf) + Copy + 'static,
 ) -> impl IntoElement {
-    let (widths, visibility) = columns;
+    let (widths, visibility, smart_sort) = columns;
     let order = computed(move || {
         let pattern = files.pattern.get();
         files.current.with(|current| {
@@ -304,7 +323,7 @@ pub fn browser(
                 .as_ref()
                 .map(|view| {
                     let entries = view.0.entries();
-                    let mut order = ordered_entries(entries, sort.get());
+                    let mut order = ordered_entries(entries, sort.get(), smart_sort.get());
                     order.retain(|&index| pattern.matches(&entries[index].display_name));
                     order
                 })
@@ -922,7 +941,7 @@ mod tests {
             (Sort::SizeAsc, [99, 82, 51, 7, 3, 40]),
             (Sort::SizeDesc, [99, 40, 7, 3, 82, 51]),
         ] {
-            let ids: Vec<_> = ordered_entries(&entries, sort)
+            let ids: Vec<_> = ordered_entries(&entries, sort, true)
                 .into_iter()
                 .map(|index| entries[index].id)
                 .collect();
@@ -930,5 +949,88 @@ mod tests {
         }
         assert_eq!(entries[0].id, 40);
         assert_eq!(entries[4].size, None);
+    }
+
+    #[test]
+    fn name_comparison_is_ascii_case_insensitive_and_sorts_hidden_numbers() {
+        for (ten, two) in [("A10", "a2"), (".x10", ".x2"), ("Z", "a")] {
+            let entries: Vec<_> = [ten, two]
+                .into_iter()
+                .enumerate()
+                .map(|(id, name)| DirectoryEntry {
+                    id,
+                    name: name.into(),
+                    display_name: name.into(),
+                    kind: EntryKind::File,
+                    size: Some(8),
+                    modified: None,
+                })
+                .collect();
+            for sort in [Sort::NameAsc, Sort::TypeAsc, Sort::PackedAsc] {
+                assert_eq!(ordered_entries(&entries, sort, true), [1, 0]);
+                assert_eq!(
+                    ordered_entries(&entries, sort, false),
+                    if ten == "Z" { [1, 0] } else { [0, 1] }
+                );
+            }
+            for sort in [Sort::SizeAsc, Sort::SizeDesc] {
+                assert_eq!(ordered_entries(&entries, sort, true), [0, 1]);
+                assert_eq!(ordered_entries(&entries, sort, false), [0, 1]);
+            }
+        }
+    }
+
+    #[test]
+    fn smart_sort_toggle_preserves_native_names_ids_and_metadata() {
+        let entry = |id, name: &str, kind| DirectoryEntry {
+            id,
+            name: name.into(),
+            display_name: name.into(),
+            kind,
+            size: Some(8),
+            modified: Some(std::time::UNIX_EPOCH),
+        };
+        let entries = [
+            entry(40, "Name10", EntryKind::File),
+            entry(7, "Name2", EntryKind::File),
+            entry(99, "dir10", EntryKind::Directory),
+            entry(51, "dir2", EntryKind::Directory),
+        ];
+        let original = entries.clone();
+        for sort in [
+            Sort::NameAsc,
+            Sort::SizeAsc,
+            Sort::SizeDesc,
+            Sort::PackedAsc,
+            Sort::PackedDesc,
+            Sort::TypeAsc,
+            Sort::TypeDesc,
+        ] {
+            for (smart, expected) in [(true, [51, 99, 7, 40]), (false, [99, 51, 40, 7])] {
+                let ids: Vec<_> = ordered_entries(&entries, sort, smart)
+                    .into_iter()
+                    .map(|index| {
+                        assert_eq!(entries[index], original[index]);
+                        entries[index].id
+                    })
+                    .collect();
+                assert_eq!(
+                    ids,
+                    if matches!(sort, Sort::SizeAsc | Sort::SizeDesc) {
+                        [99, 51, 40, 7]
+                    } else {
+                        expected
+                    }
+                );
+            }
+        }
+        for (smart, expected) in [(true, [99, 51, 40, 7]), (false, [51, 99, 7, 40])] {
+            let ids: Vec<_> = ordered_entries(&entries, Sort::NameDesc, smart)
+                .into_iter()
+                .map(|index| entries[index].id)
+                .collect();
+            assert_eq!(ids, expected);
+        }
+        assert_eq!(entries, original);
     }
 }

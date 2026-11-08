@@ -425,3 +425,14 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 验证：工作区 367 次测试执行、Web 全量 137 项通过，host Clippy/格式检查通过；新增 3 项 App 流程及 3 项真实浏览器流程覆盖四字段实际顺序与反转、FS Packed 禁用、隐藏列、部分/隐藏选择及源/导出字节保持、path/filter 编辑、已打开菜单、创建/提取 modal、忙碌时按键不生效。浏览器覆盖 1024 与 360 宽并确认 Layout 九项含快捷键提示仍可触达。Windows GNU check/release/PE/hash 通过，source 前后哈希一致，未实际运行 Windows。
 - Linux 真实 GTK 新增四组 Ctrl+Alt 数字键检查通过：不同 packed size 的 stored ZIP 提供可观察顺序，重复键反转、Packed 隐藏后排序、path/filter 编辑中保持原顺序和选择均验证，截图为 target/linux-columns-shortcuts/keyboard-final。证据由 run1 原有流程断言通过＋probe2 最终新增键盘段完整通过组成；早期 OCR 把 zz.bin 识别为 2z.bin，测试改为明确名称和名称区域识别后保留三行实际顺序断言。当前完整脚本未作为单次全程重跑，不将分段证据描述成单次全脚本通过；现有 CI 入口会执行最终脚本，远程 CI 未运行。
 - Linux 当前生产和最终脚本 hashes、Windows 构建 source hashes 均核对一致；专用容器已停止、未修改其它容器。本轮没有新增 iOS/Android 外接键盘或 macOS/Windows 实际窗口按键验收，不以 host/Web 测试替代目标运行。汇总 source/build/check hashes 见 target/sort-shortcuts-evidence.json，整体 PeaZip 功能/界面重写仍未完成。
+
+
+## 智能文件名排序（UI-SMART-SORT-01）
+
+- Layout 新增默认开启的 Smart file name sorting，位于 Auto adjust columns 之前，勾选与共享会话偏好同步；名称排序、类型与 Packed 等同主键时的名称次级键使用该偏好，目录始终优先。关闭使用 ASCII 大小写不敏感词典比较，开启使用原版智能键后作相同比较；原字符串、路径/ID 为确定性后备，任何排序/开关均不改文件名、元数据、筛选、选择、实际提取路径或源字节。Size 等值项保留原有稳定后备顺序，不因智能开关重排。
+- 固定原版 list_utils.pas:2956 的 smartsortstring 只识别每部分第一个 ASCII 数字串，不是通用“所有数字段 natural sort”：去前导零的有效数字长度编码为若干 9，再拼空格、有效数字及原始数字串/后续文本，不解析整数、不溢出。peach.pas:33880 将名称和最后扩展名的键以字面 apostrophe 拼接，无扩展也追加；list_utils.pas:2285 只有扩展名≤6 UTF-8 字节且无 ASCII 空格才截断，长扩展名保留并重复拼接的原行为亦保留。目录只在比较输入去尾部 /，实际路径不变。
+- 官方 FPC 3.2.2 默认 FirstDotAtFileNameStartIsExtension=false，开头单个点的隐藏文件不拆成扩展名；Lazarus 4.2 默认 Grid 比较使用 AnsiCompareText，依赖未被 PeaZip 固定。本轮实现其 ASCII 不分大小写特征，不把 Rust ASCII fold 等同所有 locale/Unicode collation。Type/Packed 等沿用现有结构化主键和确定性同值后备，与原版 padstrsort 字符串拼接、方向同值行为仍有差异；现有平铺 Name 显示完整路径而原版多处调用 basename，未将该既有平铺 UI 差异伪装为完整逐像素/排序等价。参考 peach.pas:33837、42514、23370、74182 与 peach.lfm:17401。
+- 每行排序键在排序前计算一次，不在比较器中重复分配；开关即时重排已读取快照，不触发额外磁盘重扫，保留选择与目录历史，跨打开归档/FS切换/窄屏继续保留本会话偏好。原版切换会调用 F5，持久配置和完整刷新语义仍待统一迁移，不据此声明配置持久化已完成。busy/modal 与执行前门禁沿用共享命令，菜单操作完成后 native 回焦列表。
+- 验证：工作区 374 次测试执行、Web 全量 140 项通过，host/WASM Clippy 和格式检查通过。新增算法/模型回归覆盖前导零、全零、长数字、后续数字段不数值化、隐藏文件、扩展名特殊规则、ASCII case、off/on、目录优先、元数据/路径/选择保持及 Size 同值不被开关改变。真实 Web 覆盖 on/off/on、方向、类型/Packed tie、实际所选字节导出、会话/宽窄/重开、busy/modal 强制旧事件拒绝及 360×600 十项菜单触达。旧 Type 测试仅更新智能键使 plain 在 README 前的两处预期，实际选择/落盘字节断言保留。
+- 当前目标已由用户更新为 macOS、Linux、Windows、Web，本单元按该范围验收。目标变更前已完成的移动端构建/验证仅为历史证据；未提交的移动端专属 Smart harness 改动归档在 target/out-of-scope-mobile-smart-sort.patch，不纳入本功能提交，也不作为四平台目标的必要门槛。完整原版功能、locale 排序和界面验收仍待继续，不能将本开关等同整体迁移完成。
+- Linux 真实 GUI：run1 原列宽/导航/提取/排序快捷键断言通过，最终新增智能排序段由 focused3 单独完整通过，验证归档及文件系统 name2/name10 的 on/off、升降序、选择及源 SHA 保持；当前最终完整脚本未单次全程重跑，不把分段证据冒充整脚本一次通过。实际截图、final script/source/build hashes 位于 target/linux-columns-smart；仅测试脚本的 OCR 名称区域和裁剪修正，生产源码与运行构建一致。Windows GNU check/release/PE/hash 通过、源码哈希一致，未实际运行 Windows；汇总 target/smart-sort-evidence.json。

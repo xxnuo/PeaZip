@@ -149,7 +149,17 @@ impl BrowserRow {
 }
 
 pub(crate) fn rows(entries: &[Entry], directory: &str, flat: bool, sort: Sort) -> Vec<BrowserRow> {
-    let mut output = if flat {
+    rows_with_smart_sort(entries, directory, flat, sort, true)
+}
+
+pub(crate) fn rows_with_smart_sort(
+    entries: &[Entry],
+    directory: &str,
+    flat: bool,
+    sort: Sort,
+    smart: bool,
+) -> Vec<BrowserRow> {
+    let output = if flat {
         entries
             .iter()
             .map(|entry| BrowserRow {
@@ -210,14 +220,29 @@ pub(crate) fn rows(entries: &[Entry], directory: &str, flat: bool, sort: Sort) -
         }
         children.into_values().collect()
     };
-    output.sort_by(|a, b| {
+    let mut output: Vec<_> = output
+        .into_iter()
+        .map(|row| {
+            let key = crate::smart_sort::comparison_key(
+                if row.is_dir {
+                    row.name.trim_end_matches('/')
+                } else {
+                    &row.name
+                },
+                smart,
+            );
+            let kind = matches!(sort, Sort::TypeAsc | Sort::TypeDesc).then(|| row.kind_label());
+            (row, key, kind)
+        })
+        .collect();
+    output.sort_by(|(a, a_key, a_kind), (b, b_key, b_kind)| {
         b.is_dir
             .cmp(&a.is_dir)
             .then_with(|| match sort {
-                Sort::NameAsc => a.name.cmp(&b.name),
-                Sort::NameDesc => b.name.cmp(&a.name),
-                Sort::TypeAsc => a.kind_label().cmp(&b.kind_label()),
-                Sort::TypeDesc => b.kind_label().cmp(&a.kind_label()),
+                Sort::NameAsc => a_key.cmp(b_key),
+                Sort::NameDesc => b_key.cmp(a_key),
+                Sort::TypeAsc => a_kind.cmp(b_kind),
+                Sort::TypeDesc => b_kind.cmp(a_kind),
                 Sort::SizeAsc => a.size.cmp(&b.size),
                 Sort::SizeDesc => b.size.cmp(&a.size),
                 Sort::PackedAsc | Sort::PackedDesc => match (a.packed_size, b.packed_size) {
@@ -228,10 +253,17 @@ pub(crate) fn rows(entries: &[Entry], directory: &str, flat: bool, sort: Sort) -
                     (None, None) => std::cmp::Ordering::Equal,
                 },
             })
+            .then_with(|| {
+                if matches!(sort, Sort::SizeAsc | Sort::SizeDesc) {
+                    std::cmp::Ordering::Equal
+                } else {
+                    a_key.cmp(b_key)
+                }
+            })
             .then_with(|| a.name.cmp(&b.name))
             .then_with(|| a.path.cmp(&b.path))
     });
-    output
+    output.into_iter().map(|(row, _, _)| row).collect()
 }
 
 pub(crate) fn selection_paths(row: &BrowserRow, entries: &[Entry]) -> Vec<String> {
@@ -366,6 +398,141 @@ mod tests {
 
     fn paths(rows: &[BrowserRow]) -> Vec<&str> {
         rows.iter().map(|row| row.path.as_str()).collect()
+    }
+
+    #[test]
+    fn name_comparison_is_ascii_case_insensitive_and_sorts_hidden_numbers() {
+        for (ten, two) in [("A10", "a2"), (".x10", ".x2")] {
+            let entries = [entry(ten, 8), entry(two, 8)];
+            for sort in [Sort::NameAsc, Sort::TypeAsc, Sort::PackedAsc] {
+                if sort == Sort::TypeAsc && ten.starts_with('.') {
+                    continue;
+                }
+                assert_eq!(paths(&rows(&entries, "", true, sort)), [two, ten]);
+                assert_eq!(
+                    paths(&rows_with_smart_sort(&entries, "", true, sort, false)),
+                    [ten, two]
+                );
+            }
+            for sort in [Sort::SizeAsc, Sort::SizeDesc] {
+                assert_eq!(paths(&rows(&entries, "", true, sort)), [ten, two]);
+                assert_eq!(
+                    rows(&entries, "", true, sort),
+                    rows_with_smart_sort(&entries, "", true, sort, false)
+                );
+            }
+        }
+        let entries = [entry("Z", 1), entry("a", 1)];
+        for smart in [false, true] {
+            assert_eq!(
+                paths(&rows_with_smart_sort(
+                    &entries,
+                    "",
+                    true,
+                    Sort::NameAsc,
+                    smart
+                )),
+                ["a", "Z"]
+            );
+        }
+    }
+
+    #[test]
+    fn smart_sort_flat_directories_ignore_trailing_slashes_only_in_comparison_keys() {
+        for (ten, two) in [("dir10/", "dir2/"), ("dir10.ext/", "dir2.ext/")] {
+            let entries = [entry(ten, 10), entry(two, 2)];
+            for flat in [false, true] {
+                let smart = rows(&entries, "", flat, Sort::NameAsc);
+                let raw = rows_with_smart_sort(&entries, "", flat, Sort::NameAsc, false);
+                assert_eq!(paths(&smart), [two, ten]);
+                assert_eq!(paths(&raw), [ten, two]);
+                for row in &smart {
+                    assert_eq!(
+                        row,
+                        raw.iter().find(|other| other.path == row.path).unwrap()
+                    );
+                    assert_eq!(
+                        selection_paths(row, &entries),
+                        std::slice::from_ref(&row.path)
+                    );
+                    assert_eq!(
+                        row.name,
+                        if flat {
+                            row.path.as_str()
+                        } else {
+                            row.path.trim_end_matches('/')
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn smart_sort_toggle_preserves_rows_metadata_and_selection_paths() {
+        let entries = [
+            entry("Name10.txt", 8),
+            entry("Name2.txt", 8),
+            entry("dir10/child.txt", 3),
+            entry("dir2/child.txt", 4),
+        ];
+        let original = entries.clone();
+        for flat in [false, true] {
+            for sort in [
+                Sort::NameAsc,
+                Sort::SizeAsc,
+                Sort::SizeDesc,
+                Sort::PackedAsc,
+                Sort::PackedDesc,
+                Sort::TypeAsc,
+                Sort::TypeDesc,
+            ] {
+                let smart = rows_with_smart_sort(&entries, "", flat, sort, true);
+                let raw = rows_with_smart_sort(&entries, "", flat, sort, false);
+                let files = |rows: &[BrowserRow]| {
+                    rows.iter()
+                        .filter(|row| row.name.starts_with("Name"))
+                        .map(|row| row.path.clone())
+                        .collect::<Vec<_>>()
+                };
+                if matches!(sort, Sort::SizeAsc | Sort::SizeDesc) {
+                    assert_eq!(smart, raw);
+                    assert_eq!(files(&smart), ["Name10.txt", "Name2.txt"]);
+                } else {
+                    assert_eq!(files(&smart), ["Name2.txt", "Name10.txt"]);
+                }
+                assert_eq!(files(&raw), ["Name10.txt", "Name2.txt"]);
+                assert_eq!(rows(&entries, "", flat, sort), smart);
+                for row in &smart {
+                    let raw_row = raw.iter().find(|other| other.path == row.path).unwrap();
+                    assert_eq!(row, raw_row);
+                    assert_eq!(
+                        selection_paths(row, &entries),
+                        selection_paths(raw_row, &entries)
+                    );
+                    let mut selected = BTreeSet::new();
+                    set_selected(row, true, &entries, &mut selected);
+                    assert_eq!(selection_state(raw_row, &entries, &selected), (true, false));
+                }
+                if !flat {
+                    assert!(smart[..2].iter().all(|row| row.is_dir));
+                    assert!(raw[..2].iter().all(|row| row.is_dir));
+                }
+            }
+        }
+        for smart in [false, true] {
+            let descending = rows_with_smart_sort(&entries, "", false, Sort::NameDesc, smart);
+            assert!(descending[..2].iter().all(|row| row.is_dir));
+            assert_eq!(
+                paths(&descending[2..]),
+                if smart {
+                    ["Name10.txt", "Name2.txt"]
+                } else {
+                    ["Name2.txt", "Name10.txt"]
+                }
+            );
+        }
+        assert_eq!(entries, original);
     }
 
     #[test]
@@ -605,7 +772,17 @@ mod tests {
             entry("root", 3),
         ];
         let flat = rows(&entries, "docs/", true, Sort::NameAsc);
-        assert_eq!(paths(&flat), ["empty/", "docs/deep/中文.txt", "root"]);
+        assert_eq!(paths(&flat), ["empty/", "root", "docs/deep/中文.txt"]);
+        assert_eq!(
+            paths(&rows_with_smart_sort(
+                &entries,
+                "docs/",
+                true,
+                Sort::NameAsc,
+                false
+            )),
+            ["empty/", "docs/deep/中文.txt", "root"]
+        );
         assert!(flat.iter().all(|row| row.explicit && row.name == row.path));
         assert_eq!(flat.len(), entries.len());
     }

@@ -3165,20 +3165,20 @@ test('Column visibility rejects stale and forced menu events while modal or work
   await expectDetailWidths(page, widths);
 });
 
-test('Column visibility Layout nine commands are reachable and dismiss correctly at 360x600', { timeout: 120_000 }, async (t) => {
+test('Column visibility Layout ten commands are reachable and dismiss correctly at 360x600', { timeout: 120_000 }, async (t) => {
   const { page, button, choose } = await navigationPage(t, { width: 360, height: 600 }); await choose();
   const labels = ['All entries', 'Auto adjust columns', 'Sort by name', 'Sort by type', 'Sort by size',
-    'Sort by packed size', ...showColumnLabels];
+    'Sort by packed size', 'Smart file name sorting', ...showColumnLabels];
   for (const label of labels) {
     await button('Layout').click(); const menu = page.getByRole('menu'); await expect(menu).toHaveCount(1);
-    await expect(menu.locator('[role="menuitem"],[role="menuitemcheckbox"]')).toHaveCount(9);
+    await expect(menu.locator('[role="menuitem"],[role="menuitemcheckbox"]')).toHaveCount(10);
     const bounds = await menu.boundingBox();
     assert.ok(bounds.x >= -1 && bounds.y >= -1 && bounds.x + bounds.width <= 361 && bounds.y + bounds.height <= 601,
       `360x600 menu must fit: ${JSON.stringify(bounds)}`);
     const item = menu.getByRole(label === 'Auto adjust columns' ? 'menuitem' : 'menuitemcheckbox', { name: label, exact: true });
     await item.scrollIntoViewIfNeeded(); await expect(item).toBeInViewport({ ratio: 1 });
     if (label === 'Show packed column') {
-      await saveVisibilityScreenshot(page, 'columns-visibility-menu-360x600', 'nine menu commands; last item fully visible');
+      await saveVisibilityScreenshot(page, 'columns-visibility-menu-360x600', 'ten menu commands including Smart file name sorting; last item fully visible');
     }
     await item.click(); await expect(menu).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -3411,4 +3411,141 @@ test('Sort hotkeys do not steal editing, open-menu, modal or busy input', { time
   await button('Name').focus(); await pressSortHotkey(page, '2');
   await expect.poll(paths).toEqual(['docs/', 'outside.txt', 'docs/plain', 'docs/z.bin', 'docs/a.txt']);
   assert.deepEqual(await tree(), sentinelTree);
+});
+
+async function setSmartNameSorting(page, enabled) {
+  await page.getByRole('button', { name: 'Layout', exact: true }).click();
+  const item = page.getByRole('menuitemcheckbox', { name: 'Smart file name sorting', exact: true });
+  await expect(item).toBeEnabled();
+  if ((await item.getAttribute('aria-checked') === 'true') !== enabled) await item.click();
+  else await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+}
+async function expectSmartNameSorting(page, enabled) {
+  await page.getByRole('button', { name: 'Layout', exact: true }).click();
+  const item = page.getByRole('menuitemcheckbox', { name: 'Smart file name sorting', exact: true });
+  if (enabled) await expect(item).toBeChecked(); else await expect(item).not.toBeChecked();
+  await page.keyboard.press('Escape');
+}
+async function openSmartSortFixture(page, button) {
+  const entries = [['folder2/', ''], ['folder10/', ''], ['file2.txt', 'two'], ['file10.txt', 'ten'],
+    ['report.txt2', 'two'], ['report.txt10', 'ten'], ['foo2bar10.txt', 'one'], ['foo2bar3.txt', 'tri'],
+    ['zero2.txt', 'two'], ['zero02.txt', 'zer'], ['zero10.txt', 'ten']];
+  const file = await extractionFixture(entries);
+  const picker = page.waitForEvent('filechooser'); await button('Open archive…').click();
+  await (await picker).setFiles(file);
+  await expect(page.getByText(`${entries.length} entries`, { exact: true })).toBeVisible();
+  await expect(button('Open archive…')).toBeEnabled();
+  return { file, entries };
+}
+async function assertSmartSortPairs(page, smart, descending = false) {
+  await expect.poll(async () => {
+    const names = await page.getByRole('checkbox').evaluateAll(nodes => nodes.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map(node => node.getAttribute('aria-label')));
+    const pairs = [smart ? ['file2.txt', 'file10.txt'] : ['file10.txt', 'file2.txt'],
+      smart ? ['report.txt2', 'report.txt10'] : ['report.txt10', 'report.txt2'],
+      smart ? ['folder2/', 'folder10/'] : ['folder10/', 'folder2/'],
+      ['foo2bar10.txt', 'foo2bar3.txt'], ['zero02.txt', 'zero10.txt']];
+    return pairs.every(([a, b]) => names.includes(a) && names.includes(b)
+      && (descending ? names.indexOf(a) > names.indexOf(b) : names.indexOf(a) < names.indexOf(b)));
+  }).toBe(true);
+}
+
+test('Smart file name sorting uses first numeric stem/extension runs, preserves direction and exports selected bytes', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree } = await extractionPage(t, true, { viewport: { width: 1024, height: 900 } });
+  const fixture = await openSmartSortFixture(page, button);
+  await expectSmartNameSorting(page, true);
+  await assertSmartSortPairs(page, true);
+  await saveVisibilityScreenshot(page, 'smart-sort-numeric-on-1024', { 'Smart file name sorting': true });
+  const snapshot = await downloadArchive(page, button('Download ZIP'));
+  await page.getByRole('checkbox', { name: 'file2.txt', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'zero02.txt', exact: true }).click();
+  for (const label of showColumnLabels) await toggleDetailColumn(page, label, false);
+  const preferences = Object.fromEntries(showColumnLabels.map(label => [label, false]));
+  await setSmartNameSorting(page, false); await assertSmartSortPairs(page, false);
+  await saveVisibilityScreenshot(page, 'smart-sort-numeric-off-1024', { 'Smart file name sorting': false });
+  await button('Name').click(); await assertSmartSortPairs(page, false, true);
+  await setSmartNameSorting(page, true); await assertSmartSortPairs(page, true, true);
+  await button('Name').click(); await assertSmartSortPairs(page, true);
+  const ascending = await page.getByRole('checkbox').evaluateAll(nodes => nodes.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map(node => node.getAttribute('aria-label')));
+  await setSmartNameSorting(page, false); await setSmartNameSorting(page, true);
+  assert.deepEqual(await page.getByRole('checkbox').evaluateAll(nodes => nodes.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map(node => node.getAttribute('aria-label'))), ascending,
+    'leading-zero ties and first-run suffixes must remain deterministic after toggling back');
+  const filter = page.getByRole('textbox', { name: 'Filter names', exact: true });
+  await filter.fill('file'); await filter.press('Enter');
+  const state = await detailSelectionState(page);
+  await setSmartNameSorting(page, false); await setSmartNameSorting(page, true);
+  assert.deepEqual(await detailSelectionState(page), state);
+  await expect(page.getByText('2 selected', { exact: true })).toBeVisible();
+  await expectColumnPreferences(page, preferences);
+  assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
+  await button('Extract…').click();
+  await expect(page.getByRole('radio', { name: 'Selected entries', exact: true })).toBeChecked();
+  const folder = await finishExtraction(page, button);
+  assert.deepEqual(await tree(), { ...sentinelTree, [folder]: { 'file2.txt': Array.from(Buffer.from('two')), 'zero02.txt': Array.from(Buffer.from('zer')) } });
+  await button('Clear filter').click();
+  for (const sort of ['Sort by type', 'Sort by size', 'Sort by packed size']) {
+    await button('Layout').click(); await page.getByRole('menuitemcheckbox', { name: sort, exact: true }).click();
+    await setSmartNameSorting(page, false);
+    await button('Layout').click();
+    await expect(page.getByRole('menuitemcheckbox', { name: sort, exact: true })).toBeChecked();
+    await page.keyboard.press('Escape');
+    let names = await page.getByRole('checkbox').evaluateAll(nodes => nodes.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map(node => node.getAttribute('aria-label')));
+    assert.ok(names.indexOf('file10.txt') < names.indexOf('file2.txt'), `${sort} ascending lexical tie: ${JSON.stringify(names)}`);
+    const rawTieOrder = names;
+    await setSmartNameSorting(page, true);
+    names = await page.getByRole('checkbox').evaluateAll(nodes => nodes.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map(node => node.getAttribute('aria-label')));
+    if (sort === 'Sort by size') {
+      assert.deepEqual(names, rawTieOrder, 'Size equal values keep the original raw-name/path tie order under smart toggle');
+    } else {
+      assert.ok(names.indexOf('file2.txt') < names.indexOf('file10.txt'), `${sort} ascending smart tie`);
+    }
+    await button('Layout').click(); await page.getByRole('menuitemcheckbox', { name: sort, exact: true }).click();
+    const before = await page.getByRole('checkbox').evaluateAll(nodes => nodes.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map(node => node.getAttribute('aria-label')));
+    await setSmartNameSorting(page, false); await setSmartNameSorting(page, true);
+    assert.deepEqual(await page.getByRole('checkbox').evaluateAll(nodes => nodes.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map(node => node.getAttribute('aria-label'))), before,
+      `${sort} direction must survive smart toggle`);
+  }
+  await expect(page.getByRole('checkbox', { name: 'file2.txt', exact: true })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'zero02.txt', exact: true })).toBeChecked();
+  assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
+});
+
+test('Smart file name sorting session preference survives reopen, folder/flat view and narrow resizing', { timeout: 120_000 }, async (t) => {
+  const { page, button } = await extractionPage(t, true, { viewport: { width: 1024, height: 900 } });
+  const { file, entries } = await openSmartSortFixture(page, button);
+  await setSmartNameSorting(page, false); await assertSmartSortPairs(page, false);
+  await button('Folder view').click(); await expectSmartNameSorting(page, false);
+  await page.setViewportSize({ width: 360, height: 900 }); await expectSmartNameSorting(page, false);
+  await button('All entries').click(); await assertSmartSortPairs(page, false);
+  const picker = page.waitForEvent('filechooser'); await button('Open archive…').click(); await (await picker).setFiles(file);
+  await expect(page.getByText(`${entries.length} entries`, { exact: true })).toBeVisible();
+  await expect(button('Open archive…')).toBeEnabled();
+  await expectSmartNameSorting(page, false); await assertSmartSortPairs(page, false);
+  await setSmartNameSorting(page, true); await assertSmartSortPairs(page, true);
+  await page.setViewportSize({ width: 1440, height: 900 }); await expectSmartNameSorting(page, true);
+  await assertSmartSortPairs(page, true);
+});
+
+test('Smart file name sorting rejects modal and busy stale menu events', { timeout: 120_000 }, async (t) => {
+  const { page, button } = await extractionPage(t, true, { viewport: { width: 1024, height: 900 } });
+  await openSmartSortFixture(page, button);
+  await button('Layout').click();
+  const stale = await page.getByRole('menuitemcheckbox', { name: 'Smart file name sorting', exact: true }).elementHandle();
+  await page.keyboard.press('Escape'); await button('Create archive…').click();
+  const modal = page.getByRole('group', { name: 'Create archive', exact: true }); await expect(modal).toBeVisible();
+  await stale.evaluate(node => node.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await button('Layout').dispatchEvent('click'); await expect(page.getByRole('menu')).toHaveCount(0);
+  await assertSmartSortPairs(page, true); await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expectSmartNameSorting(page, true);
+  let release, intercepted = false; const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async route => { intercepted = true; await gate; await route.continue().catch(() => {}); });
+  try {
+    await button('Test archive').click(); await expect.poll(() => intercepted).toBe(true); await button('Layout').click();
+    const item = page.getByRole('menuitemcheckbox', { name: 'Smart file name sorting', exact: true });
+    await expect(item).toBeDisabled(); await item.dispatchEvent('click'); await expect(item).toBeChecked();
+    await stale.evaluate(node => node.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await assertSmartSortPairs(page, true); await page.keyboard.press('Escape'); await button('Cancel').click();
+    await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); await stale.dispose(); }
+  await expectSmartNameSorting(page, true); await setSmartNameSorting(page, false); await assertSmartSortPairs(page, false);
 });

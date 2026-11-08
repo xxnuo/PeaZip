@@ -576,6 +576,69 @@ toggle_column packed
 assert_headers Name Type Size Packed
 capture_sizes sort-shortcuts-selection-preserved
 pass four-sort-shortcuts-direction-hidden-packed-and-editing-protection
+# Numeric names intentionally have equal types and different first digit runs.
+numeric="$run_dir/numeric-files"
+mkdir -p "$numeric"
+printf 'numeric two source\n' > "$numeric/name2.txt"
+printf 'numeric ten source\n' > "$numeric/name10.txt"
+(cd "$numeric" && 7z a -tzip -mm=Copy "$fixture/numeric.zip" name2.txt name10.txt) > "$artifacts/numeric-fixture.log"
+sha256sum "$numeric/name2.txt" "$numeric/name10.txt" "$fixture/numeric.zip" > "$artifacts/numeric-source.sha256"
+numeric_order() {
+ ocr
+ read -r nx ny < <(header_left Name)
+ convert "$artifacts/current.png" -crop "180x80+$((nx+38))+$((ny+14))" +repage -resize 400% "$artifacts/numeric-names.png"
+ tesseract "$artifacts/numeric-names.png" "$artifacts/numeric-names" --psm 6 -c tessedit_char_whitelist=name012.txt 2> "$artifacts/numeric-ocr.log"
+ awk '{gsub(/[[:space:]]/,"");if($0 ~ /^name(2|10)[.]txt$/)print}' "$artifacts/numeric-names.txt" > "$artifacts/numeric-order.txt"
+ test "$(wc -l < "$artifacts/numeric-order.txt")" -eq 2
+ printf '%s\n' "$@" > "$artifacts/expected-numeric-order.txt"
+ diff -u "$artifacts/expected-numeric-order.txt" "$artifacts/numeric-order.txt"
+ selection_count 1
+}
+smart_toggle() { menu_action Layout '^Smart$'; }
+smart_order_flow() {
+ local pane=$1
+ # Enter with Smart on and Name ascending. Every toggle must retain direction.
+ numeric_order name2.txt name10.txt
+ smart_toggle
+ numeric_order name10.txt name2.txt
+ xdotool key ctrl+alt+0
+ numeric_order name2.txt name10.txt
+ smart_toggle
+ numeric_order name10.txt name2.txt
+ capture_sizes "$pane-smart-on-descending"
+ xdotool key ctrl+alt+0
+ numeric_order name2.txt name10.txt
+ capture_sizes "$pane-smart-on-ascending"
+}
+open_archive numeric.zip
+select_row '^name2.txt$'
+selection_count 1
+# Switching from Type to Name unambiguously establishes ascending Name.
+click_word '^Type$'
+xdotool key ctrl+alt+0
+smart_order_flow archive
+menu_action File '^folder'
+picker=$(timeout 20 xdotool search --sync --onlyvisible --name '^Open folder$' | head -n1)
+xdotool windowfocus --sync "$picker"
+sleep .5
+xdotool key ctrl+l
+sleep .4
+xdotool mousemove 360 23 click 1 key ctrl+a
+xdotool type --clearmodifiers --delay 0 "$run_dir/"
+xdotool key Return
+sleep .7
+if xdotool search --onlyvisible --name '^Open folder$' >/dev/null; then click_word '^Browse$' 0 150; fi
+sleep .5
+xdotool key ctrl+l
+sleep .3
+xdotool type --clearmodifiers --delay 0 "$numeric"
+xdotool key Return
+wait_status '^2 items'
+select_row '^name2.txt$'
+selection_count 1
+smart_order_flow filesystem
+sha256sum -c "$artifacts/numeric-source.sha256"
+pass smart-numeric-archive-filesystem-toggle-retains-direction-selection-bytes
 sha256sum -c "$artifacts/source.sha256"
 if grep -Ei 'panic|critical|segmentation' "$artifacts/gtk.log"; then exit 1; fi
 printf 'GUI_COLUMNS_DRAG_KEYBOARD_SCROLL_SELECTION_EXTRACT_FS_OK %s\n' "$run_dir"
