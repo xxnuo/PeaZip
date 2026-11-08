@@ -354,10 +354,10 @@ test('Chromium runs WASM: open ZIP, select entries, recover from invalid ZIP', {
   await rows();
   await expect(page.getByText('sample.zip', { exact: true })).toBeVisible();
   const chinese = page.getByRole('checkbox', { name: '你好.txt', exact: true });
-  await chinese.click();
+  await chinese.click({ position: { x: 20, y: 18 } });
   await expect(chinese).toBeChecked();
   await expect(selected(1)).toBeVisible();
-  await chinese.click();
+  await chinese.click({ position: { x: 20, y: 18 } });
   await expect(chinese).not.toBeChecked();
   await expect(selected(0)).toBeVisible();
   await all.click();
@@ -3519,6 +3519,227 @@ test('Sort hotkeys do not steal editing, open-menu, modal or busy input', { time
   await button('Name').focus(); await pressSortHotkey(page, '2');
   await expect.poll(paths).toEqual(['docs/', 'outside.txt', 'docs/plain', 'docs/z.bin', 'docs/a.txt']);
   assert.deepEqual(await tree(), sentinelTree);
+});
+
+function entryNameText(page, path, name = path.replace(/\/$/, '').split('/').at(-1)) {
+  return page.getByRole('group', { name: `Item name ${path}`, exact: true }).getByText(name, { exact: true });
+}
+
+for (const width of [1024, 360]) {
+  test(`Filename double click leaves checkbox indicator double clicks as two selection toggles at ${width}px`, { timeout: 120_000 }, async (t) => {
+    const { page, button, choose, tree, downloads } = await extractionPage(t, true, { viewport: { width, height: 600 } });
+    await choose(await extractionFixture([['docs/', ''], ['docs/a.txt', 'inside'], ['other.txt', 'outside']]));
+    await button('Folder view').click();
+    for (const name of ['docs/', 'other.txt']) {
+      const row = page.getByRole('checkbox', { name, exact: true });
+      await expect(row).not.toBeChecked();
+      await row.evaluate(node => {
+        window.indicatorSelectionChanges = [];
+        window.indicatorClickDetails = [];
+        window.indicatorObserver = new MutationObserver(records => {
+          for (const record of records) window.indicatorSelectionChanges.push(record.oldValue);
+        });
+        window.indicatorObserver.observe(node, { attributes: true, attributeFilter: ['aria-checked'], attributeOldValue: true });
+        const path = node.getAttribute('aria-label');
+        window.indicatorClickListener = event => {
+          if (event.target.closest('[role="checkbox"]')?.getAttribute('aria-label') === path) {
+            window.indicatorClickDetails.push({ detail: event.detail, trusted: event.isTrusted });
+          }
+        };
+        document.addEventListener('mousedown', window.indicatorClickListener, true);
+      });
+      await row.dblclick({ position: { x: 20, y: 18 }, delay: 50 });
+      await expect(row).not.toBeChecked();
+      assert.deepEqual(await page.evaluate(() => {
+        window.indicatorObserver.disconnect();
+        document.removeEventListener('mousedown', window.indicatorClickListener, true);
+        return { changes: window.indicatorSelectionChanges, clicks: window.indicatorClickDetails };
+      }), { changes: ['false', 'true'], clicks: [{ detail: 1, trusted: true }, { detail: 2, trusted: true }] });
+      await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+      await expect(page.getByRole('textbox', { name: 'Archive path', exact: true })).toHaveValue('/');
+      await expect(button('Back')).toBeDisabled(); await expect(button('Forward')).toBeDisabled();
+      await expect(page.getByText(/^Opening files inside archives/)).toHaveCount(0);
+      await expect(page.getByRole('checkbox')).toHaveCount(2);
+    }
+    assert.deepEqual(await tree(), sentinelTree); assert.equal(downloads.length, 0);
+  });
+
+  test(`Filename double click navigates directories, leaves flat view and exports real single-click selections at ${width}px`, { timeout: 120_000 }, async (t) => {
+    const { page, button, choose, tree, downloads } = await extractionPage(t, true, { viewport: { width, height: 600 } });
+    await choose(await extractionFixture([['docs/', ''], ['docs/a.txt', 'inside'], ['other.txt', 'outside']]));
+    const snapshot = await downloadArchive(page, button('Download ZIP'));
+    const path = page.getByRole('textbox', { name: 'Archive path', exact: true });
+    await button('Folder view').click();
+    for (const [label, value] of [['Filter names', 'o'], ['Archive path', 'unsubmitted/']]) {
+      if (await button('Clear selection').isEnabled()) await button('Clear selection').click();
+      const field = page.getByRole('textbox', { name: label, exact: true });
+      await field.fill(value); await expect(field).toBeFocused();
+      await entryNameText(page, 'other.txt').click();
+      await expect(field).not.toBeFocused();
+      const row = page.getByRole('checkbox', { name: 'other.txt', exact: true });
+      await expect(row).toBeFocused(); await expect(row).toBeChecked();
+      await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+      await page.keyboard.press('Space');
+      await expect(row).not.toBeChecked();
+      await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+      await page.keyboard.press('ControlOrMeta+a');
+      await expect(field).toHaveValue(value);
+      await expect(page.getByText('2 selected', { exact: true })).toBeVisible();
+      for (const row of await page.getByRole('checkbox').all()) await expect(row).toBeChecked();
+      await button('Invert selection').click();
+      await expect(field).toHaveValue(value);
+      await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+      for (const row of await page.getByRole('checkbox').all()) await expect(row).not.toBeChecked();
+      if (label === 'Filter names') await button('Clear filter').click();
+    }
+    await path.fill('/');
+    if (await button('Clear selection').isEnabled()) await button('Clear selection').click();
+    await entryNameText(page, 'docs/').dblclick();
+    await expect(path).toHaveValue('docs/');
+    await expect(page.getByRole('checkbox')).toHaveCount(1);
+    await expect(entryNameText(page, 'docs/a.txt')).toBeVisible();
+    await button('Back').click(); await expect(path).toHaveValue('/');
+    await expect(page.getByRole('checkbox')).toHaveCount(2);
+    await button('Forward').click(); await expect(path).toHaveValue('docs/');
+    await button('Archive root').click();
+    await button('All entries').click();
+    await expect(page.getByRole('checkbox')).toHaveCount(3);
+    await entryNameText(page, 'docs/', 'docs/').dblclick();
+    await expect(path).toHaveValue('docs/');
+    await expect(button('All entries')).toBeEnabled();
+    await expect(button('Folder view')).toHaveCount(0);
+    await expect(page.getByRole('checkbox')).toHaveCount(1);
+    if (await button('Clear selection').isEnabled()) await button('Clear selection').click();
+    await entryNameText(page, 'docs/a.txt').click();
+    await expect(page.getByRole('checkbox', { name: 'docs/a.txt', exact: true })).toBeChecked();
+    await button('Archive root').click();
+    await entryNameText(page, 'other.txt').click();
+    await expect(page.getByRole('checkbox', { name: 'other.txt', exact: true })).toBeChecked();
+    await expect(page.getByText('2 selected', { exact: true })).toBeVisible();
+    assert.equal(downloads.length, 1, 'filename navigation and selection must not download anything');
+    assert.deepEqual(await tree(), sentinelTree);
+    assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
+    await button('Extract…').click();
+    await expect(page.getByRole('radio', { name: 'Selected entries', exact: true })).toBeChecked();
+    const folder = await finishExtraction(page, button);
+    assert.deepEqual(await tree(), { ...sentinelTree, [folder]: {
+      docs: { 'a.txt': Array.from(Buffer.from('inside')) },
+      'other.txt': Array.from(Buffer.from('outside')),
+    } });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  });
+
+  test(`Filename double click opens directories and reports unsupported archive files with every modifier at ${width}px`, { timeout: 120_000 }, async (t) => {
+    const { page, button, choose, tree, downloads } = await extractionPage(t, true, { viewport: { width, height: 600 } });
+    await choose(await extractionFixture([['docs/', ''], ['docs/a.txt', 'inside'], ['other.txt', 'outside']]));
+    await button('Folder view').click();
+    const path = page.getByRole('textbox', { name: 'Archive path', exact: true });
+    const messageText = 'Opening files inside archives is not available yet. Use Extract… to save the file.';
+    const message = page.getByText(/^Opening files inside archives/).locator('..');
+    const snapshot = await downloadArchive(page, button('Download ZIP'));
+    const rootRows = await page.getByRole('checkbox').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+    for (const modifiers of [['Shift'], ['Control'], ['Meta'], ['Alt']]) {
+      if (await button('Clear selection').isEnabled()) await button('Clear selection').click();
+      await entryNameText(page, 'docs/').dblclick({ modifiers });
+      await expect(path).toHaveValue('docs/');
+      await expect(page.getByRole('checkbox')).toHaveCount(1);
+      await expect(entryNameText(page, 'docs/a.txt')).toBeVisible();
+      await expect(button('Back')).toBeEnabled(); await expect(button('Forward')).toBeDisabled();
+      await expect(message).toHaveCount(0);
+      await button('Back').click();
+      await expect(path).toHaveValue('/');
+      assert.deepEqual(await page.getByRole('checkbox').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label'))), rootRows);
+      await expect(button('Back')).toBeDisabled(); await expect(button('Forward')).toBeEnabled();
+      await button('Forward').click(); await expect(path).toHaveValue('docs/');
+      await expect(page.getByRole('checkbox')).toHaveCount(1);
+      await button('Back').click(); await expect(path).toHaveValue('/');
+      await expect(message).toHaveCount(0);
+      await entryNameText(page, 'other.txt').dblclick({ modifiers });
+      await expect(path).toHaveValue('/');
+      await expect(message).toBeVisible(); await expect(message).toContainText(messageText, { useInnerText: true });
+      assert.deepEqual(await page.getByRole('checkbox').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label'))), rootRows);
+      await expect(button('Back')).toBeDisabled(); await expect(button('Forward')).toBeEnabled();
+      await expect(page.getByRole('group', { name: 'Extract archive', exact: true })).toHaveCount(0);
+      assert.deepEqual(await tree(), sentinelTree);
+      assert.equal(downloads.length, 1, `${modifiers[0]} double click must not download or extract`);
+    }
+    if (await button('Clear selection').isEnabled()) await button('Clear selection').click();
+    await entryNameText(page, 'other.txt').click();
+    await expect(page.getByRole('checkbox', { name: 'other.txt', exact: true })).toBeChecked();
+    await page.waitForTimeout(550);
+    await entryNameText(page, 'other.txt').click();
+    await expect(page.getByRole('checkbox', { name: 'other.txt', exact: true })).not.toBeChecked();
+    await entryNameText(page, 'other.txt').dblclick();
+    await expect(message).toBeVisible(); await expect(message).toContainText(messageText, { useInnerText: true });
+    await expect(path).toHaveValue('/');
+    assert.deepEqual(await page.getByRole('checkbox').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label'))), rootRows);
+    await expect(button('Back')).toBeDisabled(); await expect(button('Forward')).toBeEnabled();
+    await expect(page.getByRole('group', { name: 'Extract archive', exact: true })).toHaveCount(0);
+    assert.deepEqual(await tree(), sentinelTree);
+    assert.equal(downloads.length, 1, 'unsupported file double click must not download or extract');
+    assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
+  });
+}
+
+test('Filename double click cannot pair the first click with click-count two across a modal', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree, downloads } = await extractionPage(t, true, { viewport: { width: 1024, height: 600 } });
+  await choose(await extractionFixture([['docs/', ''], ['docs/a.txt', 'inside'], ['other.txt', 'outside']]));
+  await button('Folder view').click();
+  const name = entryNameText(page, 'docs/');
+  await name.evaluate(node => {
+    window.filenameClickDetails = [];
+    node.addEventListener('click', event => window.filenameClickDetails.push({ detail: event.detail, trusted: event.isTrusted }));
+  });
+  await name.click();
+  await button('Create archive…').click();
+  const modal = page.getByRole('group', { name: 'Create archive', exact: true });
+  await expect(modal).toBeVisible();
+  await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+  const box = await name.boundingBox();
+  assert.ok(box);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down({ clickCount: 2 });
+  await page.mouse.up({ clickCount: 2 });
+  assert.deepEqual(await page.evaluate(() => window.filenameClickDetails), [{ detail: 1, trusted: true }, { detail: 2, trusted: true }]);
+  await expect(page.getByRole('textbox', { name: 'Archive path', exact: true })).toHaveValue('/');
+  await expect(button('Back')).toBeDisabled();
+  await expect(page.getByRole('checkbox')).toHaveCount(2);
+  assert.deepEqual(await tree(), sentinelTree); assert.equal(downloads.length, 0);
+  await name.dblclick();
+  await expect(page.getByRole('textbox', { name: 'Archive path', exact: true })).toHaveValue('docs/');
+});
+
+test('Filename double click cannot navigate through a modal or busy archive operation', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree, downloads } = await extractionPage(t, true, { viewport: { width: 1024, height: 600 } });
+  await choose(await extractionFixture([['docs/', ''], ['docs/a.txt', 'inside'], ['other.txt', 'outside']]));
+  await button('Folder view').click();
+  const path = page.getByRole('textbox', { name: 'Archive path', exact: true });
+  const before = await detailSelectionState(page);
+  const name = entryNameText(page, 'docs/');
+  const box = await name.boundingBox();
+  assert.ok(box);
+  await button('Create archive…').click();
+  const modal = page.getByRole('group', { name: 'Create archive', exact: true });
+  await expect(modal).toBeVisible();
+  await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(modal).toBeVisible(); await expect(path).toHaveValue('/');
+  assert.deepEqual(await detailSelectionState(page), before);
+  await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+  let release, intercepted = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async route => {
+    intercepted = true; await gate; await route.continue().catch(() => {});
+  });
+  try {
+    await button('Test archive').click(); await expect.poll(() => intercepted).toBe(true);
+    await name.dblclick({ force: true });
+    await expect(path).toHaveValue('/');
+    assert.deepEqual(await detailSelectionState(page), before);
+    await button('Cancel').click();
+    await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
+  assert.deepEqual(await tree(), sentinelTree); assert.equal(downloads.length, 0);
+  await name.dblclick(); await expect(path).toHaveValue('docs/');
 });
 
 async function setSmartNameSorting(page, enabled) {

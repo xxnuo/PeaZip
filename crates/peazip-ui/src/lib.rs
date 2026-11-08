@@ -34,6 +34,7 @@ mod mobile_export;
 mod mobile_files;
 mod name_filter;
 mod navigation;
+mod row_activation;
 mod smart_sort;
 
 type LoadedArchive = (Arc<Vec<u8>>, Vec<Entry>, ArchiveFormat);

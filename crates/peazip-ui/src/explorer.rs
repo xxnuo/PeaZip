@@ -281,9 +281,16 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                     let selection = move || row().map_or((false, false), |row| entries.with(|items| selected.with(|chosen| navigation::selection_state(&row, items, chosen))));
                     let checked = move || selection().0;
                     let mixed = move || selection().1;
+                    let previous_click = stored(None);
+                    let selection_control = element_ref();
+                    effect(move || {
+                        let _ = (busy.get(), archive_version.get(), flat.get());
+                        navigation.with(|_| ());
+                        previous_click.replace(None);
+                    });
                     view().flex_row().items_center().w(move || px(table_width())).border_b_1().border_color(move || theme().border)
                         .bg(move || if checked() {theme().muted}else{theme().background})
-                        .child(checkbox().accessibility_label(move || row().map(|row| row.path.into())).checked(checked).indeterminate(mixed).disabled(move || busy.get())
+                        .child(checkbox().element_ref(&selection_control).accessibility_label(move || row().map(|row| row.path.into())).checked(checked).indeterminate(mixed).disabled(move || busy.get())
                             .on_change(move |value: &bool| {
                                 if busy.get_untracked() {return;}
                                 if let Some(row)=row() {
@@ -293,6 +300,22 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                             .indicator_class("size-4 ml-3 shrink-0 border border-border bg-background")
                             .indicator(view().size_4().items_center().justify_center().child(when(checked, move || view().w(px(8.0)).h(px(8.0)).bg(move || theme().foreground))).child(when(mixed, move || view().w(px(8.0)).h(px(2.0)).bg(move || theme().foreground))))
                             .child(view().flex_row().items_center().gap_2().pl_2().pr_2().py_2().w(move || px((name_width() - 28.0).max(0.0))).flex_shrink(0.0).min_w(px(0.0))
+                                .role(AccessibilityRole::Group)
+                                .label(move || row().map(|row| format!("Item name {}", row.path)).unwrap_or_default())
+                                .focusable(false)
+                                .on_press(move |event: &nsh_core::PressEvent| {
+                                    if busy.get_untracked() { previous_click.replace(None); return; }
+                                    let Some(row) = row() else { return; };
+                                    selection_control.focus();
+                                    let target = (archive_version.get_untracked(), navigation.with_untracked(|state| state.current().to_owned()), row.path.clone());
+                                    if previous_click.with(|previous| crate::row_activation::double_click(previous, target, event)) {
+                                        if row.is_dir { flat.set(false); enter(row.path); }
+                                        else { error.set("Opening files inside archives is not available yet. Use Extract… to save the file.".into()); }
+                                    } else {
+                                        let value = !checked() || mixed();
+                                        entries.with(|items| selected.update(|chosen| navigation::set_selected(&row, value, items, chosen)));
+                                    }
+                                })
                                 .child(when(move || row().is_some_and(|row|row.is_dir), || crate::icons::icon("folder")))
                                 .child(when(move || row().is_some_and(|row|!row.is_dir), || crate::icons::icon("file")))
                                 .child(text(move || row().map(|row|row.name).unwrap_or_default()).number_of_lines(1).flex_1().min_w(px(0.0))))

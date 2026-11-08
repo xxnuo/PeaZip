@@ -63,13 +63,15 @@ jobs:
         with:
           components: clippy
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev xvfb xauth dbus-x11 xdotool imagemagick tesseract-ocr fonts-noto-cjk p7zip-full
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libx11-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev xvfb xauth dbus-x11 xdotool imagemagick tesseract-ocr fonts-noto-cjk p7zip-full
       - run: cargo test -p peazip-ui --locked
       - run: cargo clippy -p peazip-ui --all-targets --locked -- -D warnings
       - if: runner.os == 'Linux'
         run: cargo build -p peazip-ui --locked && bash scripts/smoke_linux.sh target/debug/peazip-ui target/linux-smoke
       - if: runner.os == 'Linux'
         run: bash scripts/smoke_linux_filesystem.sh target/debug/peazip-ui target/linux-filesystem
+      - if: runner.os == 'Linux'
+        run: bash scripts/smoke_linux_double_click.sh target/debug/peazip-ui target/linux-double-click
       - if: runner.os == 'Linux'
         run: bash scripts/smoke_linux_create_options.sh target/debug/peazip-ui target/linux-create-options
       - if: runner.os == 'Linux'
@@ -93,6 +95,7 @@ jobs:
           path: |
             target/linux-smoke/
             target/linux-filesystem/
+            target/linux-double-click/
             target/linux-create-options/
             target/linux-create-formats/
             target/linux-extract-options/

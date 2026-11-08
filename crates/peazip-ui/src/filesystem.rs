@@ -636,6 +636,12 @@ pub fn browser(
                                     files.selected.with(|selected| selected.contains(&entry.id))
                                 })
                             };
+                            let previous_click = stored(None);
+                            let selection_control = element_ref();
+                            effect(move || {
+                                let _ = (busy.get(), files.version.get());
+                                previous_click.replace(None);
+                            });
                             view()
                                 .flex_row()
                                 .w(move || px(table_width()))
@@ -651,6 +657,7 @@ pub fn browser(
                                 })
                                 .child(
                                     checkbox()
+                                        .element_ref(&selection_control)
                                         .accessibility_label(move || {
                                             row().map(|entry| entry.label().into())
                                         })
@@ -702,6 +709,21 @@ pub fn browser(
                                         .child(
                                             text(move || {
                                                 row().map(|entry| entry.name).unwrap_or_default()
+                                            })
+                                            .label(move || row().map(|entry| format!("Item name {}", entry.name)).unwrap_or_default())
+                                            .focusable(false)
+                                            .on_press(move |event: &nsh_core::PressEvent| {
+                                                if busy.get_untracked() { previous_click.replace(None); return; }
+                                                let Some(entry) = row() else { return; };
+                                                selection_control.focus();
+                                                let target = (files.version.get_untracked(), entry.id);
+                                                if previous_click.with(|previous| crate::row_activation::double_click(previous, target, event)) {
+                                                    open_entry(entry.id);
+                                                } else {
+                                                    files.selected.update(|selected| {
+                                                        if !selected.remove(&entry.id) { selected.insert(entry.id); }
+                                                    });
+                                                }
                                             })
                                             .number_of_lines(1)
                                             .w(move || px((name_width() - 48.0).max(0.0)))
