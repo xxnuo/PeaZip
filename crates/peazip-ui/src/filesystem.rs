@@ -424,7 +424,7 @@ pub fn browser(
         .child(when(move || files.pattern.with(|pattern| pattern.error().is_some()), move || text(move || files.pattern.with(|pattern| pattern.error().unwrap_or_default().to_owned())).px_3().py_1().text_color(move || theme().destructive)))
         .child(when(
             move || !files.filter.with(String::is_empty),
-            move || text(move || if files.wildcards.get() { "Name masks use *, ?, [abc], [a-z] and [!abc] (case insensitive). Hidden selections remain selected for Open selected and Create ZIP." } else { "Names contain the text (case insensitive). Hidden selections remain selected for Open selected and Create ZIP." })
+            move || text(move || if files.wildcards.get() { "Name masks use *, ?, [abc], [a-z] and [!abc] (case insensitive). Hidden selections remain selected for Open selected, Copy selected and Create ZIP." } else { "Names contain the text (case insensitive). Hidden selections remain selected for Open selected, Copy selected and Create ZIP." })
                 .px_3()
                 .py_1()
                 .text_color(move || theme().muted_foreground),

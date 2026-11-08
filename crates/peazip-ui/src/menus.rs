@@ -18,6 +18,7 @@ const GROUPS: &[(&str, &[CommandId])] = &[
     (
         "Edit",
         &[
+            CommandId::CopySelected,
             CommandId::SelectAll,
             CommandId::InvertSelection,
             CommandId::ClearSelection,

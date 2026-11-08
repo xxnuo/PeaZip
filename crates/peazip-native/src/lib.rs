@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -151,6 +151,12 @@ pub fn create_zip_from_paths_with_options(
 
 type Source = (Arc<cap_std::fs::Dir>, OsString);
 
+struct RawEntry {
+    path: PathBuf,
+    is_dir: bool,
+    data: Vec<u8>,
+}
+
 fn create_zip_from_sources(
     count: usize,
     sources: impl IntoIterator<Item = Result<Source, Error>>,
@@ -159,17 +165,58 @@ fn create_zip_from_sources(
     limits: Limits,
 ) -> Result<Vec<Entry>, Error> {
     options.validate()?;
+    check_source_count(count, limits)?;
+    match fs::symlink_metadata(destination) {
+        Ok(_) => return Err(io::Error::from(io::ErrorKind::AlreadyExists).into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let mut entries = read_sources(count, sources, limits)?
+        .into_iter()
+        .map(|entry| {
+            let mut path = entry
+                .path
+                .iter()
+                .map(|component| {
+                    component
+                        .to_str()
+                        .ok_or_else(|| Error::UnsafePath(format!("{:?}", entry.path)))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join("/");
+            if entry.is_dir {
+                path.push('/');
+            }
+            Ok(MemoryEntry {
+                path,
+                is_dir: entry.is_dir,
+                data: entry.data,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let bytes = create_zip_with_options(&entries, limits, options)?;
+    let listed = list_zip(&bytes, limits)?;
+    publish(&bytes, destination)?;
+    Ok(listed)
+}
+
+fn check_source_count(count: usize, limits: Limits) -> Result<(), Error> {
     if count == 0 {
         return Err(Error::UnsupportedEntry("empty selection".into()));
     }
     if count > limits.max_entries {
         return Err(Error::Limit("entry count"));
     }
-    match fs::symlink_metadata(destination) {
-        Ok(_) => return Err(io::Error::from(io::ErrorKind::AlreadyExists).into()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
+    Ok(())
+}
+
+fn read_sources(
+    count: usize,
+    sources: impl IntoIterator<Item = Result<Source, Error>>,
+    limits: Limits,
+) -> Result<Vec<RawEntry>, Error> {
+    check_source_count(count, limits)?;
     let mut names = BTreeSet::new();
     let mut entries = Vec::new();
     let mut total = 0u64;
@@ -177,27 +224,21 @@ fn create_zip_from_sources(
     let mut discovered = count;
     for source in sources {
         let (parent, component) = source?;
-        let name = component
-            .to_str()
-            .ok_or_else(|| Error::UnsafePath(format!("{component:?}")))?;
-        if name.len() > limits.max_path_bytes {
+        check_component(&component)?;
+        if component.as_encoded_bytes().len() > limits.max_path_bytes {
             return Err(Error::Limit("path bytes"));
-        }
-        if !names.insert(name.to_lowercase()) {
-            return Err(Error::DuplicatePath(name.into()));
         }
         // Only the selected root's parent is ambient/trusted. Every subsequent
         // open uses one component relative to an already opened directory.
-        pending.push((parent, component.clone(), name.to_owned()));
-        while let Some((parent, component, mut name)) = pending.pop() {
+        pending.push((parent, component.clone(), PathBuf::from(component)));
+        while let Some((parent, component, name)) = pending.pop() {
+            if !names.insert(name.clone()) {
+                return Err(Error::DuplicatePath(format!("{name:?}")));
+            }
             let mut file = open_source(&parent, &component)?;
             drop(parent);
             let metadata = file.metadata()?;
             if metadata.is_dir() {
-                name.push('/');
-                if name.len() > limits.max_path_bytes {
-                    return Err(Error::Limit("path bytes"));
-                }
                 let dir = Arc::new(cap_std::fs::Dir::from_std_file(file));
                 for child in dir.entries()? {
                     if discovered >= limits.max_entries {
@@ -206,19 +247,14 @@ fn create_zip_from_sources(
                     discovered += 1;
                     let child = child?;
                     let component = child.file_name();
-                    let component = component.to_str().ok_or_else(|| {
-                        Error::UnsafePath(component.to_string_lossy().into_owned())
-                    })?;
-                    if name.len().saturating_add(component.len()) > limits.max_path_bytes {
+                    check_component(&component)?;
+                    let path = name.join(&component);
+                    if path.as_os_str().as_encoded_bytes().len() > limits.max_path_bytes {
                         return Err(Error::Limit("path bytes"));
                     }
-                    pending.push((
-                        Arc::clone(&dir),
-                        OsString::from(component),
-                        format!("{name}{component}"),
-                    ));
+                    pending.push((Arc::clone(&dir), component, path));
                 }
-                entries.push(MemoryEntry {
+                entries.push(RawEntry {
                     path: name,
                     is_dir: true,
                     data: Vec::new(),
@@ -240,7 +276,7 @@ fn create_zip_from_sources(
                 total = total
                     .checked_add(data.len() as u64)
                     .ok_or(Error::Limit("total bytes"))?;
-                entries.push(MemoryEntry {
+                entries.push(RawEntry {
                     path: name,
                     is_dir: false,
                     data,
@@ -248,11 +284,18 @@ fn create_zip_from_sources(
             }
         }
     }
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    let bytes = create_zip_with_options(&entries, limits, options)?;
-    let listed = list_zip(&bytes, limits)?;
-    publish(&bytes, destination)?;
-    Ok(listed)
+    Ok(entries)
+}
+
+fn check_component(name: &std::ffi::OsStr) -> Result<(), Error> {
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some()
+        || (cfg!(windows) && name.as_encoded_bytes().contains(&b':'))
+    {
+        return Err(Error::UnsafePath(format!("{name:?}")));
+    }
+    Ok(())
 }
 
 fn publish(bytes: &[u8], destination: &Path) -> Result<(), Error> {
@@ -367,7 +410,7 @@ pub fn extract_archive_to_directory_with_options(
     publish_extracted(entries, destination)
 }
 
-fn publish_extracted(entries: Vec<MemoryEntry>, destination: &Path) -> Result<usize, Error> {
+fn prepare_directory(destination: &Path) -> Result<(tempfile::TempDir, PathBuf), Error> {
     let name = destination.file_name().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "missing destination filename")
     })?;
@@ -393,6 +436,29 @@ fn publish_extracted(entries: Vec<MemoryEntry>, destination: &Path) -> Result<us
         builder.permissions(fs::Permissions::from_mode(0o700));
     }
     let temporary = builder.tempdir_in(parent)?;
+    Ok((temporary, destination))
+}
+
+fn publish_copied(entries: Vec<RawEntry>, destination: &Path) -> Result<usize, Error> {
+    let (temporary, destination) = prepare_directory(destination)?;
+    // The collector emits parents before children. Never merge filesystem aliases.
+    for entry in &entries {
+        let path = temporary.path().join(&entry.path);
+        if entry.is_dir {
+            fs::create_dir(path)?;
+        } else {
+            let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+            file.write_all(&entry.data)?;
+            file.sync_all()?;
+        }
+    }
+    publish_directory(temporary.path(), &destination)?;
+    let _ = temporary.keep();
+    Ok(entries.len())
+}
+
+fn publish_extracted(entries: Vec<MemoryEntry>, destination: &Path) -> Result<usize, Error> {
+    let (temporary, destination) = prepare_directory(destination)?;
     for entry in &entries {
         let path = temporary.path().join(&entry.path);
         if entry.is_dir {

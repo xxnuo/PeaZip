@@ -936,6 +936,12 @@ pub fn App() -> impl IntoElement {
             .icon("folder"),
             "mod+shift+n",
         ));
+        all.push(Command::new(
+            CommandId::CopySelected,
+            "Copy selected…",
+            move || !busy.get() && files.active.get() && !files.selected.with(BTreeSet::is_empty),
+            move || disk.copy_selection(),
+        ));
         all.push(desktop_shortcut(
             Command::new(
                 CommandId::OpenSelected,
@@ -1021,6 +1027,7 @@ pub fn App() -> impl IntoElement {
                         CommandId::OpenFolder,
                         CommandId::NewFolder,
                         CommandId::OpenSelected,
+                        CommandId::CopySelected,
                         CommandId::CreateZip,
                         CommandId::CreateFolderZip,
                         CommandId::RefreshFolder,

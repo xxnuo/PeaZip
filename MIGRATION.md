@@ -310,3 +310,17 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - Windows GNU native 测试交叉检查、UI check/release 与 PE/loader/hash 检查通过，记录 `target/windows-build/new-folder`；未实际运行 Windows 程序或测试。Web/Android 本轮只回归已有归档流程，不开放桌面文件夹创建；iOS 未新增验收声明。
 
 - 补充仅打开/取消的 GTK 视觉流程，1024×600 与 1440×900 截图位于 `target/linux-new-folder/visual/captures`，已目视检查并确认真实输入框默认名称被全选；Cancel 后无输出，运行二进制 hash 与最终通过版本一致。补充脚本/source/build hashes 保存在同目录，不据此宣称暗色/高 DPI 或 macOS/Windows 视觉验收完成。汇总证据 `target/new-folder-evidence.json`。
+
+## 桌面复制所选项（FM-COPY-01）
+
+- Edit 和桌面文件夹工具栏新增 Copy selected…，仅在文件夹有选择、非 busy/modal 时可用；只请求一个新目标目录名，不重新请求输入项目。目标选择器之前冻结目录 capability 与稳定 ID，隐藏选择仍参与复制并在筛选提示中明确说明。取消、失败和成功都保持源视图、历史、筛选和选择，不自动导航到输出。
+- native 新增 `DirectorySnapshot::copy_selected_to_directory`，与 ZIP 输入共享有界 capability 遍历和文件读取；复制保留原始 OsString/PathBuf 组件、文件字节、子目录和空目录，不经压缩/解压中间步骤。Unix 合法的冒号、反斜杠、控制字符及非 UTF-8 名称按原名复制；ZIP 在独立转换环节继续执行原有 UTF-8/可移植路径策略，不因新增复制而放松归档校验。Windows 单组件检查另拒绝冒号/ADS。
+- 复制完成全部读取和校验后才创建私有临时输出树，每个目录排他 create_dir、文件 create_new，不能在名称别名碰撞时静默合并。最终新根复用既有原子无覆盖发布，已有文件/目录/链接均拒绝，失败清理临时树；目标位于源树内也不会递归读入本次临时目录或输出。链接/reparse/特殊文件在读取入口拒绝，路径只由已检查的单个原始组件组成。显式目标父路径仍沿用可信环境路径政策，不宣称全路径沙箱。
+- 默认复制源上限为 4096 项、1024 编码字节路径、16 MiB 单文件、64 MiB 总内容；归档 32 MiB 与压缩比限制不用于复制。当前为有界内存读取，复制过程中尚无取消/流式大文件能力；不保留源权限、时间、所有者、硬链接或稀疏属性，相关完整文件管理能力仍待实现。复制后当前列表快照保持，需要 Refresh 才显示新产生的目录项。
+- 原版参考固定 `peach.pas:61551` 的 Copy to…（Ctrl+F2），其流程先写内部剪贴板、导航目标并粘贴，允许已有目录和平台覆盖策略；当前新目录排他复制与保留源视图是此阶段明确范围，不冒充已有覆盖/跳过/合并、剪贴板 Copy/Paste 或原版 cp -p 元数据语义。Ctrl+C 未被占用。
+- 最终工作区 316 次测试执行、完整 Web 99 项、主机/WASM/Android target Clippy、格式检查及 Android APK 构建通过。新增 native 本机 10 项、Linux 11 项（含真实非 UTF-8）覆盖源预算、真实字节、空目录、原始名称、现有目标、目标位于源树内、同目标并发发布、根替换与链接拒绝；旧 native/ZIP 回归继续通过。新增 App 6 项验证 Save-only、隐藏稳定 ID、取消、失败、原选择与历史保持、冻结源 capability 和实际输出。
+- Linux GTK 最终完整流程通过，记录 `target/linux-copy-selected/run5.log` / `run5-source.json`；复制文件/Unicode/二进制/空目录独立 diff/hash 核对，既有目标 sentinel 保持，链接拒绝无输出。GTK 保存选择器对完整路径可能先导航父目录，对已有文件有系统 Replace 提示；脚本明确等选择器关闭，再读取应用拒绝覆盖提示，不把系统提示误算应用结果。1024×600 与 1440×900 的源视图截图已保存检查，脚本接入 Linux CI，远程 CI 未运行。
+- Windows GNU native 测试交叉检查、UI check/release、PE/loader/hash 检查通过，证据 `target/windows-build/copy-selected`；未实际运行 Windows 程序或测试。Web/Android 只回归既有归档功能，没有开放桌面复制；iOS 未新增验收声明。
+- 本轮执行 upstream sources fetch 和差异报告，`target/copy-selected-upstream-report.json` 的 target 与既有审查基线均为 `367c68278a7b0e7741fd8fe3106f34d6cfcb656f`，commits/files 为空，未自动移动基线。项目总体迁移和剩余文件管理/六平台验收仍未完成。
+
+- 补充 GTK 复制后键盘焦点定向检查通过：无额外点击的 Ctrl+I 实测 3→2→3 selected，两个隐藏选择保持；筛选框保留高亮文字不等于仍拥有快捷键编辑焦点。补充脚本、截图及 source/build hashes 位于 `target/linux-copy-selected/focus-probe`，没有修改生产或正式脚本。汇总证据 `target/copy-selected-evidence.json`。

@@ -106,7 +106,7 @@ fn live_literal_unicode_filter_counts_clear_and_submit_never_navigate() {
         app.screen().input_text("Filter names").unwrap(),
         Some("case")
     );
-    assert!(app.screen().shows("Names contain the text (case insensitive). Hidden selections remain selected for Open selected and Create ZIP."));
+    assert!(app.screen().shows("Names contain the text (case insensitive). Hidden selections remain selected for Open selected, Copy selected and Create ZIP."));
     app.press("role:button[Clear filter]").unwrap();
     app.wait_for("7 of 7 items shown").unwrap();
     assert_eq!(app.screen().input_text("Filter names").unwrap(), Some(""));

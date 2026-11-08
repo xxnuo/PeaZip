@@ -1,6 +1,6 @@
 use super::{
-    Entry, Error, Limits, ZipOptions, create_zip_from_sources, is_link, open_source,
-    read_archive_file,
+    Entry, Error, Limits, Source, ZipOptions, create_zip_from_sources, is_link, open_source,
+    publish_copied, read_archive_file, read_sources,
 };
 use cap_fs_ext::MetadataExt;
 use cap_std::fs::Dir;
@@ -246,14 +246,26 @@ impl DirectorySnapshot {
         limits: Limits,
         options: ZipOptions,
     ) -> Result<Vec<Entry>, Error> {
-        let sources = ids.iter().map(|&id| {
-            let entry = self.entry(id)?;
-            if !matches!(entry.kind, EntryKind::File | EntryKind::Directory) {
-                return Err(Error::UnsupportedEntry(entry.display_name.clone()));
-            }
-            Ok((Arc::clone(&self.dir), entry.name.clone()))
-        });
+        let sources = ids.iter().map(|&id| self.source(id));
         create_zip_from_sources(ids.len(), sources, destination, options, limits)
+    }
+
+    pub fn copy_selected_to_directory(
+        &self,
+        ids: &[usize],
+        destination: &Path,
+        limits: Limits,
+    ) -> Result<usize, Error> {
+        let entries = read_sources(ids.len(), ids.iter().map(|&id| self.source(id)), limits)?;
+        publish_copied(entries, destination)
+    }
+
+    fn source(&self, id: usize) -> Result<Source, Error> {
+        let entry = self.entry(id)?;
+        if !matches!(entry.kind, EntryKind::File | EntryKind::Directory) {
+            return Err(Error::UnsupportedEntry(entry.display_name.clone()));
+        }
+        Ok((Arc::clone(&self.dir), entry.name.clone()))
     }
 
     fn entry(&self, id: usize) -> Result<&DirectoryEntry, Error> {

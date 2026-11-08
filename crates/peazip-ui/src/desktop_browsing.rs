@@ -425,6 +425,54 @@ impl Browser {
             .set("Open an archive to view its contents.".into());
     }
 
+    pub fn copy_selection(self) {
+        if self.busy.get_untracked() || !self.files.active.get_untracked() {
+            return;
+        }
+        let Some(view) = self.files.current.get_untracked() else {
+            return;
+        };
+        let ids: Vec<_> = self
+            .files
+            .selected
+            .with(|selected| selected.iter().copied().collect());
+        if ids.is_empty() {
+            return;
+        }
+        self.busy.set(true);
+        self.activity
+            .set("Choose a new folder for the copy…".into());
+        self.owner.run(|| spawn(async move {
+            let destination = pick_save_path(nsh_core::file_dialog::SaveDialog::new()
+                .title("Copy selected — choose a new folder name").button_label("Copy").file_name("Copy")).await;
+            match destination {
+                Ok(Some(destination)) => {
+                    self.activity.set("Copying selected items…".into());
+                    let label = destination.display().to_string();
+                    let result = blocking(move || view.0.copy_selected_to_directory(&ids, &destination, peazip_core::Limits::default())).await;
+                    match result {
+                        Ok(Ok(count)) => self.status.set(format!("Copied {count} entries to {label}")),
+                        Ok(Err(error)) => {
+                            let detail = match error {
+                                peazip_core::Error::Limit(kind) => format!("Copy limit exceeded: {kind}"),
+                                peazip_core::Error::UnsupportedEntry(path) => format!("Links and special files cannot be copied: {path}"),
+                                peazip_core::Error::UnsafePath(path) => format!("Invalid source name: {path}"),
+                                peazip_core::Error::DuplicatePath(path) => format!("Conflicting source paths: {path}"),
+                                error => error.to_string(),
+                            };
+                            self.status.set(format!("Could not copy selected items: {detail}"));
+                        }
+                        Err(error) => self.status.set(format!("Could not confirm copy completion: {error}. Check the destination before retrying.")),
+                    }
+                }
+                Ok(None) => self.status.set("Copy cancelled.".into()),
+                Err(error) => self.status.set(format!("Could not copy selected items: {error}")),
+            }
+            self.busy.set(false);
+            after_answer(move || self.files.content.focus());
+        }));
+    }
+
     pub async fn create_selection(
         self,
         options: peazip_core::ZipOptions,
