@@ -3277,3 +3277,138 @@ test('Expanded filesystem budget rejects Full paths before output but permits Fi
   assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
   t.diagnostic(`Actual ZIP: ${count} empty files, ${physical.size} expanded nodes; Full paths made zero output calls; Files only wrote ${count} unique files through real OPFS.`);
 });
+
+const sortHotkeys = [
+  ['0', 'Sort by name'], ['1', 'Sort by type'], ['2', 'Sort by size'], ['3', 'Sort by packed size'],
+];
+async function pressSortHotkey(page, digit) {
+  const mac = await page.evaluate(() => /Mac|iPhone|iPad/.test(navigator.platform));
+  await page.keyboard.press(`${mac ? 'Meta' : 'Control'}+Alt+${digit}`);
+}
+async function openSortFixture(page, button) {
+  const { stdout } = await promisify(execFile)('uv', ['run', 'python', '-c', `
+import base64, io, json, zipfile
+out = io.BytesIO()
+with zipfile.ZipFile(out, 'w') as archive:
+    for name, data, method in [('docs/', b'', 0), ('docs/a.txt', b'A'*2000, 8), ('docs/z.bin', bytes(range(128)), 0), ('docs/plain', b'data', 0), ('outside.txt', b'', 0)]:
+        archive.writestr(name, data, compress_type=method)
+with zipfile.ZipFile(out) as archive:
+    metadata = {i.filename: {'size': i.file_size, 'packed': i.compress_size, 'directory': i.is_dir()} for i in archive.infolist()}
+print(json.dumps({'bytes': base64.b64encode(out.getvalue()).decode(), 'metadata': metadata}))
+`]);
+  const value = JSON.parse(stdout);
+  const picker = page.waitForEvent('filechooser');
+  await button('Open archive…').click();
+  await (await picker).setFiles({ name: 'sort-hotkeys.zip', mimeType: 'application/zip', buffer: Buffer.from(value.bytes, 'base64') });
+  await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+  await expect(button('Open archive…')).toBeEnabled();
+  return value;
+}
+
+for (const width of [1024, 360]) {
+  test(`Sort hotkeys 0–3 toggle real ordering while preserving hidden columns, partial selection and bytes at ${width}px`, { timeout: 120_000 }, async (t) => {
+    const { page, button, tree } = await extractionPage(t, true, { viewport: { width, height: 600 } });
+    const fixture = await openSortFixture(page, button);
+    await page.getByRole('checkbox', { name: 'docs/', exact: true }).click();
+    await page.getByRole('checkbox', { name: 'docs/z.bin', exact: true }).click();
+    await page.getByRole('checkbox', { name: 'outside.txt', exact: true }).click();
+    const filter = page.getByRole('textbox', { name: 'Filter names', exact: true });
+    await filter.fill('docs'); await filter.press('Enter');
+    await expect(page.getByRole('checkbox', { name: 'docs/', exact: true })).toHaveAttribute('aria-checked', 'mixed');
+    const selected = await page.getByText(/^\d+ selected$/, { exact: true }).innerText();
+    const snapshot = await downloadArchive(page, button('Download ZIP'));
+    assert.deepEqual(snapshot.bytes, Buffer.from(fixture.bytes, 'base64'));
+    for (const label of showColumnLabels) await toggleDetailColumn(page, label, false);
+    const hidden = Object.fromEntries(showColumnLabels.map(label => [label, false]));
+    await button('Layout').click();
+    await page.getByRole('menuitemcheckbox', { name: 'Sort by type', exact: true }).click();
+    const paths = () => page.getByRole('checkbox').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+    const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+    for (const [digit, label] of sortHotkeys) {
+      for (const descending of [false, true]) {
+        await button('Name').focus();
+        await pressSortHotkey(page, digit);
+        const expected = Object.keys(fixture.metadata).filter(name => name.includes('docs')).sort((a, b) => {
+          const left = fixture.metadata[a], right = fixture.metadata[b];
+          if (left.directory !== right.directory) return left.directory ? -1 : 1;
+          const kind = path => path.endsWith('/') ? 'Folder' : path.split('/').at(-1).includes('.') ? path.split('.').at(-1).toUpperCase() : 'File';
+          const primary = digit === '0' ? compare(a, b) : digit === '1' ? compare(kind(a), kind(b))
+            : (digit === '2' ? left.size - right.size : left.packed - right.packed);
+          return (descending ? -primary : primary) || compare(a, b);
+        });
+        await expect.poll(paths).toEqual(expected);
+        await expect(filter).toHaveValue('docs');
+        await expect(page.getByText(selected, { exact: true })).toBeVisible();
+        await expect(page.getByRole('checkbox', { name: 'docs/', exact: true })).toHaveAttribute('aria-checked', 'mixed');
+        await expect(page.getByRole('checkbox', { name: 'docs/z.bin', exact: true })).not.toBeChecked();
+        for (const name of detailColumnNames.slice(1)) await expect(button(name)).toHaveCount(0);
+        await button('Layout').click();
+        const item = page.getByRole('menuitemcheckbox', { name: label, exact: true });
+        await expect(item).toBeChecked();
+        assert.match(await item.innerText(), new RegExp(digit), 'menu must show its numeric shortcut hint');
+        for (const [preference, enabled] of Object.entries(hidden)) await expect(page.getByRole('menuitemcheckbox', { name: preference, exact: true })).not.toBeChecked();
+        await page.keyboard.press('Escape');
+      }
+    }
+    assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
+    await button('Clear filter').click();
+    await expect(page.getByRole('checkbox', { name: 'outside.txt', exact: true })).toBeChecked();
+    if (width === 360) {
+      await toggleDetailColumn(page, 'Show packed column', true);
+      await toggleDetailColumn(page, 'Show size column', true);
+      await button('Name').focus(); await pressSortHotkey(page, '2');
+      await expect(button('Size (bytes)')).toBeVisible(); await expect(button('Packed (bytes)')).toHaveCount(0);
+      await button('Name').focus(); await pressSortHotkey(page, '3');
+      await expect(button('Packed (bytes)')).toBeVisible(); await expect(button('Size (bytes)')).toHaveCount(0);
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    assert.deepEqual(await tree(), sentinelTree);
+  });
+}
+
+test('Sort hotkeys do not steal editing, open-menu, modal or busy input', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree } = await extractionPage(t, true, { viewport: { width: 1024, height: 600 } });
+  await openSortFixture(page, button);
+  const paths = () => page.getByRole('checkbox').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+  for (const label of ['Filter names', 'Archive path']) {
+    const field = page.getByRole('textbox', { name: label, exact: true });
+    if (label === 'Filter names') await field.fill('docs');
+    const before = await paths(), value = await field.inputValue();
+    await field.focus();
+    for (const [digit] of sortHotkeys) {
+      await pressSortHotkey(page, digit);
+      await expect(field).toBeFocused(); await expect(field).toHaveValue(value);
+      assert.deepEqual(await paths(), before);
+    }
+  }
+  await button('Clear filter').click();
+  const before = await paths();
+  await button('Layout').click();
+  for (const [digit] of sortHotkeys) {
+    await pressSortHotkey(page, digit);
+    await expect(page.getByRole('menu')).toHaveCount(1);
+    await expect(page.getByRole('menuitemcheckbox', { name: 'Sort by name', exact: true })).toBeChecked();
+    assert.deepEqual(await paths(), before);
+  }
+  await page.keyboard.press('Escape');
+  await button('Create archive…').click();
+  const modal = page.getByRole('group', { name: 'Create archive', exact: true }); await expect(modal).toBeVisible();
+  for (const [digit] of sortHotkeys) {
+    await pressSortHotkey(page, digit);
+    await expect(modal).toBeVisible(); assert.deepEqual(await paths(), before);
+  }
+  await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+  let release, intercepted = false; const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async route => { intercepted = true; await gate; await route.continue().catch(() => {}); });
+  try {
+    await button('Test archive').click(); await expect.poll(() => intercepted).toBe(true);
+    for (const [digit] of sortHotkeys) { await button('Name').focus(); await pressSortHotkey(page, digit); assert.deepEqual(await paths(), before); }
+    await button('Layout').click();
+    for (const [, label] of sortHotkeys) await expect(page.getByRole('menuitemcheckbox', { name: label, exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape'); await button('Cancel').click();
+    await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
+  await button('Name').focus(); await pressSortHotkey(page, '2');
+  await expect.poll(paths).toEqual(['docs/', 'outside.txt', 'docs/plain', 'docs/z.bin', 'docs/a.txt']);
+  assert.deepEqual(await tree(), sentinelTree);
+});

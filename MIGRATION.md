@@ -415,3 +415,13 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 真实浏览器新流程验证 Open/Test 正常、Fullpaths 超限时 output 根不创建且 snapshot/selection/OPFS 树不变，再以 FilesOnly 真实写出 257 个唯一空文件。JS parser 单独验证 4,100 个物理节点接受与 16k 超限拒绝；Android TreeExport host 90 项覆盖精确 16,384 接受和多一节点拒绝、逻辑成员 4,097 拒绝，28 项 JNI 等桥接检查通过，属于 host/注入 provider 证据，不替代新 Android 设备运行。
 - 新 iOS simulator 包四项真实提取回归（All/Selected/FilesOnly/DisplayedFrozen）及目标目录每字节/空目录独立核对全部通过，记录 target/ios-outputbudget-extract。host/iOS/WASM Clippy、格式、Android APK、iOS simulator/device release、Windows core/native/UI 测试交叉编译及 GNU release/PE/hash 通过，Windows 与 Linux 构建前后 source hashes 一致。device app 未签名，未新增 Windows/Android 真机运行；不沿用其它平台测试外推支持范围。汇总 source/build/check hashes 见 target/output-node-evidence.json，完整六平台功能、界面和发布仍待完成。
 - iOS tested/current/installed 二进制 SHA256 均为 0c019a900c6f54d9d80c6c1097b6c462e4d69808d14464838798bea364c1d481，source/harness 哈希匹配；输入与真实导出按内容核对后清理，新 staging 残留零，核名关闭并删除本轮专用模拟器，未操作其它设备。Web 超限样本为 16,705 个物理节点，原生样本为 16,448；两者逻辑成员均为 257，未将不同样本节点数混为同一证据。
+
+
+## 详细列表排序快捷键（UI-SORT-KEYS-01）
+
+- 桌面与 Web 的四种现有共享排序命令接入 mod+Alt+0/1/2/3 → Name/Type/Size/Packed；Mac 使用 Command+Option，Linux/Windows 使用 Ctrl+Alt，与已有 mod 按平台映射保持一致。重复当前字段反转方向，切换不同字段从升序开始；初始 Name 已升序，因此首次 0 转降序。字段 checked 反映排序字段而非方向，保持原有路径/稳定 ID、父子部分选择、隐藏选择、筛选、归档字节及导出内容。
+- 快捷键与菜单/列头执行同一 Command，不为键盘另建排序代码。沿用 When::NotEditing、菜单打开时不执行、busy/modal 与执行前实时资格校验；Packed 在普通文件夹仍禁用，因为文件系统 Info 尚未实现。隐藏列仍可通过该排序命令排序，不强制改显隐偏好；窄屏在 Packed 可见偏好允许时继续按排序显示该列。native accelerator 白名单只保留打开/路径等既有项，排序键由 engine keymap 处理，避免抢走输入框编辑；Web 菜单显示对应按键提示，移动端触摸菜单功能保留，未新增外接键盘验收声明。
+- 原版固定 Ctrl+Alt+0/1/2/3 actions 位于 peach.pas:63908，对应 sortbrowser(13/2/14/15)，Layout/Sort by 绑定 peach.lfm:17364、24776、24781、24786、24791。方向切换见 peach.pas:43817，初始 Name 升序见 :23353；原版 Info / Packed 与 Rust 普通 FS 禁用存在既有差异，未用空操作伪装 Info。原版 Smart file name sorting（peach.pas:33880、74182；list_utils.pas:2956）包含独立数字序列处理，本轮仍沿用已实现的名称比较，不能把按键接入宣称为智能排序已迁移。原版完整右键菜单、方向箭头及 native 菜单显示提示仍按阶段 2a 继续补齐。
+- 验证：工作区 367 次测试执行、Web 全量 137 项通过，host Clippy/格式检查通过；新增 3 项 App 流程及 3 项真实浏览器流程覆盖四字段实际顺序与反转、FS Packed 禁用、隐藏列、部分/隐藏选择及源/导出字节保持、path/filter 编辑、已打开菜单、创建/提取 modal、忙碌时按键不生效。浏览器覆盖 1024 与 360 宽并确认 Layout 九项含快捷键提示仍可触达。Windows GNU check/release/PE/hash 通过，source 前后哈希一致，未实际运行 Windows。
+- Linux 真实 GTK 新增四组 Ctrl+Alt 数字键检查通过：不同 packed size 的 stored ZIP 提供可观察顺序，重复键反转、Packed 隐藏后排序、path/filter 编辑中保持原顺序和选择均验证，截图为 target/linux-columns-shortcuts/keyboard-final。证据由 run1 原有流程断言通过＋probe2 最终新增键盘段完整通过组成；早期 OCR 把 zz.bin 识别为 2z.bin，测试改为明确名称和名称区域识别后保留三行实际顺序断言。当前完整脚本未作为单次全程重跑，不将分段证据描述成单次全脚本通过；现有 CI 入口会执行最终脚本，远程 CI 未运行。
+- Linux 当前生产和最终脚本 hashes、Windows 构建 source hashes 均核对一致；专用容器已停止、未修改其它容器。本轮没有新增 iOS/Android 外接键盘或 macOS/Windows 实际窗口按键验收，不以 host/Web 测试替代目标运行。汇总 source/build/check hashes 见 target/sort-shortcuts-evidence.json，整体 PeaZip 功能/界面重写仍未完成。

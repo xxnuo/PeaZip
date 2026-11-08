@@ -506,6 +506,76 @@ assert_headers Name Type Size Packed
 menu_action Browser '^Up$'
 selection_count 1
 pass column-visibility-name-only-auto-adjust-shared-narrow-and-restore
+# Solid sample.7z has unknown packed sizes; use an owned stored ZIP so both
+# packed directions have observably different row orders, even with Packed hidden.
+mkdir -p "$run_dir/sort-input"
+printf a > "$run_dir/sort-input/aa.txt"
+printf 1234567890 > "$run_dir/sort-input/mm.txt"
+printf 123456789012345678901234567890 > "$run_dir/sort-input/xx.bin"
+(cd "$run_dir/sort-input" && 7z a -tzip -mm=Copy "$fixture/sort.zip" aa.txt mm.txt xx.bin) > "$artifacts/sort-fixture.log"
+open_archive sort.zip
+select_row '^aa.txt$'
+selection_count 1
+row_order() {
+ ocr
+ read -r nx ny < <(header_left Name)
+ read -r tx ty < <(header_left Type)
+ convert "$artifacts/current.png" -crop "160x115+$((nx+48))+$((ny+14))" +repage -resize 400% "$artifacts/sort-names.png"
+ tesseract "$artifacts/sort-names.png" "$artifacts/sort-names" --psm 6 2> "$artifacts/sort-names-ocr.log"
+ awk '{gsub(/[[:space:]]/,"");if($0 ~ /^(aa[.]txt|mm[.]txt|xx[.]bin)$/) print}' "$artifacts/sort-names.txt" > "$artifacts/sort-order.txt"
+ test "$(wc -l < "$artifacts/sort-order.txt")" -eq 3
+}
+expect_order() {
+ row_order
+ printf '%s\n' "$@" > "$artifacts/expected-sort-order.txt"
+ diff -u "$artifacts/expected-sort-order.txt" "$artifacts/sort-order.txt"
+ selection_count 1
+}
+# A different sort establishes the first Name shortcut as ascending.
+click_word '^Type$'
+xdotool key ctrl+alt+0
+expect_order aa.txt mm.txt xx.bin
+xdotool key ctrl+alt+0
+expect_order xx.bin mm.txt aa.txt
+xdotool key ctrl+alt+1
+expect_order xx.bin aa.txt mm.txt
+xdotool key ctrl+alt+1
+expect_order aa.txt mm.txt xx.bin
+xdotool key ctrl+alt+2
+expect_order aa.txt mm.txt xx.bin
+xdotool key ctrl+alt+2
+expect_order xx.bin mm.txt aa.txt
+toggle_column packed
+assert_headers Name Type Size
+xdotool key ctrl+alt+3
+expect_order aa.txt mm.txt xx.bin
+xdotool key ctrl+alt+3
+expect_order xx.bin mm.txt aa.txt
+screen shortcut-packed-hidden-descending
+# Establish Name descending, whose order differs from each accidental first sort.
+xdotool key ctrl+alt+0
+expect_order aa.txt mm.txt xx.bin
+xdotool key ctrl+alt+0
+expect_order xx.bin mm.txt aa.txt
+xdotool key ctrl+l
+for digit in 0 1 2 3; do
+ xdotool key "ctrl+alt+$digit"
+ expect_order xx.bin mm.txt aa.txt
+done
+xdotool key Return
+# Focus the empty Filter names field without submitting it; shortcuts must be ignored.
+ocr
+read -r filter_x filter_y < <(locate '^Filter$' 0 100)
+xdotool mousemove "$filter_x" "$filter_y" click 1
+for digit in 0 1 2 3; do
+ xdotool key "ctrl+alt+$digit"
+ expect_order xx.bin mm.txt aa.txt
+done
+xdotool key Return
+toggle_column packed
+assert_headers Name Type Size Packed
+capture_sizes sort-shortcuts-selection-preserved
+pass four-sort-shortcuts-direction-hidden-packed-and-editing-protection
 sha256sum -c "$artifacts/source.sha256"
 if grep -Ei 'panic|critical|segmentation' "$artifacts/gtk.log"; then exit 1; fi
 printf 'GUI_COLUMNS_DRAG_KEYBOARD_SCROLL_SELECTION_EXTRACT_FS_OK %s\n' "$run_dir"

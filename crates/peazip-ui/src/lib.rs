@@ -631,86 +631,98 @@ pub fn App() -> impl IntoElement {
             move || controls.flat.update(|value| *value = !*value),
         )
         .checked(move || controls.flat.get()),
-        Command::new(
-            CommandId::SortName,
-            "Sort by name",
-            move || !busy.get(),
-            move || {
-                controls.sort.update(|value| {
-                    *value = if *value == navigation::Sort::NameAsc {
-                        navigation::Sort::NameDesc
-                    } else {
-                        navigation::Sort::NameAsc
-                    }
-                })
-            },
-        )
-        .checked(move || {
-            matches!(
-                controls.sort.get(),
-                navigation::Sort::NameAsc | navigation::Sort::NameDesc
+        keyboard_shortcut(
+            Command::new(
+                CommandId::SortName,
+                "Sort by name",
+                move || !busy.get(),
+                move || {
+                    controls.sort.update(|value| {
+                        *value = if *value == navigation::Sort::NameAsc {
+                            navigation::Sort::NameDesc
+                        } else {
+                            navigation::Sort::NameAsc
+                        }
+                    })
+                },
             )
-        }),
-        Command::new(
-            CommandId::SortSize,
-            "Sort by size",
-            move || !busy.get(),
-            move || {
-                controls.sort.update(|value| {
-                    *value = if *value == navigation::Sort::SizeAsc {
-                        navigation::Sort::SizeDesc
-                    } else {
-                        navigation::Sort::SizeAsc
-                    }
-                })
-            },
-        )
-        .checked(move || {
-            matches!(
-                controls.sort.get(),
-                navigation::Sort::SizeAsc | navigation::Sort::SizeDesc
+            .checked(move || {
+                matches!(
+                    controls.sort.get(),
+                    navigation::Sort::NameAsc | navigation::Sort::NameDesc
+                )
+            }),
+            "mod+alt+0",
+        ),
+        keyboard_shortcut(
+            Command::new(
+                CommandId::SortSize,
+                "Sort by size",
+                move || !busy.get(),
+                move || {
+                    controls.sort.update(|value| {
+                        *value = if *value == navigation::Sort::SizeAsc {
+                            navigation::Sort::SizeDesc
+                        } else {
+                            navigation::Sort::SizeAsc
+                        }
+                    })
+                },
             )
-        }),
-        Command::new(
-            CommandId::SortType,
-            "Sort by type",
-            move || !busy.get(),
-            move || {
-                controls.sort.update(|sort| {
-                    *sort = if *sort == navigation::Sort::TypeAsc {
-                        navigation::Sort::TypeDesc
-                    } else {
-                        navigation::Sort::TypeAsc
-                    };
-                })
-            },
-        )
-        .checked(move || {
-            matches!(
-                controls.sort.get(),
-                navigation::Sort::TypeAsc | navigation::Sort::TypeDesc
+            .checked(move || {
+                matches!(
+                    controls.sort.get(),
+                    navigation::Sort::SizeAsc | navigation::Sort::SizeDesc
+                )
+            }),
+            "mod+alt+2",
+        ),
+        keyboard_shortcut(
+            Command::new(
+                CommandId::SortType,
+                "Sort by type",
+                move || !busy.get(),
+                move || {
+                    controls.sort.update(|sort| {
+                        *sort = if *sort == navigation::Sort::TypeAsc {
+                            navigation::Sort::TypeDesc
+                        } else {
+                            navigation::Sort::TypeAsc
+                        };
+                    })
+                },
             )
-        }),
-        Command::new(
-            CommandId::SortPacked,
-            "Sort by packed size",
-            move || !busy.get() && !file_view(),
-            move || {
-                controls.sort.update(|sort| {
-                    *sort = if *sort == navigation::Sort::PackedAsc {
-                        navigation::Sort::PackedDesc
-                    } else {
-                        navigation::Sort::PackedAsc
-                    };
-                })
-            },
-        )
-        .checked(move || {
-            matches!(
-                controls.sort.get(),
-                navigation::Sort::PackedAsc | navigation::Sort::PackedDesc
+            .checked(move || {
+                matches!(
+                    controls.sort.get(),
+                    navigation::Sort::TypeAsc | navigation::Sort::TypeDesc
+                )
+            }),
+            "mod+alt+1",
+        ),
+        keyboard_shortcut(
+            Command::new(
+                CommandId::SortPacked,
+                "Sort by packed size",
+                move || !busy.get() && !file_view(),
+                move || {
+                    controls.sort.update(|sort| {
+                        *sort = if *sort == navigation::Sort::PackedAsc {
+                            navigation::Sort::PackedDesc
+                        } else {
+                            navigation::Sort::PackedAsc
+                        };
+                    })
+                },
             )
-        }),
+            .checked(move || {
+                matches!(
+                    controls.sort.get(),
+                    navigation::Sort::PackedAsc | navigation::Sort::PackedDesc
+                )
+            }),
+            "mod+alt+3",
+        ),
     ];
     for (id, label, column) in [
         (
