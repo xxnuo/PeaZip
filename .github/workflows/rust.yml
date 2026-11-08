@@ -129,11 +129,26 @@ jobs:
           targets: aarch64-apple-ios-sim
       - uses: astral-sh/setup-uv@v6
       - run: uv run python scripts/build_ios.py --target aarch64-apple-ios-sim
+      - name: Launch on a dedicated iOS simulator
+        run: |
+          read -r ios_smoke_runtime ios_smoke_type < <(xcrun simctl list runtimes -j | uv run python -c 'import json,sys; r=next(r for r in json.load(sys.stdin)["runtimes"] if r.get("isAvailable") and r.get("platform")=="iOS"); t=next(t for t in r["supportedDeviceTypes"] if t.get("productFamily")=="iPhone"); print(r["identifier"],t["identifier"])')
+          ios_smoke_udid=$(xcrun simctl create PeaZip-CI "$ios_smoke_type" "$ios_smoke_runtime")
+          trap 'xcrun simctl delete "$ios_smoke_udid"' EXIT
+          xcrun simctl boot "$ios_smoke_udid"
+          uv run python scripts/smoke_ios.py --udid "$ios_smoke_udid" --output target/ios-smoke
+          uv run python scripts/ios_ui_smoke.py --udid "$ios_smoke_udid" --device-name PeaZip-CI --app target/ios/aarch64-apple-ios-sim/release/PeaZip.app --out target/ios-ui-smoke
       - run: ditto -c -k --sequesterRsrc --keepParent target/ios/aarch64-apple-ios-sim/release/PeaZip.app target/ios/PeaZip-simulator.zip
-      - uses: actions/upload-artifact@v4
+      - if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: peazip-ios-simulator
-          path: target/ios/PeaZip-simulator.zip
+          path: |
+            target/ios/PeaZip-simulator.zip
+            target/ios-smoke/
+            target/ios-ui-smoke/manifest.json
+            target/ios-ui-smoke/Smoke.xcresult/
+            target/ios-ui-smoke/*.log
+            target/ios-ui-smoke/final.png
   upstream-report:
     runs-on: ubuntu-latest
     steps:
