@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real GTK TAR/TAR.GZ creation: native save picker and independent readers.
+# Real GTK TAR/TAR.GZ/7z creation: native save picker and independent readers.
 set -euxo pipefail
 if [[ ${1:-} != --session ]]; then
   root=$(cd "$(dirname "$0")/.." && pwd)
@@ -228,18 +228,7 @@ verify_tar() {
  fi
  diff -r "$run_dir/expected" "$run_dir/$tag-7z"
 }
-resize 1440 900
-open_original
-output_manifest initial
-open_options
-choose_format TAR
-capture_sizes create-tar-options
-modal_word '^Cancel$'
-expect_modal_closed
-original_unchanged
-output_manifest cancelled
-cmp "$artifacts/initial.manifest" "$artifacts/cancelled.manifest"
-pass format-cancel-no-output-original-selection-preserved
+open_fixture() {
 menu_action File '^folder'
 picker=$(timeout 20 xdotool search --sync --onlyvisible --name '^Open folder$' | head -n1)
 xdotool windowfocus --sync "$picker"
@@ -252,6 +241,122 @@ xdotool key Return
 sleep .7
 if xdotool search --onlyvisible --name '^Open folder$' >/dev/null; then click_word '^Browse$' 0 150; fi
 wait_status '^6 items'
+}
+confirm_existing() {
+for n in $(seq 1 20); do
+ if ! xdotool search --onlyvisible --name '^Create archive — choose a new filename$' >/dev/null; then break; fi
+ ocr
+ if coords=$(locate '^Replace$'); then
+  read -r x y <<< "$coords"
+  xdotool mousemove "$x" "$y" click 1
+ fi
+ sleep .3
+done
+! xdotool search --onlyvisible --name '^Create archive — choose a new filename$' >/dev/null
+}
+choose_sevenzip() { modal_word '^7[zZ2]$'; }
+verify_sevenzip() {
+ local archive=$1 tag=$2 method=$3 expected=$4 blocks=$5
+ 7z l -slt "$archive" > "$artifacts/$tag-list.txt"
+ grep -Eq "^Method = $method" "$artifacts/$tag-list.txt"
+ grep -Eq '^Solid = -$' "$artifacts/$tag-list.txt"
+ grep -Eq "^Blocks = $blocks$" "$artifacts/$tag-list.txt"
+ if [[ "$method" == Copy ]]; then
+  ! grep -Eq '^Method = .*LZMA' "$artifacts/$tag-list.txt"
+ else
+  ! grep -Eq '^Method = Copy$' "$artifacts/$tag-list.txt"
+  # 7-Zip uses bit powers or k/m/g sizes for dictionaries.
+  awk '/^Method = LZMA2:/ {split($3,a,":"); d=a[2]; size=d~/k$/ ? d*1024 : d~/m$/ ? d*1048576 : d~/g$/ ? d*1073741824 : 2^d; if(size>16777216) exit 1; seen=1} END {if(!seen) exit 1}' "$artifacts/$tag-list.txt"
+ fi
+ mkdir -p "$run_dir/$tag-extracted"
+ 7z x -y "-o$run_dir/$tag-extracted" "$archive" > "$artifacts/$tag-extract.txt"
+ diff -r "$expected" "$run_dir/$tag-extracted"
+}
+sevenzip_create() {
+ local long_name mode tag
+ long_name="$(printf 'long-name-%.0s' {1..18}).txt"
+ printf 'Long filename payload\n' > "$fixture/tree/$long_name"
+ # Keep level 9 below the strict ratio limit; the zero fixture tests rejection.
+ head -c 4096 /dev/urandom >> "$fixture/payload.txt"
+ cp -a "$run_dir/expected" "$run_dir/expected-7z"
+ cp "$fixture/payload.txt" "$run_dir/expected-7z/"
+ cp "$fixture/tree/$long_name" "$run_dir/expected-7z/tree/"
+ for mode in Store LZMA2 LZMA2-9; do
+  tag="7z-$mode"
+  open_fixture
+  for name in '^payload.txt$' '^binary.bin$' '^empty$' '^tree$'; do select_row "$name"; done
+  selection_count 4
+  open_options
+  choose_sevenzip
+  choose_mode "${mode%-9}"
+  if [[ "$mode" == LZMA2 ]]; then
+   ocr
+   locate '^3$' "$((width/2-230))" 100 "$((height-60))" "$((width/2+230))" > /dev/null
+   pass 7z-LZMA2-default-level-3
+  elif [[ "$mode" == LZMA2-9 ]]; then choose_gzip_level 9; fi
+  capture_sizes "create-$tag-options"
+  modal_word '^Continue$'
+  ! xdotool search --onlyvisible --name '^Select files to archive$' >/dev/null
+  save=$(timeout 20 xdotool search --sync --onlyvisible --name '^Create archive — choose a new filename$' | head -n1)
+  xdotool windowfocus --sync "$save"
+  sleep .5
+  ocr
+  locate '^Archive.7z$' > /dev/null
+  locate '^[7Zz2]+$' 0 100 > /dev/null
+  screen "$tag-save-filter-default"
+  save_to "$outputs/created-$mode.7z"
+  wait_status 'Created 7Z: 7 entries'
+  method=Copy
+  if [[ "$mode" != Store ]]; then method='LZMA2:'; fi
+  verify_sevenzip "$outputs/created-$mode.7z" "$tag" "$method" "$run_dir/expected-7z" 4
+  capture_sizes "created-$tag"
+  pass "$tag-independent-tree-bytes-unicode-long-binary-empty-nonsolid"
+  if [[ ${PEAZIP_SEVENZIP_MINIMAL:-0} == 1 ]]; then return; fi
+ done
+ open_original
+ click_word '^Create$' 520 35 75 730
+ expect_modal
+ choose_sevenzip
+ choose_mode Store
+ modal_word '^Continue$'
+ picker=$(timeout 20 xdotool search --sync --onlyvisible --name '^Select folders to archive$' | head -n1)
+ xdotool windowfocus --sync "$picker"
+ sleep .5
+ xdotool key ctrl+l
+ sleep .4
+ xdotool mousemove 360 23 click 1 key ctrl+a
+ xdotool type --clearmodifiers --delay 0 "$fixture/tree/"
+ xdotool key Return
+ sleep .7
+ if xdotool search --onlyvisible --name '^Select folders to archive$' >/dev/null; then click_word '^Add$'; fi
+ save_to "$outputs/folder.7z"
+ wait_status 'Created 7Z: 4 entries'
+ mkdir -p "$run_dir/expected-folder"
+ cp -a "$run_dir/expected-7z/tree" "$run_dir/expected-folder/"
+ verify_sevenzip "$outputs/folder.7z" 7z-folder Copy "$run_dir/expected-folder" 2
+ capture_sizes created-7z-folder
+ pass 7z-create-folder-picker-independent-tree-bytes
+}
+if [[ ${PEAZIP_SEVENZIP_MINIMAL:-0} == 1 ]]; then
+ resize 1440 900
+ open_fixture
+ sevenzip_create
+ exit
+fi
+resize 1440 900
+if [[ ${PEAZIP_SEVENZIP_ONLY:-0} != 1 ]]; then
+open_original
+output_manifest initial
+open_options
+choose_format TAR
+capture_sizes create-tar-options
+modal_word '^Cancel$'
+expect_modal_closed
+original_unchanged
+output_manifest cancelled
+cmp "$artifacts/initial.manifest" "$artifacts/cancelled.manifest"
+pass format-cancel-no-output-original-selection-preserved
+open_fixture
 for format in TAR TAR.GZ; do
  select_row '^payload.txt$'
  select_row '^binary.bin$'
@@ -311,21 +416,83 @@ choose_format TAR
 modal_word '^Continue$'
 file_from_picker '^Select files to archive$' 'payload.txt'
 save_to "$outputs/sentinel.txt"
-for n in $(seq 1 20); do
- if ! xdotool search --onlyvisible --name '^Create archive — choose a new filename$' >/dev/null; then break; fi
- ocr
- if coords=$(locate '^Replace$'); then
-  read -r x y <<< "$coords"
-  xdotool mousemove "$x" "$y" click 1
- fi
- sleep .3
-done
-! xdotool search --onlyvisible --name '^Create archive — choose a new filename$' >/dev/null
+confirm_existing
 wait_status 'Could not create.*(exists|exist)'
 original_unchanged
 output_manifest after-existing
 cmp "$artifacts/before-existing.manifest" "$artifacts/after-existing.manifest"
 printf 'keep this sentinel\n' | cmp - "$outputs/sentinel.txt"
 pass existing-target-refused-no-overwrite
+fi
+sevenzip_create
+# Keep the same archive view and checked row throughout cancellation and failures.
+open_original
+output_manifest before-7z-cancel
+table_snapshot before-7z-cancel
+open_options
+choose_sevenzip
+modal_word '^Cancel$'
+expect_modal_closed
+original_unchanged
+table_snapshot after-7z-cancel
+compare -metric AE "$artifacts/before-7z-cancel-table.png" "$artifacts/after-7z-cancel-table.png" null: 2> "$artifacts/7z-cancel-table-diff.txt"
+output_manifest after-7z-cancel
+cmp "$artifacts/before-7z-cancel.manifest" "$artifacts/after-7z-cancel.manifest"
+pass 7z-cancel-preserves-snapshot-selection-output
+open_options
+choose_sevenzip
+choose_mode LZMA2
+choose_gzip_level 3
+modal_word '^Continue$'
+file_from_picker '^Select files to archive$' 'bomb.bin'
+save_to "$outputs/ratio.7z"
+wait_status 'Could not create.*compression ratio'
+original_unchanged
+table_snapshot after-7z-ratio
+compare -metric AE "$artifacts/before-7z-cancel-table.png" "$artifacts/after-7z-ratio-table.png" null: 2> "$artifacts/7z-ratio-table-diff.txt"
+test ! -e "$outputs/ratio.7z"
+output_manifest after-7z-ratio
+cmp "$artifacts/before-7z-cancel.manifest" "$artifacts/after-7z-ratio.manifest"
+capture_sizes 7z-ratio-refused
+pass 7z-strict-ratio-no-fallback-preserves-snapshot-selection-output
+open_options
+choose_sevenzip
+choose_mode Store
+modal_word '^Continue$'
+file_from_picker '^Select files to archive$' 'bomb.bin'
+save_to "$outputs/retry-store.7z"
+wait_status 'Created 7Z: 1 entries'
+mkdir -p "$run_dir/expected-bomb"
+cp "$fixture/bomb.bin" "$run_dir/expected-bomb/"
+verify_sevenzip "$outputs/retry-store.7z" 7z-retry Copy "$run_dir/expected-bomb" 1
+pass 7z-explicit-Store-retry-bytes
+open_original
+output_manifest before-7z-existing
+table_snapshot before-7z-existing
+open_options
+choose_sevenzip
+choose_mode Store
+modal_word '^Continue$'
+file_from_picker '^Select files to archive$' 'payload.txt'
+save_to "$outputs/created-Store.7z"
+confirm_existing
+wait_status 'Could not create.*(exists|exist)'
+original_unchanged
+table_snapshot after-7z-existing
+compare -metric AE "$artifacts/before-7z-existing-table.png" "$artifacts/after-7z-existing-table.png" null: 2> "$artifacts/7z-existing-table-diff.txt"
+output_manifest after-7z-existing
+cmp "$artifacts/before-7z-existing.manifest" "$artifacts/after-7z-existing.manifest"
+pass 7z-existing-target-refused-preserves-snapshot-selection-bytes
+open_options
+choose_format ZIP
+choose_mode Store
+modal_word '^Continue$'
+file_from_picker '^Select files to archive$' 'payload.txt'
+save_to "$outputs/regression.zip"
+wait_status 'Created ZIP: 1 entries'
+mkdir -p "$run_dir/zip-extracted"
+7z x -y "-o$run_dir/zip-extracted" "$outputs/regression.zip" > "$artifacts/zip-extract.txt"
+cmp "$fixture/payload.txt" "$run_dir/zip-extracted/payload.txt"
+pass zip-Store-create-save-independent-bytes
 if grep -Ei 'panic|critical|segmentation' "$artifacts/gtk.log"; then exit 1; fi
-printf 'GUI_CREATE_TAR_TARGZ_CANCEL_BYTES_RATIO_RETRY_NO_OVERWRITE_OK %s\n' "$run_dir"
+printf 'GUI_CREATE_TAR_TARGZ_7Z_ZIP_CANCEL_BYTES_RATIO_RETRY_NO_OVERWRITE_OK %s\n' "$run_dir"

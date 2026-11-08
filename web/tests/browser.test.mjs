@@ -751,8 +751,9 @@ test('Strict gzip creation failure preserves the previous archive and can retry 
   assert.equal(created.bytes.subarray(512, 512 + 1024 * 1024).every(value => value === 0), true);
 });
 
+for (const [createFormat, label] of [['TAR.GZ', 'TAR.GZ'], ['7z', '7Z']]) {
 for (const cancellation of ['Cancel', 'pagehide']) {
-  test(`TAR.GZ creation ${cancellation} during the follow-up metadata worker preserves the old snapshot`, { timeout: 120_000 }, async (t) => {
+  test(`${label} creation ${cancellation} during the follow-up metadata worker preserves the old snapshot`, { timeout: 120_000 }, async (t) => {
     const { page, button, choose } = await creationPage(t);
     await choose('Create archive…', [{ name: 'keep.txt', mimeType: 'text/plain', buffer: Buffer.from('old snapshot') }]);
     await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
@@ -766,7 +767,7 @@ for (const cancellation of ['Cancel', 'pagehide']) {
     });
     try {
       await button('Create archive…').click();
-      await page.getByRole('radio', { name: 'TAR.GZ', exact: true }).click();
+      await page.getByRole('radio', { name: createFormat, exact: true }).click();
       const picker = page.waitForEvent('filechooser');
       await button('Continue').click();
       await (await picker).setFiles([{ name: 'new.txt', mimeType: 'text/plain', buffer: Buffer.from('new contents') }]);
@@ -784,9 +785,116 @@ for (const cancellation of ['Cancel', 'pagehide']) {
     if (cancellation === 'pagehide') await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
     assert.deepEqual(await downloadArchive(page, button('Download ZIP')), original);
     await choose('Create archive…', [{ name: 'retry.txt', mimeType: 'text/plain', buffer: Buffer.from('retry contents') }]);
-    await expect(page.getByText('Created TAR.GZ: 1 entries', { exact: true })).toBeVisible();
+    await expect(page.getByText(`Created ${label}: 1 entries`, { exact: true })).toBeVisible();
     await expect(page.getByRole('checkbox', { name: 'retry.txt', exact: true })).toBeVisible();
-    await expect(button('Download TAR.GZ')).toBeEnabled();
+    await expect(button(`Download ${label}`)).toBeEnabled();
+  });
+}
+
+}
+
+test('7Z creation uses real Store and LZMA2 workers, matching downloads and independent 7z readers', { timeout: 180_000 }, async (t) => {
+  const { page, button, downloads } = await creationPage(t);
+  const directory = await mkdtemp(resolve(tmpdir(), 'peazip-created-7z-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const files = [
+    { name: '你好.txt', mimeType: 'text/plain', buffer: Buffer.from('created 7z 中文\n') },
+    { name: 'binary.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([0, 127, 255, 1]) },
+    { name: 'empty', mimeType: 'application/octet-stream', buffer: Buffer.alloc(0) },
+  ];
+  await page.evaluate(() => {
+    window.createdMimes = [];
+    const create = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = value => { window.createdMimes.push(value.type); return create(value); };
+  });
+  for (const [method, level] of [['Store', null], ['LZMA2', 1], ['LZMA2', 9]]) {
+    await button('Create archive…').click();
+    const modal = page.getByRole('group', { name: 'Create archive', exact: true });
+    await modal.getByRole('radio', { name: '7z', exact: true }).click();
+    await modal.getByRole('radio', { name: method, exact: true }).click();
+    const field = modal.getByRole('textbox', { name: 'LZMA2 compression level', exact: true });
+    if (level !== null) {
+      for (const invalid of ['0', '10']) {
+        await field.fill(invalid);
+        await expect(modal.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+      }
+      await field.fill(String(level));
+    } else await expect(field).toHaveCount(0);
+    const picker = page.waitForEvent('filechooser');
+    await modal.getByRole('button', { name: 'Continue', exact: true }).click();
+    await (await picker).setFiles(files);
+    await expect(page.getByText('Created 7Z: 3 entries', { exact: true })).toBeVisible();
+    const artifact = await downloadArchive(page, button('Download 7Z'));
+    assert.equal(artifact.name, 'Archive.7z');
+    assert.deepEqual(artifact.bytes.subarray(0, 6), Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]));
+    assert.equal((await page.evaluate(() => window.createdMimes)).at(-1), 'application/x-7z-compressed');
+    const archive = resolve(directory, `${method}-${level ?? 0}.7z`);
+    const decoded = resolve(directory, `decoded-${method}-${level ?? 0}`);
+    await writeFile(archive, artifact.bytes);
+    await promisify(execFile)('7z', ['x', '-y', `-o${decoded}`, archive]);
+    for (const file of files) assert.deepEqual(await readFile(resolve(decoded, file.name)), file.buffer);
+    const { stdout } = await promisify(execFile)('7z', ['l', '-slt', archive]);
+    assert.ok(stdout.includes(method === 'Store' ? 'Method = Copy' : 'Method = LZMA2'), stdout);
+    assert.ok(stdout.includes('Solid = -'), 'created files must use separate compression blocks');
+    const reopen = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await reopen).setFiles({ name: 'Archive.7z', mimeType: 'application/x-7z-compressed', buffer: artifact.bytes });
+    await expect(page.getByText('3 entries', { exact: true })).toBeVisible();
+    assert.deepEqual(await downloadArchive(page, button('Download 7Z')), artifact);
+  }
+  assert.equal(downloads.length, 6);
+  await expect.poll(() => page.workers().length).toBe(0);
+});
+
+test('Strict LZMA2 creation failure keeps the previous snapshot and can retry 7Z Store', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await creationPage(t);
+  await choose('Create archive…', [{ name: 'keep.txt', mimeType: 'text/plain', buffer: Buffer.from('previous snapshot') }]);
+  await expect(page.getByText('Created ZIP: 1 entries', { exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: 'keep.txt', exact: true }).click();
+  const original = await downloadArchive(page, button('Download ZIP'));
+  const zeros = [{ name: 'zeros.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(1024 * 1024) }];
+  async function create(method) {
+    await button('Create archive…').click();
+    const modal = page.getByRole('group', { name: 'Create archive', exact: true });
+    await modal.getByRole('radio', { name: '7z', exact: true }).click();
+    await modal.getByRole('radio', { name: method, exact: true }).click();
+    if (method === 'LZMA2') await modal.getByRole('textbox', { name: 'LZMA2 compression level', exact: true }).fill('9');
+    const picker = page.waitForEvent('filechooser');
+    await modal.getByRole('button', { name: 'Continue', exact: true }).click();
+    await (await picker).setFiles(zeros);
+  }
+  await create('LZMA2');
+  await expect(page.getByText(/^Could not create 7Z:.*(?:compression ratio|unpack ratio)/)).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'keep.txt', exact: true })).toBeChecked();
+  assert.deepEqual(await downloadArchive(page, button('Download ZIP')), original);
+  await create('Store');
+  await expect(page.getByText('Created 7Z: 1 entries', { exact: true })).toBeVisible();
+  const artifact = await downloadArchive(page, button('Download 7Z'));
+  const directory = await mkdtemp(resolve(tmpdir(), 'peazip-7z-retry-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = resolve(directory, artifact.name);
+  await writeFile(path, artifact.bytes);
+  const { stdout } = await promisify(execFile)('7z', ['x', '-so', path, 'zeros.bin'], { encoding: 'buffer', maxBuffer: 2 * 1024 * 1024 });
+  assert.deepEqual(stdout, zeros[0].buffer);
+});
+
+for (const colorScheme of ['light', 'dark']) {
+  test(`7z creation options remain usable at 360x600 ${colorScheme}`, { timeout: 120_000 }, async (t) => {
+    const { page, button } = await creationPage(t, { viewport: { width: 360, height: 600 }, colorScheme });
+    await button('Create archive…').click();
+    const modal = page.getByRole('group', { name: 'Create archive', exact: true });
+    await modal.getByRole('radio', { name: '7z', exact: true }).click();
+    const level = modal.getByRole('textbox', { name: 'LZMA2 compression level', exact: true });
+    await expect(level).toHaveValue('3');
+    await expect(modal.getByRole('button', { name: 'Continue', exact: true })).toBeInViewport();
+    await level.fill('0');
+    await expect(modal.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+    await modal.getByRole('radio', { name: 'Store', exact: true }).click();
+    await expect(modal.getByRole('button', { name: 'Continue', exact: true })).toBeEnabled();
+    await expect(modal.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport();
+    await page.screenshot({ path: fileURLToPath(new URL(`../../target/create-sevenzip-360-${colorScheme}.png`, import.meta.url)) });
+    await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(modal).toHaveCount(0);
   });
 }
 

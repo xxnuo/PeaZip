@@ -99,8 +99,7 @@ function create(options, version = 1) {
         if (job !== active) return;
         if (data.progress) {
           const { phase, done, total } = data.progress;
-          if (!Number.isInteger(done) || !Number.isInteger(total)) return;
-          if (phase === 'read' || phase === 'compress') wasm.pc_progress(phase === 'read' ? 0 : 1, done, total);
+          if (phase === 'read' || phase === 'compress') progress({ phase, done, total }, job);
         } else {
           reply(data.code, data.bytes, job);
         }

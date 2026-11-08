@@ -183,6 +183,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "bzip2-turbo"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f542fbec5f6cd891cb388b7e45670b56624a5e207ad507d830e64956aaf64a0"
+dependencies = [
+ "crc-turbo",
+]
+
+[[package]]
 name = "cairo-rs"
 version = "0.22.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2956,6 +2965,7 @@ version = "0.29.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d874c46bb2ea4a1921628682fc80e3875dae43e13517172312781f8250e9a4db"
 dependencies = [
+ "bzip2-turbo",
  "js-sys",
  "lzma-turbo",
  "wasm-bindgen",

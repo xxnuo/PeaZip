@@ -43,7 +43,7 @@ export function validateExtractOptions(options) {
   return options;
 }
 
-// create-v2 adds format: ZIP=0, TAR=1, TAR.GZ=2. Unused fields must be zero.
+// create-v2 formats: ZIP=0, TAR=1, TAR.GZ=2, 7Z=3. Unused fields must be zero.
 export function validateCreateOptions(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options)
       || Object.keys(options).some((key) => !['format', 'compression', 'level'].includes(key))) {
@@ -53,7 +53,9 @@ export function validateCreateOptions(options) {
   if (format === 0) {
     validateZipOptions({ compression, level });
   } else if (!((format === 1 && compression === 0 && level === 0)
-      || (format === 2 && compression === 0 && Number.isInteger(level) && level >= 1 && level <= 9))) {
+      || (format === 2 && compression === 0 && Number.isInteger(level) && level >= 1 && level <= 9)
+      || (format === 3 && (compression === 0 && level === 0
+        || compression === 1 && Number.isInteger(level) && level >= 1 && level <= 9)))) {
     throw new Error('Invalid archive creation options.');
   }
   return options;

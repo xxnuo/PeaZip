@@ -1,6 +1,27 @@
 #[cfg(target_arch = "wasm32")]
 pub use host::*;
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn create_parameters(options: peazip_core::CreateOptions) -> (u32, u32, u32, &'static str) {
+    use peazip_core::{CreateOptions, SevenZipCompression, ZipCompression};
+    match options {
+        CreateOptions::Zip(options) => {
+            let (compression, level) = match options.compression {
+                ZipCompression::Automatic => (0, 0),
+                ZipCompression::Stored => (1, 0),
+                ZipCompression::Deflate { level } => (2, u32::from(level)),
+            };
+            (0, compression, level, "Compressing ZIP…")
+        }
+        CreateOptions::Tar => (1, 0, 0, "Writing TAR…"),
+        CreateOptions::TarGzip { level } => (2, 0, u32::from(level), "Compressing TAR.GZ…"),
+        CreateOptions::SevenZip(SevenZipCompression::Stored) => (3, 0, 0, "Writing 7Z…"),
+        CreateOptions::SevenZip(SevenZipCompression::Lzma2 { level }) => {
+            (3, 1, u32::from(level), "Compressing 7Z…")
+        }
+    }
+}
+
 pub(crate) fn decode_test_report(packet: &[u8]) -> Result<peazip_core::TestReport, String> {
     if packet.len() != 20 {
         return Err("Invalid archive test report length.".into());
@@ -143,7 +164,7 @@ mod host {
     struct Pending {
         sender: mpsc::UnboundedSender<Update>,
         bytes: Vec<u8>,
-        create_format: Option<peazip_core::ArchiveFormat>,
+        create_label: Option<&'static str>,
     }
 
     thread_local! {
@@ -239,20 +260,11 @@ mod host {
         progress: impl FnMut(String),
     ) -> Reply {
         options.validate().map_err(|error| error.to_string())?;
-        let format = options.format();
-        let (format_code, compression, level) = match options {
-            peazip_core::CreateOptions::Zip(options) => match options.compression {
-                peazip_core::ZipCompression::Automatic => (0, 0, 0),
-                peazip_core::ZipCompression::Stored => (0, 1, 0),
-                peazip_core::ZipCompression::Deflate { level } => (0, 2, u32::from(level)),
-            },
-            peazip_core::CreateOptions::Tar => (1, 0, 0),
-            peazip_core::CreateOptions::TarGzip { level } => (2, 0, u32::from(level)),
-        };
+        let (format_code, compression, level, label) = super::create_parameters(options);
         run(
             || unsafe { pc_create_archive_start(format_code, compression, level) },
             progress,
-            Some(format),
+            Some(label),
         )
         .await
     }
@@ -277,7 +289,7 @@ mod host {
     async fn run(
         start: impl FnOnce() -> u32,
         mut progress: impl FnMut(String),
-        create_format: Option<peazip_core::ArchiveFormat>,
+        create_label: Option<&'static str>,
     ) -> Reply {
         let (sender, mut receiver) = mpsc::unbounded();
         PENDING.with(|slot| {
@@ -288,7 +300,7 @@ mod host {
             *slot = Some(Pending {
                 sender,
                 bytes: Vec::new(),
-                create_format,
+                create_label,
             });
             Ok(())
         })?;
@@ -369,12 +381,10 @@ mod host {
             if let Some(pending) = slot.borrow().as_ref() {
                 let message = match phase {
                     0 => format!("Reading files: {done}/{total}"),
-                    1 if done == total => match pending.create_format {
-                        Some(peazip_core::ArchiveFormat::Tar) => "Writing TAR…",
-                        Some(peazip_core::ArchiveFormat::TarGzip) => "Compressing TAR.GZ…",
-                        _ => "Compressing ZIP…",
-                    }
-                    .to_owned(),
+                    1 if done == total => pending
+                        .create_label
+                        .unwrap_or("Compressing ZIP…")
+                        .to_owned(),
                     2 => "Validating and extracting archive…".to_owned(),
                     3 => format!("Writing entries: {done}/{total}"),
                     _ => return,
@@ -427,6 +437,50 @@ mod host {
             Ok(())
         } else {
             Err("The browser could not start a download.".into())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_parameters;
+    use peazip_core::{CreateOptions, SevenZipCompression, ZipCompression, ZipOptions};
+
+    #[test]
+    fn creation_wire_parameters_and_progress_labels_preserve_methods() {
+        assert_eq!(
+            create_parameters(CreateOptions::default()),
+            (0, 0, 0, "Compressing ZIP…")
+        );
+        for (compression, code, level) in [
+            (ZipCompression::Stored, 1, 0),
+            (ZipCompression::Deflate { level: 1 }, 2, 1),
+            (ZipCompression::Deflate { level: 9 }, 2, 9),
+        ] {
+            assert_eq!(
+                create_parameters(CreateOptions::Zip(ZipOptions { compression })),
+                (0, code, level, "Compressing ZIP…")
+            );
+        }
+        assert_eq!(
+            create_parameters(CreateOptions::Tar),
+            (1, 0, 0, "Writing TAR…")
+        );
+        assert_eq!(
+            create_parameters(CreateOptions::SevenZip(SevenZipCompression::Stored)),
+            (3, 0, 0, "Writing 7Z…")
+        );
+        for level in 1..=9 {
+            assert_eq!(
+                create_parameters(CreateOptions::TarGzip { level }),
+                (2, 0, u32::from(level), "Compressing TAR.GZ…")
+            );
+            assert_eq!(
+                create_parameters(CreateOptions::SevenZip(SevenZipCompression::Lzma2 {
+                    level
+                })),
+                (3, 1, u32::from(level), "Compressing 7Z…")
+            );
         }
     }
 }

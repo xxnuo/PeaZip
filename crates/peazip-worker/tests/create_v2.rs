@@ -1,6 +1,6 @@
 use peazip_core::{ArchiveFormat, Limits};
 use peazip_worker::{
-    MAX_CREATE_V2_REQUEST_BYTES, create_from_request, create_v1_from_request,
+    MAX_CREATE_V2_REQUEST_BYTES, MAX_REQUEST_BYTES, create_from_request, create_v1_from_request,
     create_v2_from_request, list_from_request, test_from_request,
 };
 
@@ -28,6 +28,7 @@ fn packet(format: u32, compression: u32, level: u32, entries: &[(&str, &[u8])]) 
 
 #[test]
 fn default_zip_is_byte_compatible_with_legacy_and_v1_and_explicit_methods_are_preserved() {
+    assert_eq!(MAX_CREATE_V2_REQUEST_BYTES, MAX_REQUEST_BYTES + 16);
     let entries = [("目录/你好.bin", b"hello".as_slice()), ("empty", b"")];
     let old = legacy(&entries);
     let mut v1 = [1u32, 0, 0]
@@ -54,6 +55,121 @@ fn default_zip_is_byte_compatible_with_legacy_and_v1_and_explicit_methods_are_pr
             assert_eq!(actual.data, bytes);
         }
     }
+}
+
+#[test]
+fn real_sevenzip_stored_and_all_lzma2_levels_roundtrip_list_test_and_extract() {
+    let binary: Vec<u8> = (0..8192).map(|n| (n * 31 + n / 13) as u8).collect();
+    let entries = [
+        ("目录/你好.txt", "7z 你好\n".as_bytes()),
+        ("data.bin", binary.as_slice()),
+        ("empty", b""),
+    ];
+    let paths: Vec<String> = entries.iter().map(|(path, _)| (*path).into()).collect();
+    let mut stored_size = 0;
+    for (compression, level) in [(0, 0)].into_iter().chain((1..=9).map(|level| (1, level))) {
+        let request = packet(3, compression, level, &entries);
+        let bytes = create_v2_from_request(&request).unwrap();
+        assert_eq!(&bytes[..6], b"7z\xbc\xaf\x27\x1c");
+        assert_eq!(create_v2_from_request(&request).unwrap(), bytes);
+        if compression == 0 {
+            stored_size = bytes.len();
+        } else {
+            assert!(bytes.len() < stored_size);
+        }
+        let (format, metadata) =
+            peazip_core::list_archive_with_format(&bytes, Limits::default()).unwrap();
+        assert_eq!(format, ArchiveFormat::SevenZip);
+        assert_eq!(metadata.len(), entries.len());
+        let listed = list_from_request(&bytes).unwrap();
+        assert_eq!(&listed[..5], b"PZL2\x03");
+        let report = test_from_request(&bytes).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(report[4..8].try_into().unwrap()),
+            entries.len() as u32
+        );
+        let extracted =
+            peazip_core::extract_selected_archive(&bytes, &paths, Limits::default()).unwrap();
+        assert_eq!(extracted.len(), entries.len());
+        for (actual, (path, data)) in extracted.iter().zip(entries) {
+            assert_eq!(actual.path, path);
+            assert_eq!(actual.data, data);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn independent_system_7z_reads_stored_and_lzma2_worker_products() {
+    use std::{fs, process::Command, time::SystemTime};
+
+    let Some(program) = ["7z", "7zz"].into_iter().find(|program| {
+        Command::new(program)
+            .arg("i")
+            .output()
+            .is_ok_and(|result| result.status.success())
+    }) else {
+        eprintln!("Skipping independent reader check: system 7z/7zz is unavailable.");
+        return;
+    };
+    let directory = std::env::temp_dir().join(format!(
+        "peazip-worker-7z-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&directory).unwrap();
+    let entries = [
+        ("目录/你好.txt", "7z 你好\n".as_bytes()),
+        ("binary", &[0, 127, 255]),
+        ("empty", b""),
+    ];
+    for (compression, level, method) in [(0, 0, "Copy"), (1, 1, "LZMA2"), (1, 9, "LZMA2")] {
+        let archive = directory.join(format!("{compression}-{level}.7z"));
+        fs::write(
+            &archive,
+            create_v2_from_request(&packet(3, compression, level, &entries)).unwrap(),
+        )
+        .unwrap();
+        let listed = Command::new(program)
+            .args(["l", "-slt"])
+            .arg(&archive)
+            .output()
+            .unwrap();
+        assert!(
+            listed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
+        assert!(String::from_utf8_lossy(&listed.stdout).contains(&format!("Method = {method}")));
+        let tested = Command::new(program)
+            .arg("t")
+            .arg(&archive)
+            .output()
+            .unwrap();
+        assert!(
+            tested.status.success(),
+            "{}",
+            String::from_utf8_lossy(&tested.stdout)
+        );
+        for (name, bytes) in entries {
+            let extracted = Command::new(program)
+                .args(["x", "-so", "-spd"])
+                .arg(&archive)
+                .arg(name)
+                .output()
+                .unwrap();
+            assert!(
+                extracted.status.success(),
+                "{}",
+                String::from_utf8_lossy(&extracted.stderr)
+            );
+            assert_eq!(extracted.stdout, bytes);
+        }
+    }
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -154,7 +270,15 @@ fn version_format_unused_fields_and_levels_are_rejected_before_file_packet() {
         (2, 0, 0),
         (2, 0, 10),
         (2, 0, 257),
-        (3, 0, 0),
+        (3, 0, 1),
+        (3, 0, 9),
+        (3, 1, 0),
+        (3, 1, 10),
+        (3, 1, 257),
+        (3, 1, u32::MAX),
+        (3, 2, 1),
+        (3, u32::MAX, 0),
+        (4, 0, 0),
         (u32::MAX, 0, 0),
     ] {
         assert!(
@@ -163,13 +287,23 @@ fn version_format_unused_fields_and_levels_are_rejected_before_file_packet() {
                 .contains("options")
         );
     }
-    let valid = packet(1, 0, 0, &[("file", b"data")]);
-    for end in 0..valid.len() {
+    for (format, compression, level) in [(1, 0, 0), (3, 0, 0), (3, 1, 1), (3, 1, 9)] {
+        let valid = packet(format, compression, level, &[("file", b"data")]);
+        for end in 0..valid.len() {
+            assert!(
+                create_v2_from_request(&valid[..end]).is_err(),
+                "format {format} prefix {end}"
+            );
+        }
+        let mut trailing = valid;
+        trailing.push(0);
         assert!(
-            create_v2_from_request(&valid[..end]).is_err(),
-            "prefix {end}"
+            create_v2_from_request(&trailing)
+                .unwrap_err()
+                .contains("trailing")
         );
     }
+    let valid = packet(3, 1, 6, &[("file", b"data")]);
     for version in [0u32, 1, 3, u32::MAX] {
         let mut bad = valid.clone();
         bad[..4].copy_from_slice(&version.to_le_bytes());
@@ -179,13 +313,6 @@ fn version_format_unused_fields_and_levels_are_rejected_before_file_packet() {
                 .contains("version")
         );
     }
-    let mut trailing = valid;
-    trailing.push(0);
-    assert!(
-        create_v2_from_request(&trailing)
-            .unwrap_err()
-            .contains("trailing")
-    );
     assert!(
         create_v2_from_request(&vec![0; MAX_CREATE_V2_REQUEST_BYTES + 1])
             .unwrap_err()
@@ -195,9 +322,16 @@ fn version_format_unused_fields_and_levels_are_rejected_before_file_packet() {
 
 #[test]
 fn all_formats_reapply_file_count_path_and_payload_limits() {
-    for (format, level) in [(0, 0), (1, 0), (2, 6)] {
+    for (format, compression, level) in [
+        (0, 0, 0),
+        (1, 0, 0),
+        (2, 0, 6),
+        (3, 0, 0),
+        (3, 1, 1),
+        (3, 1, 9),
+    ] {
         for count in [0u32, 4097, u32::MAX] {
-            let mut request = header(format, 0, level);
+            let mut request = header(format, compression, level);
             request.extend(count.to_le_bytes());
             assert!(
                 create_v2_from_request(&request)
@@ -206,9 +340,12 @@ fn all_formats_reapply_file_count_path_and_payload_limits() {
             );
         }
         for path in ["../bad", "/absolute", "dir/", "", "AUX.txt"] {
-            assert!(create_v2_from_request(&packet(format, 0, level, &[(path, b"")])).is_err());
+            assert!(
+                create_v2_from_request(&packet(format, compression, level, &[(path, b"")]))
+                    .is_err()
+            );
         }
-        let mut request = packet(format, 0, level, &[("file", b"")]);
+        let mut request = packet(format, compression, level, &[("file", b"")]);
         request[24..28].copy_from_slice(&(16 * 1024 * 1024 + 1u32).to_le_bytes());
         assert!(
             create_v2_from_request(&request)

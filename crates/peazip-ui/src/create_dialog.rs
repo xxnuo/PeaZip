@@ -1,12 +1,13 @@
 use nsh_base::{button, dialog, input, radio, radio_group, theme};
 use nsh_core::prelude::*;
-use peazip_core::{CreateOptions, ZipCompression, ZipOptions};
+use peazip_core::{CreateOptions, SevenZipCompression, ZipCompression, ZipOptions};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Format {
     Zip,
     Tar,
     TarGzip,
+    SevenZip,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,6 +35,8 @@ fn options(
     compression: Compression,
     zip_level: &str,
     gzip_level: &str,
+    sevenzip_compressed: bool,
+    sevenzip_level: &str,
 ) -> Option<CreateOptions> {
     match format {
         Format::Zip => zip_options(compression, zip_level).map(CreateOptions::Zip),
@@ -43,6 +46,18 @@ fn options(
             (1..=9)
                 .contains(&level)
                 .then_some(CreateOptions::TarGzip { level })
+        }
+        Format::SevenZip => {
+            let compression = if sevenzip_compressed {
+                SevenZipCompression::Lzma2 {
+                    level: sevenzip_level.parse().ok()?,
+                }
+            } else {
+                SevenZipCompression::Stored
+            };
+            let options = CreateOptions::SevenZip(compression);
+            options.validate().ok()?;
+            Some(options)
         }
     }
 }
@@ -93,10 +108,19 @@ pub(crate) fn show(
     confirm: impl Fn(CreateOptions) + Copy + 'static,
     cancel: impl Fn() + Copy + 'static,
 ) -> impl IntoElement {
-    let (initial_format, initial_zip, initial_gzip) = match initial {
-        CreateOptions::Zip(options) => (Format::Zip, options, 6),
-        CreateOptions::Tar => (Format::Tar, ZipOptions::default(), 6),
-        CreateOptions::TarGzip { level } => (Format::TarGzip, ZipOptions::default(), level),
+    let default_sevenzip = SevenZipCompression::Lzma2 { level: 3 };
+    let (initial_format, initial_zip, initial_gzip, initial_sevenzip) = match initial {
+        CreateOptions::Zip(options) => (Format::Zip, options, 6, default_sevenzip),
+        CreateOptions::Tar => (Format::Tar, ZipOptions::default(), 6, default_sevenzip),
+        CreateOptions::TarGzip { level } => (
+            Format::TarGzip,
+            ZipOptions::default(),
+            level,
+            default_sevenzip,
+        ),
+        CreateOptions::SevenZip(compression) => {
+            (Format::SevenZip, ZipOptions::default(), 6, compression)
+        }
     };
     let (initial_compression, initial_level) = match initial_zip.compression {
         ZipCompression::Automatic => (Compression::Automatic, 6),
@@ -107,12 +131,22 @@ pub(crate) fn show(
     let compression = signal(initial_compression);
     let level = signal(initial_level.to_string());
     let gzip_level = signal(initial_gzip.to_string());
+    let sevenzip_compressed = signal(matches!(
+        initial_sevenzip,
+        SevenZipCompression::Lzma2 { .. }
+    ));
+    let sevenzip_level = signal(match initial_sevenzip {
+        SevenZipCompression::Stored => "3".to_owned(),
+        SevenZipCompression::Lzma2 { level } => level.to_string(),
+    });
     let selected = computed(move || {
         options(
             format.get(),
             compression.get(),
             &level.get(),
             &gzip_level.get(),
+            sevenzip_compressed.get(),
+            &sevenzip_level.get(),
         )
     });
     let finished = signal(false);
@@ -144,6 +178,7 @@ pub(crate) fn show(
                     .child(text("Format").font_weight(FontWeight::SEMIBOLD))
                     .child(radio_group().flex_row().flex_wrap().gap_3()
                         .child(choice(format, Format::Zip, "ZIP", finished))
+                        .child(choice(format, Format::SevenZip, "7z", finished))
                         .child(choice(format, Format::Tar, "TAR", finished))
                         .child(choice(format, Format::TarGzip, "TAR.GZ", finished))))
                 .child(view().gap_1().child(text("Input").font_weight(FontWeight::SEMIBOLD)).child(text(input_description)))
@@ -162,6 +197,20 @@ pub(crate) fn show(
                             .max_length(3).w(px(64.0)).border_1().border_color(move || theme().border).px_2().py_1()
                             .disabled(move || finished.get())))
                     .child(when(move || selected.get().is_none(), || text("Enter a Deflate level from 1 to 9.").text_color(move || theme().destructive)))))
+                .child(when(move || format.get() == Format::SevenZip, move || view().gap_1().role(AccessibilityRole::Group).label("Compression").child(text("Compression").font_weight(FontWeight::SEMIBOLD))
+                    .child(radio_group()
+                        .child(choice(sevenzip_compressed, false, "Store", finished))
+                        .child(choice(sevenzip_compressed, true, "LZMA2", finished)))))
+                .child(when(move || format.get() == Format::SevenZip && sevenzip_compressed.get(), move || view().gap_1()
+                    .child(view().flex_row().flex_wrap().items_center().gap_2()
+                        .child(text("LZMA2 level (1–9)"))
+                        .child(input().label("LZMA2 compression level").placeholder("LZMA2 compression level")
+                            .value(move || sevenzip_level.get()).on_change(move |value: &str| { if !finished.get_untracked() { sevenzip_level.set(value.to_owned()); } })
+                            .keyboard_type(KeyboardType::Number).auto_capitalize(AutoCapitalize::None).auto_correct(false)
+                            .submit_behavior(SubmitBehavior::Submit).on_submit(move |_: &str| submit())
+                            .max_length(3).w(px(64.0)).border_1().border_color(move || theme().border).px_2().py_1()
+                            .disabled(move || finished.get())))
+                    .child(when(move || selected.get().is_none(), || text("Enter an LZMA2 level from 1 to 9.").text_color(move || theme().destructive)))))
                 .child(when(move || format.get() == Format::TarGzip, move || view().gap_1()
                     .child(view().flex_row().flex_wrap().items_center().gap_2()
                         .child(text("GZIP level (1–9)"))
@@ -174,6 +223,8 @@ pub(crate) fn show(
                     .child(when(move || selected.get().is_none(), || text("Enter a GZIP level from 1 to 9.").text_color(move || theme().destructive)))))
                 .child(text(move || match format.get() {
                     Format::Tar => "Stores file data without compression.",
+                    Format::SevenZip if sevenzip_compressed.get() => "Compresses files with LZMA2 at the selected level.",
+                    Format::SevenZip => "Stores file data without compression.",
                     Format::TarGzip => "Compresses the TAR archive with GZIP at the selected level. Exceeding compression-ratio limits reports an error.",
                     Format::Zip => match compression.get() {
                     Compression::Automatic => "Automatic may use Store to meet compression-ratio limits.",

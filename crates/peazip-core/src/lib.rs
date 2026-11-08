@@ -58,10 +58,17 @@ impl ZipOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SevenZipCompression {
+    Stored,
+    Lzma2 { level: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateOptions {
     Zip(ZipOptions),
     Tar,
     TarGzip { level: u8 },
+    SevenZip(SevenZipCompression),
 }
 
 impl Default for CreateOptions {
@@ -79,6 +86,13 @@ impl CreateOptions {
             Self::TarGzip { .. } => Err(Error::InvalidCreateOptions(
                 "Gzip level must be between 1 and 9",
             )),
+            Self::SevenZip(SevenZipCompression::Stored) => Ok(()),
+            Self::SevenZip(SevenZipCompression::Lzma2 { level }) if (1..=9).contains(level) => {
+                Ok(())
+            }
+            Self::SevenZip(_) => Err(Error::InvalidCreateOptions(
+                "LZMA2 level must be between 1 and 9",
+            )),
         }
     }
 
@@ -87,6 +101,7 @@ impl CreateOptions {
             Self::Zip(_) => ArchiveFormat::Zip,
             Self::Tar => ArchiveFormat::Tar,
             Self::TarGzip { .. } => ArchiveFormat::TarGzip,
+            Self::SevenZip(_) => ArchiveFormat::SevenZip,
         }
     }
 }
@@ -176,6 +191,9 @@ impl From<zip::result::ZipError> for Error {
 }
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
+        if output_limit(&e) {
+            return Self::Limit("archive bytes");
+        }
         Self::Io(e)
     }
 }
@@ -577,6 +595,19 @@ struct BoundedWriter {
     cursor: Cursor<Vec<u8>>,
     max: u64,
 }
+#[derive(Debug)]
+struct ArchiveOutputLimit;
+impl std::fmt::Display for ArchiveOutputLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("archive byte limit exceeded")
+    }
+}
+impl std::error::Error for ArchiveOutputLimit {}
+fn output_limit(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|error| error.is::<ArchiveOutputLimit>())
+}
 impl Write for BoundedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self
@@ -585,7 +616,7 @@ impl Write for BoundedWriter {
             .checked_add(bytes.len() as u64)
             .is_none_or(|end| end > self.max)
         {
-            return Err(io::Error::other("archive byte limit exceeded"));
+            return Err(io::Error::other(ArchiveOutputLimit));
         }
         self.cursor.write(bytes)
     }
@@ -676,10 +707,14 @@ pub fn create_archive(
                 .write(writer, flate2::Compression::new(u32::from(level)));
             write_tar(entries, encoder)?.finish()?
         }
+        CreateOptions::SevenZip(compression) => sevenzip::write(entries, writer, compression)?,
         CreateOptions::Zip(_) => unreachable!(),
     };
     let bytes = writer.cursor.into_inner();
     list_archive(&bytes, limits)?;
+    if options.format() == ArchiveFormat::SevenZip {
+        sevenzip::test(&bytes, limits)?;
+    }
     Ok(bytes)
 }
 

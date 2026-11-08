@@ -1,7 +1,7 @@
 use peazip_core::{
     CreateOptions, Error, ExtractOptions, ExtractPaths, Limits, MAX_EXTRACTED_ITEMS, MemoryEntry,
-    create_archive, extract_archive, extract_selected_archive_with_options, extract_selected_zip,
-    extract_zip, list_archive, test_archive, validate_extraction_entries,
+    SevenZipCompression, create_archive, extract_archive, extract_selected_archive_with_options,
+    extract_selected_zip, extract_zip, list_archive, test_archive, validate_extraction_entries,
 };
 
 fn file(path: &str) -> MemoryEntry {
@@ -30,6 +30,8 @@ fn output_budget_applies_after_path_mapping_without_disabling_archive_readers_or
         CreateOptions::default(),
         CreateOptions::Tar,
         CreateOptions::TarGzip { level: 6 },
+        CreateOptions::SevenZip(SevenZipCompression::Stored),
+        CreateOptions::SevenZip(SevenZipCompression::Lzma2 { level: 5 }),
     ] {
         let bytes = create_archive(&entries, limits, options).unwrap();
         assert_eq!(list_archive(&bytes, limits).unwrap().len(), 1);

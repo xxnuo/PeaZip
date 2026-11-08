@@ -1,5 +1,6 @@
 use peazip_core::{
-    CreateOptions, ExtractOptions, ExtractPaths, Limits, MemoryEntry, ZipCompression, ZipOptions,
+    CreateOptions, ExtractOptions, ExtractPaths, Limits, MemoryEntry, SevenZipCompression,
+    ZipCompression, ZipOptions,
 };
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024 + 4096 * (8 + 1024) + 4;
@@ -212,6 +213,8 @@ pub fn create_v2_from_request(packet: &[u8]) -> Result<Vec<u8>, String> {
         (0, compression, level) => CreateOptions::Zip(zip_options(compression, level)?),
         (1, 0, 0) => CreateOptions::Tar,
         (2, 0, 1..=9) => CreateOptions::TarGzip { level: level as u8 },
+        (3, 0, 0) => CreateOptions::SevenZip(SevenZipCompression::Stored),
+        (3, 1, 1..=9) => CreateOptions::SevenZip(SevenZipCompression::Lzma2 { level: level as u8 }),
         _ => return Err("invalid archive creation options".into()),
     };
     create_entries(remaining, options)

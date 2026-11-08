@@ -780,7 +780,7 @@ pub fn App() -> impl IntoElement {
                 .description(concat!(
                     "PeaZip Rust edition ",
                     env!("CARGO_PKG_VERSION"),
-                    "\nRead: ZIP, TAR, TAR.GZ, 7z\nCreate: ZIP, TAR, TAR.GZ\nLGPL-3.0-or-later"
+                    "\nRead: ZIP, TAR, TAR.GZ, 7z\nCreate: ZIP, TAR, TAR.GZ, 7z\nLGPL-3.0-or-later"
                 ))
                 .action("close", "Close")
                 .show();
@@ -1406,7 +1406,7 @@ fn creation_save_dialog(options: peazip_core::CreateOptions) -> nsh_core::file_d
         ArchiveFormat::Zip => FileFilter::new("ZIP archives", ["zip"]),
         ArchiveFormat::Tar => FileFilter::new("TAR archives", ["tar"]),
         ArchiveFormat::TarGzip => FileFilter::new("TAR.GZ archives", ["gz", "tgz"]),
-        ArchiveFormat::SevenZip => unreachable!("7z creation is not an available option"),
+        ArchiveFormat::SevenZip => FileFilter::new("7z archives", ["7z"]),
     };
     SaveDialog::new()
         .title("Create archive — choose a new filename")

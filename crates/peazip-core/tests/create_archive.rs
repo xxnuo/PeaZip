@@ -1,6 +1,6 @@
 use peazip_core::{
-    ArchiveFormat, CreateOptions, Error, Limits, MemoryEntry, ZipOptions, create_archive,
-    create_zip, extract_archive, list_archive,
+    ArchiveFormat, CreateOptions, Error, Limits, MemoryEntry, SevenZipCompression, ZipOptions,
+    create_archive, create_zip, extract_archive, list_archive,
 };
 use std::io::Read;
 
@@ -20,11 +20,13 @@ fn directory(path: &str) -> MemoryEntry {
     }
 }
 
-fn formats() -> [CreateOptions; 3] {
+fn formats() -> [CreateOptions; 5] {
     [
         CreateOptions::Zip(ZipOptions::default()),
         CreateOptions::Tar,
         CreateOptions::TarGzip { level: 6 },
+        CreateOptions::SevenZip(SevenZipCompression::Stored),
+        CreateOptions::SevenZip(SevenZipCompression::Lzma2 { level: 5 }),
     ]
 }
 

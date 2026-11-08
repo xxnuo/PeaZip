@@ -1,12 +1,15 @@
 use super::{
-    Entry, Error, Limits, MemoryEntry, TestReport, check, insert_path, path_key, selected_indices,
-    test_report,
+    BoundedWriter, Entry, Error, Limits, MemoryEntry, SevenZipCompression, TestReport, check,
+    insert_path, path_key, selected_indices, test_report,
 };
 use flate2::Crc;
-use sevenz_turbo::{Archive, ArchiveLimits, ArchiveReader, EncoderMethod, Password};
+use sevenz_turbo::{
+    Archive, ArchiveEntry, ArchiveLimits, ArchiveReader, ArchiveWriter, EncoderMethod, Password,
+    encoder_options::{EncoderOptions, Lzma2Options},
+};
 use std::{
     collections::BTreeMap,
-    io::{self, Cursor, Read},
+    io::{self, Cursor, Read, Write},
 };
 
 pub(super) const SIGNATURE: &[u8] = b"7z\xbc\xaf\x27\x1c";
@@ -14,6 +17,49 @@ const MAX_HEADER_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_OBJECTS: u64 = 65536;
 type Reader<'a> = ArchiveReader<Cursor<&'a [u8]>>;
+
+pub(super) fn write(
+    entries: &[MemoryEntry],
+    mut output: BoundedWriter,
+    compression: SevenZipCompression,
+) -> Result<BoundedWriter, Error> {
+    if entries.is_empty() {
+        // Omit the writer's empty name property so zero entry/name budgets remain valid.
+        let mut header = [0; 32];
+        header[..6].copy_from_slice(SIGNATURE);
+        header[7] = 4;
+        let checksum = crc(&header[12..]);
+        header[8..12].copy_from_slice(&checksum.to_le_bytes());
+        output.write_all(&header)?;
+        return Ok(output);
+    }
+    let mut writer = ArchiveWriter::new(output).map_err(backend_error)?;
+    let method = match compression {
+        SevenZipCompression::Stored => EncoderMethod::COPY.into(),
+        SevenZipCompression::Lzma2 { level } => {
+            let mut options = Lzma2Options::from_level(u32::from(level));
+            let preset_dict = EncoderOptions::from(options.clone()).get_lzma_dict_size();
+            // The writer shrinks this further to each file's practical size (at least 4 KiB).
+            options.set_dictionary_size(preset_dict.min(16 * 1024 * 1024));
+            options.into()
+        }
+    };
+    writer.set_content_methods(vec![method]);
+    for entry in entries {
+        let metadata = ArchiveEntry {
+            name: entry.path.clone(),
+            is_directory: entry.is_dir,
+            size: entry.data.len() as u64,
+            ..ArchiveEntry::default()
+        };
+        // Empty files must have no stream: the strict reader rejects zero-output blocks.
+        let input = (!entry.is_dir && !entry.data.is_empty()).then_some(entry.data.as_slice());
+        writer
+            .push_archive_entry(metadata, input)
+            .map_err(backend_error)?;
+    }
+    Ok(writer.finish()?)
+}
 
 fn invalid(message: &'static str) -> Error {
     Error::InvalidSevenZip(io::Error::new(io::ErrorKind::InvalidData, message))
@@ -23,6 +69,7 @@ fn backend_error(error: sevenz_turbo::Error) -> Error {
     use sevenz_turbo::{Error as E, Limit as L};
     match error {
         E::BlockDecode { cause, .. } => backend_error(*cause),
+        E::Io(error, _) if super::output_limit(&error) => Error::Limit("archive bytes"),
         E::MaxMemLimited { .. } | E::MemoryLimited { .. } => Error::Limit("7z decoder memory"),
         E::EndHeaderTooLarge { .. } => Error::Limit("7z header bytes"),
         E::LimitExceeded { what, .. } => Error::Limit(match what {

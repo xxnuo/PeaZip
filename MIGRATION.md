@@ -443,3 +443,14 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 用户将目标平台明确更新为 macOS、Linux、Windows、Web；功能及界面对齐范围仍覆盖 PeaZip 每一项，不按已实现子集缩减。此前 Android/iOS、六平台矩阵及测试记录属于旧目标下的历史证据，保留原记录，当前验收以本节及四平台目标为准。这是用户范围变更，不是以工具链或平台限制替代原定功能。
 - Cargo 默认成员聚焦 core/native/ui/web/worker，已有移动端 crate 保留在仓库与显式 workspace 成员中，不删除已完成的历史工作。CI 删除 Android/iOS 构建、模拟器和发布物作业，继续三个桌面系统的核心/Worker/UI 检查、Web 构建与浏览器测试、Linux GUI 回归及每周上游差异报告。
 - 四平台后续门槛：macOS 补当前窗口/文件操作/安装与签名；Linux 补发行打包、支持环境与门户/Wayland 范围；Windows 补真实系统安装/运行、选择器和路径/权限回归；Web 补浏览器范围、真实外部目录授权与交付。已通过的跨平台共享测试或交叉编译不得替代各目标实际验收。完整格式、更新/加密/分卷/大文件、文件管理/预览/配置/语言与无障碍及原版 UI 仍按既有清单推进。
+
+
+## 基础 7z 创建（CREATE-7Z-01）
+
+- macOS/Linux/Windows/Web 共享创建流程加入 7z，支持普通文件、目录、空文件/空目录、Unicode 和长名称，Store 使用 COPY，LZMA2 支持 1–9、初始级别 3。默认创建格式仍为 ZIP，选项只在确认时记忆，取消丢弃草稿；既有原子排他发布、失败/取消保留原归档快照及选择的语义沿用。Web create-v2 保持 16 字节头，新增 format=3，Store=(0,0)、LZMA2=(1,1..9)，JS/Rust 均在读取输入前拒绝非法选项。
+- 每个非空文件单独 block、非 solid，单线程 LZMA2 字典上限 16 MiB 并按文件大小缩小；不写入宿主时间/属性，固定输入顺序与锁定实现可重复生成相同字节，不宣称跨版本/平台字节一致。空归档采用标准 32 字节无 next-header 表示，空文件无独立内容 CRC。sevenz-turbo 锁定 0.29.5，仅开启 compress，未开启 AES/aws-lc/bzip2/ppmd/util；Store 的文件数据不压缩不代表归档头不压缩。
+- 沿用输入路径/重名/条目/字节预算，输出通过 Write+Seek 长度限额，创建后由严格 reader 完整 list/test；payload 或最终 header 写出超限均准确返回 archive bytes。压缩比超限明确报错，不自动退回 Store。输出长度限额不等同 Vec 容量或总堆内存限额；16 MiB 字典也不等同编码器总内存≤64 MiB，匹配结构可能超过 128 MiB。归档头仍在中间 Vec 构建，默认名称/条目预算约束其规模，提高这些限制的可信调用者可能在最终 reader 拒绝前产生更大分配。
+- 固定原版基线 367c682 的默认方法为 LZMA2，level_7z=2 是 UI 索引，对应 Fast/-mx3；本实现初始数值 3 与之对齐，但依赖采用 xz preset 参数表，不宣称与原版 -mx 同号参数、字典或压缩结果等价。原版 advanced 配置可改变字典/solid，不能声称其总是 solid。加密/密码/文件名加密、solid、其他 codec、分卷/SFX/更新及完整创建工作区仍待迁移。
+- 最终工作区 388 次测试执行、Web 全量 171 项通过，host/WASM Clippy 与格式检查通过。新回归覆盖 Store 与 LZMA2 1–9、严格压缩比、字典/header/output 预算、Unicode/空成员、选中提取、默认级别、非法选项、确认记忆/取消回滚；独立系统 7z 校验和解压实际生成内容。真实浏览器覆盖 Store/LZMA2 1/9 下载并重开字节相同、MIME/扩展名、独立解压、Cancel/pagehide 在 create→list 交接时释放 worker，以及 ratio 失败保留原 ZIP/选择后显式 Store 重试；360×600 明暗主题已检查。
+- Windows GNU core/native/UI 测试检查、三个新测试的编译链接、release、PE/官方 WebView2Loader 和源码哈希验证通过，未实际运行 Windows。macOS 通过 host 共享测试与原生创建路径/目录快照及独立 7z 校验，本轮未新增实际窗口选择器验收。远程 CI 未运行；未新增移动端专属工作。整体 PeaZip 功能/界面迁移仍未完成。
+- Linux 真实 GTK 分段验收：full2 的旧 TAR/TAR.GZ 创建、独立解包、取消、压缩比失败/重试和拒绝覆盖均通过，该段发生于最终 typed 输出超限错误分类修复前，之后未重跑旧 GUI 段；最终当前源码的 final2 新 7z/ZIP 段完整通过 Store、LZMA2 默认 3/级别 9、真实目录选择器、Unicode/长名/二进制/空成员/非 solid 的独立 7z 解压逐字节比较、取消与严格 ratio 失败保留快照/选择、显式 Store 重试、同名拒绝覆盖及 ZIP Store 回归。测试修正了 7z 的 k/m/g 字典显示解析，并用少量随机字节避免常规高压缩 fixture 在级别 9 意外触发既有 ratio 策略；专用零数据 fixture 继续验证拒绝。最终整脚本未单次全程重跑，不把分段证据表述为一次全流程通过；日志/截图/最终源码与构建哈希位于 target/linux-create-sevenzip，汇总 target/create-sevenzip-evidence.json。
