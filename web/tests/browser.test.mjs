@@ -2423,7 +2423,7 @@ async function detailScroller(page, action, value = 0) {
   return page.getByRole('button', { name: 'Name', exact: true }).evaluate((node, { action, value }) => {
     for (let parent = node.parentElement; parent; parent = parent.parentElement) {
       const overflow = getComputedStyle(parent).overflowX;
-      if ((overflow === 'auto' || overflow === 'scroll') && parent.scrollWidth > parent.clientWidth + 1) {
+      if ((overflow === 'auto' || overflow === 'scroll') && (action === 'inspect' || parent.scrollWidth > parent.clientWidth + 1)) {
         if (action === 'set') parent.scrollLeft = value;
         const { x, width } = parent.getBoundingClientRect();
         return { left: parent.scrollLeft, maximum: parent.scrollWidth - parent.clientWidth, x, width };
@@ -2499,7 +2499,7 @@ async function expectDetailAlignment(page) {
   }
 }
 
-async function saveResizedColumns(page, name) {
+async function saveResizedColumns(page, name, requireScroll = true) {
   const { createHash } = await import('node:crypto');
   const directory = fileURLToPath(new URL('../../target/', import.meta.url));
   const sourceHashes = {};
@@ -2508,8 +2508,8 @@ async function saveResizedColumns(page, name) {
     'web/tests/browser.test.mjs', 'target/web-dist/peazip.wasm']) {
     sourceHashes[source] = createHash('sha256').update(await readFile(new URL(`../../${source}`, import.meta.url))).digest('hex');
   }
-  const scroll = await detailScroller(page, 'read');
-  assert.ok(scroll.maximum > 0 && scroll.left > 0, 'screenshot must prove resized and horizontally scrolled state');
+  const scroll = await detailScroller(page, requireScroll ? 'read' : 'inspect');
+  if (requireScroll) assert.ok(scroll.maximum > 0 && scroll.left > 0, 'screenshot must prove resized and horizontally scrolled state');
   const metadata = { viewport: page.viewportSize(),
     theme: await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     widths: await detailWidths(page), scroll, sourceHashes,
@@ -2767,4 +2767,207 @@ test('Detailed overflowing virtual list reaches its final directory and opens it
   } finally {
     await vertical.dispose();
   }
+});
+
+const adjustedDetailWidths = [240, 72, 72, 72];
+
+async function changeEveryDetailColumn(page) {
+  for (const name of detailColumnNames) {
+    const handle = resizeColumn(page, name);
+    await handle.scrollIntoViewIfNeeded();
+    await handle.focus();
+    await page.keyboard.press('Shift+ArrowRight');
+  }
+  return detailWidths(page);
+}
+
+async function adjustColumnsMenu(page) {
+  await page.getByRole('button', { name: 'Layout', exact: true }).click();
+  const item = page.getByRole('menuitem', { name: 'Auto adjust columns', exact: true });
+  await expect(item).toBeEnabled();
+  await item.click();
+  await expect(page.getByRole('menu')).toHaveCount(0);
+}
+
+async function detailSelectionState(page) {
+  return {
+    rows: await page.getByRole('checkbox').evaluateAll(nodes => nodes.map(node => ({
+      path: node.getAttribute('aria-label'), checked: node.getAttribute('aria-checked'),
+    }))),
+    selected: await page.getByText(/^\d+ selected$/, { exact: true }).innerText(),
+    filter: await page.getByRole('textbox', { name: 'Filter names', exact: true }).inputValue(),
+    path: await page.getByRole('textbox', { name: 'Archive path', exact: true }).inputValue(),
+  };
+}
+
+test('Auto adjust columns restores fixed legacy widths idempotently without changing selection, sort, filter or snapshot', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose, tree } = await extractionPage(t, true, { viewport: { width: 1024, height: 600 } });
+  await choose(await extractionFixture([['dir/long-name.txt', 'first'], ['outside.txt', 'outside'], ['dir/data.bin', 'binary']]));
+  await page.getByRole('checkbox', { name: 'outside.txt', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'dir/data.bin', exact: true }).click();
+  await button('Size (bytes)').click();
+  const filter = page.getByRole('textbox', { name: 'Filter names', exact: true });
+  await filter.fill('dir/');
+  await filter.press('Enter');
+  await expect(page.getByRole('checkbox')).toHaveCount(2);
+  const before = await detailSelectionState(page);
+  const snapshot = await downloadArchive(page, button('Download ZIP'));
+  const changed = await changeEveryDetailColumn(page);
+  assert.ok(changed.every((width, index) => Math.abs(width - adjustedDetailWidths[index]) > 2), 'all four columns must differ from reset widths');
+  for (let iteration = 0; iteration < 2; iteration++) {
+    await adjustColumnsMenu(page);
+    await expectDetailWidths(page, adjustedDetailWidths);
+    await expectDetailAlignment(page);
+    assert.deepEqual(await detailSelectionState(page), before);
+    await button('Layout').click();
+    await expect(page.getByRole('menuitemcheckbox', { name: 'Sort by size', exact: true })).toBeChecked();
+    await page.keyboard.press('Escape');
+    assert.deepEqual(await downloadArchive(page, button('Download ZIP')), snapshot);
+    assert.deepEqual(await tree(), sentinelTree);
+  }
+  await saveResizedColumns(page, 'columns-adjusted-1024-light', false);
+  // Fixed legacy widths must not be confused with Home's viewport-responsive auto width.
+  await resizeColumn(page, 'Name').focus();
+  await page.keyboard.press('Home');
+  await expect.poll(async () => (await detailHeader(page, 'Name')).width).toBeGreaterThan(240);
+  await expect.poll(async () => (await detailHeader(page, 'Type')).width).toBe(72);
+  await adjustColumnsMenu(page);
+  await expectDetailWidths(page, adjustedDetailWidths);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expectDetailWidths(page, adjustedDetailWidths);
+  await expectDetailAlignment(page);
+  assert.deepEqual(await detailSelectionState(page), before);
+  await saveResizedColumns(page, 'columns-adjusted-1440-dark', false);
+});
+
+test('Auto adjust columns shortcut respects text editing and narrow execution persists into the wide layout', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await navigationPage(t, { width: 1024, height: 600 });
+  await choose();
+  let changed = await changeEveryDetailColumn(page);
+  await button('Name').focus();
+  await page.keyboard.press('ControlOrMeta+Alt+a');
+  await expectDetailWidths(page, adjustedDetailWidths);
+  changed = await changeEveryDetailColumn(page);
+  for (const [label, value] of [['Filter names', 'docs'], ['Archive path', '/']]) {
+    const input = page.getByRole('textbox', { name: label, exact: true });
+    if (label === 'Filter names') await input.fill(value);
+    await input.focus();
+    await expect(input).toBeFocused();
+    const before = await input.inputValue();
+    await page.keyboard.press('ControlOrMeta+Alt+a');
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue(before);
+    await expectDetailWidths(page, changed);
+  }
+  await button('Clear filter').click();
+  await page.setViewportSize({ width: 360, height: 800 });
+  for (const name of detailColumnNames) await expect(resizeColumn(page, name)).toHaveCount(0);
+  await adjustColumnsMenu(page);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect(button('Size (bytes)')).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await expectDetailWidths(page, adjustedDetailWidths);
+  await expectDetailAlignment(page);
+  await expect(page.getByText('0 selected', { exact: true })).toBeVisible();
+});
+
+test('Auto adjust columns cannot bypass modal or worker busy eligibility through shortcuts or forced menu events', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await navigationPage(t, { width: 1024, height: 600 });
+  await choose();
+  const changed = await changeEveryDetailColumn(page);
+  await button('Create archive…').click();
+  const modal = page.getByRole('group', { name: 'Create archive', exact: true });
+  await expect(modal).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+Alt+a');
+  await expectDetailWidths(page, changed);
+  // Dispatch directly to the underlying trigger/item so pointer-modal interception cannot
+  // be mistaken for command-level eligibility enforcement.
+  await button('Layout').dispatchEvent('click');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await expectDetailWidths(page, changed);
+  await expect(modal).toBeVisible();
+  await button('Layout').dispatchEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true });
+  await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'a', code: 'KeyA', ctrlKey: true, altKey: true, bubbles: true, cancelable: true,
+  })));
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await expectDetailWidths(page, changed);
+  await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expectDetailWidths(page, changed);
+  let release, intercepted = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async route => {
+    intercepted = true;
+    await gate;
+    await route.continue().catch(() => {});
+  });
+  try {
+    await button('Test archive').click();
+    await expect.poll(() => intercepted).toBe(true);
+    await expect(page.getByText('Testing archive…', { exact: true })).toBeVisible();
+    await button('Layout').click();
+    const busyAdjust = page.getByRole('menuitem', { name: 'Auto adjust columns', exact: true });
+    await expect(busyAdjust).toBeDisabled();
+    await busyAdjust.dispatchEvent('click');
+    await expectDetailWidths(page, changed);
+    await page.keyboard.press('Escape');
+    await button('Name').focus();
+    await page.keyboard.press('ControlOrMeta+Alt+a');
+    await expectDetailWidths(page, changed);
+    await button('Cancel').click();
+    await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+  await adjustColumnsMenu(page);
+  await expectDetailWidths(page, adjustedDetailWidths);
+});
+
+test('Auto adjust columns keeps large raw Size/Packed values accessible on a single virtualized row', { timeout: 120_000 }, async (t) => {
+  const directory = await mkdtemp(resolve(tmpdir(), 'peazip-adjust-columns-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const archivePath = resolve(directory, 'large-stored.zip');
+  const size = 12_345_678;
+  await promisify(execFile)('uv', ['run', 'python', '-c', `
+import random, sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'w', compression=zipfile.ZIP_STORED) as archive:
+    archive.writestr('big-entropy.bin', random.Random(17).randbytes(${size}))
+    archive.writestr('small.txt', b'small')
+    archive.writestr('empty/', b'')
+`, archivePath]);
+  const { page, button, choose } = await extractionPage(t, true, { viewport: { width: 1024, height: 600 } });
+  await choose(archivePath);
+  const large = page.getByRole('checkbox', { name: 'big-entropy.bin', exact: true });
+  const small = page.getByRole('checkbox', { name: 'small.txt', exact: true });
+  const beforeHeight = (await large.boundingBox()).height;
+  await adjustColumnsMenu(page);
+  await expectDetailWidths(page, adjustedDetailWidths);
+  await expect(button('Size (bytes)')).toHaveText('Size');
+  await expect(button('Packed (bytes)')).toHaveText('Packed');
+  for (const [label, name] of [[`Size in bytes: ${size}`, 'Size (bytes)'], [`Packed bytes: ${size}`, 'Packed (bytes)']]) {
+    const cell = large.getByLabel(label, { exact: true });
+    await expect(cell).toBeVisible();
+    await expect(cell).toHaveAttribute('aria-label', label);
+    const geometry = await cell.evaluate(node => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const rectangles = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+      return { lines: [...new Set(rectangles.map(rect => Math.round(rect.y)))].length,
+        height: node.getBoundingClientRect().height, width: node.getBoundingClientRect().width };
+    });
+    assert.equal(geometry.lines, 1, `${name} must not wrap its eight-digit value`);
+    assert.ok(geometry.width <= 73 && geometry.width >= 71);
+    assert.ok(geometry.height < 24, `${name} must retain single-line cell height`);
+  }
+  const after = await large.boundingBox();
+  const smallBox = await small.boundingBox();
+  assert.ok(Math.abs(after.height - beforeHeight) < 2, 'fixed widths must not increase the virtualized row height');
+  assert.ok(Math.abs(after.height - smallBox.height) < 2, 'large and small values must use the same row height');
+  await large.click();
+  await expect(large).toBeChecked();
+  await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+  await expect(button('Extract…')).toBeEnabled();
+  await expectDetailAlignment(page);
 });

@@ -29,6 +29,7 @@ pub enum CommandId {
     SortSize,
     SortType,
     SortPacked,
+    AdjustColumns,
     About,
 }
 

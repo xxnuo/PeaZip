@@ -20,7 +20,7 @@ impl Column {
         match self {
             Self::Name => (160.0, 2048.0),
             Self::Type => (56.0, 800.0),
-            Self::Size | Self::Packed => (80.0, 800.0),
+            Self::Size | Self::Packed => (56.0, 800.0),
         }
     }
 }
@@ -45,6 +45,11 @@ impl ColumnWidths {
     pub fn get(self, column: Column, fallback: f32) -> f32 {
         self.0
             .with(|widths| widths[column.index()].unwrap_or(fallback))
+    }
+
+    pub fn adjust(self) {
+        self.0
+            .set([Some(240.0), Some(72.0), Some(72.0), Some(72.0)]);
     }
 
     fn resize(self, column: Column, start: f32, offset: f32) {
@@ -79,7 +84,14 @@ pub(crate) fn header(
                 .flex_1()
                 .min_w(px(0.0))
                 .px_2()
-                .child(text(label).number_of_lines(1)),
+                .child(
+                    text(move || match column {
+                        Column::Size if width() < 110.0 => "Size",
+                        Column::Packed if width() < 110.0 => "Packed",
+                        _ => label,
+                    })
+                    .number_of_lines(1),
+                ),
         )
         .child(when(
             move || wide.get(),
@@ -219,7 +231,7 @@ mod tests {
         assert_eq!(resized(Column::Name, 320.0, -1000.0), Some(160.0));
         assert_eq!(resized(Column::Name, 320.0, 5000.0), Some(2048.0));
         assert_eq!(resized(Column::Type, 85.0, -100.0), Some(56.0));
-        assert_eq!(resized(Column::Size, 110.0, -100.0), Some(80.0));
+        assert_eq!(resized(Column::Size, 110.0, -100.0), Some(56.0));
         assert_eq!(resized(Column::Packed, 110.0, 1000.0), Some(800.0));
         for offset in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert_eq!(resized(Column::Name, 320.0, offset), None);

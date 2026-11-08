@@ -7,6 +7,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import smoke_android
+from smoke_android_menus import MenuSmoke
 
 
 class NavigationSmoke(smoke_android.Smoke):
@@ -167,10 +168,43 @@ class NavigationSmoke(smoke_android.Smoke):
         self.save("navigation-flat-persisted")
         self.tap("Folder view")
         self.check_path_submit()
+        self.auto_adjust_columns(name, contents, remote)
         self.health()
         print("PASS folder rows/history/path; implicit selection; SAF cancellation/extraction; "
               "parent selection checks descendants; deselected child absent from real extraction; "
               "unselected files absent, sentinel preserved; view preference persists", flush=True)
+
+    def auto_adjust_columns(self, name, contents, remote):
+        self.tap("Archive root")
+        self.navigation_rows({"docs/": False, "other.txt": False})
+        self.set_checkbox("other.txt", True)
+        self.label("1 selected")
+        before = self.dump()
+        headers = [(node.get("text"), node.get("bounds")) for node in before.iter("node")
+                   if node.get("text") in ("Name", "Size (bytes)")]
+        self.tap("Layout")
+        tree = self.wait("Layout Auto adjust columns", lambda tree: bool(MenuSmoke.menu_items(tree, "Auto adjust columns")))
+        items = MenuSmoke.menu_items(tree, "Auto adjust columns")
+        if len(items) != 1 or items[0].get("enabled") != "true" or items[0].get("clickable") != "true":
+            raise AssertionError("Auto adjust columns is not an enabled real menu item")
+        self.save("navigation-auto-adjust-menu")
+        x1, y1, x2, y2 = MenuSmoke.bounds(items[0])
+        self.adb("shell", "input", "tap", (x1 + x2) // 2, (y1 + y2) // 2)
+        self.wait("Layout dismissed", lambda tree: not MenuSmoke.menu_items(tree))
+        self.navigation_rows({"docs/": False, "other.txt": True})
+        self.label("1 selected")
+        self.label(name)
+        after = self.dump()
+        assert [(node.get("text"), node.get("bounds")) for node in after.iter("node")
+                if node.get("text") in ("Name", "Size (bytes)")] == headers, "Narrow columns changed after Auto adjust"
+        assert not any(node.get("content-desc", "").startswith("Resize ") for node in after.iter("node"))
+        row = next(node for node in after.iter("node") if node.get("class") == "android.widget.CheckBox"
+                   and node.get("content-desc") == "other.txt")
+        assert any(node.get("content-desc") == f"Size in bytes: {len(contents['other.txt'])}"
+                   for node in row.iter("node"))
+        assert self.adb("exec-out", "cat", remote, binary=True) == (smoke_android.ROOT / "tests/fixtures/sample.tar").read_bytes()
+        self.save("navigation-auto-adjust-narrow-preserved")
+        print("PASS narrow Layout Auto adjust columns: real menu tap; Name/Size bounds, selection, raw size label and source bytes preserved", flush=True)
 
     def set_checkbox(self, path, checked):
         tree = self.dump()

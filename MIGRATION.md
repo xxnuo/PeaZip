@@ -346,3 +346,13 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 验证：工作区 344 次测试执行、完整 Web 124 项通过；新增 4 项 App 流程验证文件系统列边界、无障碍调整/模态拒绝、隐藏选择及真实归档字节、跨目录/刷新/归档共享状态、窄屏恢复及大列表有界虚拟化。新增 5 项真实浏览器测试验证鼠标拖动、横滚同步、键盘步进/Home、选择/实际提取字节、busy/modal、窄屏及最后一行可达性。主机 Clippy/格式、WASM Clippy 与最终构建通过；Windows GNU check/release/native 测试交叉检查及 PE/loader/hash 通过，源码哈希一致，未实际运行 Windows。
 - Web 调宽并横滚的亮暗截图及 viewport/theme/offset/source hashes 位于 target/columns-resized-scrolled-*.png/.json。iOS UI 交叉检查仍因 xcrun 找不到 iphonesimulator SDK 失败，日志 target/columns-ios-ui-check.log，不作为 iOS 构建或运行通过。六平台完整界面、交互与发布验收仍待完成。
 - Linux GTK/X11 冻结源码的完整 smoke 通过，真实鼠标/键盘、排序/筛选/目录与跨 FS/归档状态、提取内容和源文件哨兵已核对；横滚表头与行均移动 148px、差 0px。1024×600 / 1440×900 截图及脚本、源码/二进制哈希位于 target/linux-columns，新增脚本已接入 Linux CI；远程 CI 未运行。Android API36 最终 APK（SHA256 dd42f97adb4e2e06c7f6ec9ae3e035dcb608d63efa9ec1185680e016fecfd419）导航回归与 target Clippy 通过，真实 DocumentsUI/SAF 验证窄屏目录、隐式目录/父子选择、取消、排除子项后的落盘字节和哨兵；证据 target/columns-android-navigation-final.log / target/android-smoke/96c5450edb21。维护旧 Android 导航脚本只统计行 CheckBox，排除筛选 Switch，不改变生产选择逻辑。汇总证据 target/columns-evidence.json。
+
+
+## 一键恢复详细列宽（UI-COLUMNS-RESET-01）
+
+- Layout 新增 Auto adjust columns，通过共享命令及 mod+Alt+A 执行；桌面为 Ctrl/Command+Alt+A，Web 使用同一 NotEditing 门禁，移动端提供真实菜单入口。一次写入 Name/Type/Size/Packed = 240/72/72/72 逻辑像素，归档与文件系统共享，隐藏的 Packed 同时恢复；窄屏仍按适配布局显示，返回宽屏使用已重置值。命令不修改选择、排序、筛选、目录或归档字节，重复执行幂等。
+- 固定原版 peach.pas:64334 的 ctrlaltAExecute 虽先启用/关闭 AutoSize，最终仍覆盖为 COL1D…COL4D；对应默认常量为 240/72/72/72，原版菜单与快捷键位于 peach.lfm:17405、24651。当前命令恢复这四列固定宽度，不声称按最长文件名适配；其余原版属性列、My Computer 特殊布局和配置持久化仍待迁移，初次启动继续沿用现有填充 Name 布局，单列 Home 仍恢复自动宽度。
+- Size/Packed 拖动下限统一为 56，容纳原版 72 默认值；窄列标题简写为 Size/Packed，可访问名称保留完整含 bytes 标签。数值单行省略避免撑高虚拟行，归档及文件系统完整原始字节数保留于可访问标签，新增稀疏大文件和真实大条目回归。busy/modal、旧菜单回调与文本编辑门禁在执行前再次生效，原生菜单执行后回焦内容。
+- 验证：工作区 348 次测试执行、Web 全量 128 项通过；新增 4 项 headless App 流程与 4 项真实浏览器测试覆盖菜单/快捷键、幂等、跨 FS/归档共享和隐藏列恢复、筛选/排序/选择/实际文件字节保持、NotEditing、busy/modal、窄屏返回宽屏及长数值行高。主机/WASM Clippy、格式检查通过。Linux GTK 完整列宽流程含新增菜单及快捷键实际重置通过，1024×600/1440×900 归档和文件系统截图、script/source/build hashes 位于 target/linux-columns-reset，脚本沿用既有 Linux CI；远程 CI 未运行。
+- Web 固定列宽后的两尺寸亮/暗截图及 viewport/theme/source/WASM hashes 位于 target/columns-adjusted-{1024-light,1440-dark}.{png,json}，已目视检查。Windows GNU check/release/native 测试交叉检查和 PE/hash 通过，源码哈希一致，未实际运行；iOS 未新增运行验收。汇总证据 target/adjust-columns-evidence.json；本单元不代表阶段 2a 完成。
+- Android API36 最终 APK（SHA256 3b2e6e23c55d316234a8ca09019c7b0f531c7022c3bae5bf2f8fc8b0147fbcda）完整导航与 Auto adjust columns 真实菜单点击通过，窄屏 Name/Size 边界、选择、完整原始大小标签与源字节保持；SAF 取消/提取及父子选择排除输出回归通过，target Clippy 通过。17 张截图与源码/脚本/APK hashes 位于 target/auto-adjust-android-evidence.json，日志 target/auto-adjust-android-navigation-final.log。测试文件已清理，专用模拟器与自有容器已关闭，未动 wp-phone-tools；真实设备、其他 provider 及完整六平台验收仍待完成。Python 8 项回归通过；上游复查相对固定基线无新增提交。

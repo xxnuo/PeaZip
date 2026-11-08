@@ -695,6 +695,15 @@ pub fn App() -> impl IntoElement {
             )
         }),
     ];
+    all.push(keyboard_shortcut(
+        Command::new(
+            CommandId::AdjustColumns,
+            "Auto adjust columns",
+            move || !busy.get(),
+            move || controls.widths.adjust(),
+        ),
+        "mod+alt+a",
+    ));
     all.push(Command::new(
         CommandId::About,
         "About PeaZip",

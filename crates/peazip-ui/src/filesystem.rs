@@ -709,6 +709,8 @@ pub fn browser(
                                                     .map(|size| size.to_string())
                                                     .unwrap_or_else(|| "—".into())
                                             })
+                                            .number_of_lines(1)
+                                            .label(move || row().map(|entry| entry.size.map(|size| format!("Size in bytes: {size}")).unwrap_or_else(|| "Size in bytes: not applicable".into())).unwrap_or_default())
                                             .w(move || px(size_width()))
                                             .px_2()
                                             .flex_shrink_0(),

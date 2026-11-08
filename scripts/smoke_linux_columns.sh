@@ -352,6 +352,55 @@ resize 700 600
 screen narrow-original-layout
 row '^short.txt$' > /dev/null
 resize 1440 900
+# Auto adjust uses the upstream fixed widths, unlike each handle's Home fallback.
+assert_fixed_columns() {
+ local gutter=$1 packed=${2:-no}
+ read -r nx ny < <(header_left Name)
+ read -r tx ty < <(header_left Type)
+ read -r sx sy < <(header_left Size)
+ assert_delta "$tx" "$nx" "$((240+gutter-3))" "$((240+gutter+3))"
+ assert_delta "$sx" "$tx" "$((72+gutter-3))" "$((72+gutter+3))"
+ if [[ "$packed" = yes ]]; then
+  read -r px py < <(header_left Packed)
+  assert_delta "$px" "$sx" 69 75
+ fi
+}
+select_row '^short.txt$'
+selection_count 1
+drag_name
+menu_action Layout '^Auto$'
+assert_fixed_columns 8
+selection_count 1
+menu_action Layout '^Auto$'
+assert_fixed_columns 8
+selection_count 1
+capture_sizes filesystem-auto-adjust-fixed-columns
+# A custom drag first proves that the shortcut changes widths rather than no-ops.
+drag_name
+xdotool key ctrl+alt+a
+sleep .4
+assert_fixed_columns 8
+selection_count 1
+resize 700 600
+screen narrow-after-auto-adjust
+resize 1440 900
+assert_fixed_columns 8
+selection_count 1
+open_archive sample.7z
+select_row '^docs$'
+selection_count 1
+assert_fixed_columns 0 yes
+drag_name
+menu_action Layout '^Auto$'
+assert_fixed_columns 0 yes
+selection_count 1
+drag_name
+xdotool key ctrl+alt+a
+sleep .4
+assert_fixed_columns 0 yes
+selection_count 1
+capture_sizes archive-auto-adjust-fixed-columns
+pass auto-adjust-menu-shortcut-idempotent-shared-widths-selection
 sha256sum -c "$artifacts/source.sha256"
 if grep -Ei 'panic|critical|segmentation' "$artifacts/gtk.log"; then exit 1; fi
 printf 'GUI_COLUMNS_DRAG_KEYBOARD_SCROLL_SELECTION_EXTRACT_FS_OK %s\n' "$run_dir"

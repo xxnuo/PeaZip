@@ -44,6 +44,7 @@ const GROUPS: &[(&str, &[CommandId])] = &[
             CommandId::SortSize,
             CommandId::SortType,
             CommandId::SortPacked,
+            CommandId::AdjustColumns,
         ],
     ),
     (
@@ -89,6 +90,7 @@ mod native {
                         | CommandId::SortSize
                         | CommandId::SortType
                         | CommandId::SortPacked
+                        | CommandId::AdjustColumns
                         | CommandId::Test
                         | CommandId::CloseArchive
                         | CommandId::Back

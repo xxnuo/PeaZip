@@ -1,8 +1,10 @@
 #![cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 
 use nsh_core::{
-    Accessibility, Bounds, Checked, EventKind, EventPayload, MountItem, NodeId, PayloadValue,
-    Points, Size, prelude::px,
+    Accessibility, Bounds, Checked, Command, EventKind, EventPayload, MountItem, NodeId,
+    PayloadValue, Points, ROOT_ID, Size,
+    desktop::{DesktopCommand, MenuAction, MenuItem},
+    prelude::px,
 };
 use nsh_engine::{EngineConfig, Root};
 use nsh_testing::Headless;
@@ -20,6 +22,8 @@ struct Seen {
     frames: BTreeMap<NodeId, Bounds<Points>>,
     text: BTreeMap<NodeId, String>,
     horizontal: BTreeMap<NodeId, bool>,
+    probe_blocked_adjust: bool,
+    blocked_adjust_attempts: usize,
 }
 
 struct App {
@@ -31,9 +35,18 @@ impl App {
     fn open(path: &Path, count: usize) -> Self {
         let mut config = EngineConfig::new(Root::of::<peazip_ui::App>());
         config.viewport = Size::new(px(1024.0), px(900.0));
+        config.environment.idiom = nsh_engine::Idiom::Desktop;
+        config.environment.os = if cfg!(target_os = "macos") {
+            nsh_engine::Os::MacOs
+        } else if cfg!(target_os = "windows") {
+            nsh_engine::Os::Windows
+        } else {
+            nsh_engine::Os::Linux
+        };
         let mut app = Headless::start(config).unwrap();
         let seen = Arc::new(Mutex::new(Seen::default()));
         let capture = Arc::clone(&seen);
+        let control = app.engine().control();
         app.observe(move |_, batch| {
             let mut seen = capture.lock().unwrap();
             for item in &batch.items {
@@ -62,6 +75,28 @@ impl App {
                         seen.parents.remove(id);
                         seen.text.remove(id);
                         seen.horizontal.remove(id);
+                    }
+                    MountItem::Command {
+                        command: Command::Desktop(command),
+                        ..
+                    } if seen.probe_blocked_adjust => {
+                        if let DesktopCommand::SetMenu(Some(menu)) = &**command {
+                            MenuItem::each_action(menu, &mut |action| {
+                                if action.label == "Auto adjust columns" && !action.enabled {
+                                    seen.probe_blocked_adjust = false;
+                                    seen.blocked_adjust_attempts += 1;
+                                    // The public native menu event is queued before Headless answers the busy picker.
+                                    control.dispatch_event(
+                                        ROOT_ID,
+                                        EventKind::Menu,
+                                        EventPayload::Map(vec![(
+                                            "id",
+                                            PayloadValue::Number(action.id as f64),
+                                        )]),
+                                    );
+                                }
+                            });
+                        }
                     }
                     _ => {}
                 }
@@ -206,6 +241,53 @@ impl App {
                 "{label} column edges differ"
             );
         }
+    }
+
+    fn menu_action(&self, group: &str, label: &str) -> MenuAction {
+        for (_, command) in self.app.screen().commands().iter().rev() {
+            if let Command::Desktop(command) = command
+                && let DesktopCommand::SetMenu(Some(menu)) = &**command
+            {
+                let items = menu
+                    .iter()
+                    .find_map(|item| match item {
+                        MenuItem::Submenu { label, items, .. } if label == group => Some(items),
+                        _ => None,
+                    })
+                    .expect("missing native menu group");
+                let mut found = None;
+                MenuItem::each_action(items, &mut |action| {
+                    if action.label == label {
+                        found = Some(action.clone());
+                    }
+                });
+                return found.unwrap_or_else(|| panic!("missing menu action {group}/{label}"));
+            }
+        }
+        panic!("native application menu is missing");
+    }
+
+    fn choose(&mut self, group: &str, label: &str) {
+        let action = self.menu_action(group, label);
+        assert!(action.enabled, "{group}/{label} is disabled");
+        self.send(
+            ROOT_ID,
+            EventKind::Menu,
+            EventPayload::Map(vec![("id", PayloadValue::Number(action.id as f64))]),
+        );
+    }
+
+    fn assert_adjusted(&mut self, packed: bool) {
+        self.until(|app| {
+            [
+                ("Resize Name column", 240.0),
+                ("Resize Type column", 72.0),
+                ("Resize Size (bytes) column", 72.0),
+            ]
+            .into_iter()
+            .all(|(label, width)| app.now(label) == width)
+                && (!packed || app.now("Resize Packed (bytes) column") == 72.0)
+        });
     }
 }
 
@@ -402,4 +484,260 @@ fn modal_disables_resize_and_rejects_accessibility_events_without_changing_selec
         std::fs::read(temp.path().join("keep")).unwrap(),
         b"untouched"
     );
+}
+
+#[test]
+fn auto_adjust_layout_menu_preserves_hidden_ids_filter_sort_and_real_copy_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    for (name, data) in [
+        ("shown-a.txt", b"seven!!".as_slice()),
+        ("shown-z.txt", b"z"),
+        ("hidden.bin", b"hidden payload"),
+    ] {
+        std::fs::write(source.join(name), data).unwrap();
+    }
+    let mut app = App::open(&source, 3);
+    app.app.press("role:checkbox[hidden.bin]").unwrap();
+    app.app.type_text("Filter names", ".txt").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.app.wait_for("2 of 3 items shown").unwrap();
+    app.app.press("role:checkbox[shown-a.txt]").unwrap();
+    app.choose("Layout", "Sort by size");
+    let sort = app.menu_action("Layout", "Sort by size").checked;
+    let order_before: Vec<_> = app
+        .app
+        .screen()
+        .texts()
+        .into_iter()
+        .filter(|text| matches!(*text, "shown-a.txt" | "shown-z.txt"))
+        .map(str::to_owned)
+        .collect();
+    for label in [
+        "Resize Name column",
+        "Resize Type column",
+        "Resize Size (bytes) column",
+    ] {
+        app.action(label, "increment");
+    }
+    let requests = app.app.screen().file_requests().len();
+    app.choose("Layout", "Auto adjust columns");
+    app.assert_adjusted(false);
+    assert_eq!(
+        app.app.screen().input_text("Filter names").unwrap(),
+        Some(".txt")
+    );
+    assert!(app.app.screen().shows("2 of 3 items shown"));
+    assert!(app.app.screen().shows("2 selected"));
+    assert!(app.checked("shown-a.txt"));
+    assert!(!app.checked("shown-z.txt"));
+    assert_eq!(app.menu_action("Layout", "Sort by size").checked, sort);
+    let order_after: Vec<_> = app
+        .app
+        .screen()
+        .texts()
+        .into_iter()
+        .filter(|text| matches!(*text, "shown-a.txt" | "shown-z.txt"))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(order_after, order_before);
+    assert_eq!(app.app.screen().file_requests().len(), requests);
+    app.assert_aligned("shown-a.txt", "7", "File");
+    let output = temp.path().join("copied");
+    app.app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.app.press("role:button[Copy selected…]").unwrap();
+    app.app.wait_for("text:/^Copied 2 entries to /").unwrap();
+    assert_eq!(
+        std::fs::read(output.join("shown-a.txt")).unwrap(),
+        b"seven!!"
+    );
+    assert_eq!(
+        std::fs::read(output.join("hidden.bin")).unwrap(),
+        b"hidden payload"
+    );
+    assert!(!output.join("shown-z.txt").exists());
+    for (name, expected) in [
+        ("shown-a.txt", b"seven!!".as_slice()),
+        ("shown-z.txt", b"z"),
+        ("hidden.bin", b"hidden payload"),
+    ] {
+        assert_eq!(std::fs::read(source.join(name)).unwrap(), expected);
+    }
+    app.app.press("role:button[Clear filter]").unwrap();
+    app.app.wait_for("3 of 3 items shown").unwrap();
+    assert!(app.checked("hidden.bin"));
+}
+
+#[test]
+fn auto_adjust_shortcut_resets_shared_hidden_packed_width_and_home_only_resets_one_column() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let archive = source.join("sample.tar");
+    let original = include_bytes!("../../../tests/fixtures/sample.tar");
+    std::fs::write(&archive, original).unwrap();
+    let mut app = App::open(&source, 1);
+    app.app.press("role:button[Open file sample.tar]").unwrap();
+    app.app.wait_for("5 entries").unwrap();
+    app.choose("Layout", "All entries");
+    app.app
+        .wait_for("role:checkbox[docs/nested/data.bin]")
+        .unwrap();
+    app.app
+        .press("role:checkbox[docs/nested/data.bin]")
+        .unwrap();
+    app.app.type_text("Filter names", "data").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.choose("Layout", "Sort by packed size");
+    for label in [
+        "Resize Name column",
+        "Resize Type column",
+        "Resize Size (bytes) column",
+        "Resize Packed (bytes) column",
+    ] {
+        app.action(label, "increment");
+    }
+    app.app.press_key("mod+alt+a").unwrap();
+    app.assert_adjusted(true);
+    assert_eq!(
+        app.app.screen().input_text("Filter names").unwrap(),
+        Some("data")
+    );
+    assert!(app.checked("docs/nested/data.bin"));
+    assert!(app.app.screen().shows("1 selected"));
+    assert_eq!(
+        app.menu_action("Layout", "Sort by packed size").checked,
+        Some(true)
+    );
+    let output = temp.path().join("selected");
+    app.app.on_pick_save_path(Some(output.clone())).unwrap();
+    app.app.press("role:button[Extract…]").unwrap();
+    app.app.wait_for("role:button[Continue]").unwrap();
+    app.app.press("role:button[Continue]").unwrap();
+    app.app.wait_for("Extracted 1 entries").unwrap();
+    assert_eq!(
+        std::fs::read(output.join("docs/nested/data.bin")).unwrap(),
+        [0, 127, 255]
+    );
+    assert!(!output.join("other.txt").exists());
+    assert!(!output.join("docs/你好.txt").exists());
+    app.action("Resize Packed (bytes) column", "increment");
+    app.until(|app| app.now("Resize Packed (bytes) column") > 72.0);
+    app.app.press("role:button[Up]").unwrap();
+    app.app.wait_for("role:checkbox[sample.tar]").unwrap();
+    assert!(
+        !app.app
+            .screen()
+            .matches("Resize Packed (bytes) column")
+            .unwrap()
+    );
+    app.choose("Layout", "Auto adjust columns");
+    app.assert_adjusted(false);
+    app.app.press("role:button[Open file sample.tar]").unwrap();
+    app.app.wait_for("5 entries").unwrap();
+    app.assert_adjusted(true);
+    let handle = app.id("Resize Size (bytes) column");
+    app.send(handle, EventKind::Focus, EventPayload::None);
+    app.app.press_key("home").unwrap();
+    app.until(|app| app.now("Resize Size (bytes) column") == 110.0);
+    assert_eq!(app.now("Resize Name column"), 240.0);
+    assert_eq!(app.now("Resize Type column"), 72.0);
+    assert_eq!(app.now("Resize Packed (bytes) column"), 72.0);
+    app.send(handle, EventKind::Blur, EventPayload::None);
+    assert_eq!(std::fs::read(archive).unwrap(), original);
+}
+
+#[test]
+fn auto_adjust_respects_editing_modal_and_busy_native_menu_gates() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("keep"), b"untouched").unwrap();
+    let mut app = App::open(temp.path(), 1);
+    assert!(
+        app.menu_action("Layout", "Auto adjust columns")
+            .shortcut
+            .is_none(),
+        "NotEditing commands must not install a native accelerator that bypasses editing"
+    );
+    app.app.press("role:checkbox[keep]").unwrap();
+    app.action("Resize Size (bytes) column", "increment");
+    let before = app.now("Resize Size (bytes) column");
+    for (field, value) in [
+        ("Filter names", "keep"),
+        ("Folder path", "not-a-navigation-request"),
+    ] {
+        app.app.clear(field).unwrap();
+        app.app.type_text(field, value).unwrap();
+        app.app.press_key("mod+alt+a").unwrap();
+        assert_eq!(app.now("Resize Size (bytes) column"), before);
+        assert_eq!(app.app.screen().input_text(field).unwrap(), Some(value));
+    }
+    app.app.clear("Filter names").unwrap();
+    app.app.type_text("Filter names", "keep").unwrap();
+    app.app.press_key("enter").unwrap();
+    let requests = app.app.screen().file_requests().len();
+    app.app.press("role:button[Create archive…]").unwrap();
+    app.app.wait_for("role:button[Continue]").unwrap();
+    let disabled = app.menu_action("Layout", "Auto adjust columns");
+    assert!(!disabled.enabled);
+    app.app.press_key("mod+alt+a").unwrap();
+    app.send(
+        ROOT_ID,
+        EventKind::Menu,
+        EventPayload::Map(vec![("id", PayloadValue::Number(disabled.id as f64))]),
+    );
+    app.app.press("role:button[Cancel]").unwrap();
+    app.app
+        .wait_for_gone("role:button[Continue]", Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(app.now("Resize Size (bytes) column"), before);
+    assert_eq!(app.app.screen().file_requests().len(), requests);
+    app.app.on_pick_paths(vec![]).unwrap();
+    app.seen.lock().unwrap().probe_blocked_adjust = true;
+    app.app.press("role:button[Open folder…]").unwrap();
+    app.until(|app| app.seen.lock().unwrap().blocked_adjust_attempts == 1);
+    app.until(|app| app.menu_action("Layout", "Auto adjust columns").enabled);
+    assert_eq!(app.now("Resize Size (bytes) column"), before);
+    assert!(app.checked("keep"));
+    assert!(app.app.screen().shows("1 selected"));
+    assert_eq!(
+        app.app.screen().input_text("Filter names").unwrap(),
+        Some("keep")
+    );
+    assert_eq!(
+        std::fs::read(temp.path().join("keep")).unwrap(),
+        b"untouched"
+    );
+}
+
+#[test]
+fn auto_adjust_72_point_size_column_keeps_sparse_file_on_one_line_with_full_accessibility_size() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("large.bin");
+    let size = 16 * 1024 * 1024;
+    std::fs::File::create(&path).unwrap().set_len(size).unwrap();
+    let mut app = App::open(temp.path(), 1);
+    app.choose("Layout", "Auto adjust columns");
+    app.assert_adjusted(false);
+    app.app
+        .wait_for("role:checkbox[large.bin] >> label:Size in bytes: 16777216")
+        .unwrap();
+    let row = app.id("large.bin");
+    let cell = app.id("Size in bytes: 16777216");
+    let seen = app.seen.lock().unwrap();
+    assert_eq!(seen.frames[&cell].size.width.0, 72.0);
+    assert!(
+        seen.frames[&cell].size.height.0 < 32.0,
+        "size cell wrapped: {:?}",
+        seen.frames[&cell]
+    );
+    assert!(
+        seen.frames[&row].size.height.0 < 48.0,
+        "row grew after reset: {:?}",
+        seen.frames[&row]
+    );
+    drop(seen);
+    assert_eq!(std::fs::metadata(path).unwrap().len(), size);
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    assert_eq!(app.app.screen().file_requests().len(), 1);
 }
