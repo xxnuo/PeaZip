@@ -20,6 +20,7 @@ mod explorer;
 #[cfg(any(
     target_arch = "wasm32",
     target_os = "android",
+    target_os = "ios",
     target_os = "macos",
     target_os = "linux",
     target_os = "windows"
@@ -27,6 +28,8 @@ mod explorer;
 mod extract_dialog;
 mod icons;
 mod menus;
+#[cfg(any(target_os = "ios", test))]
+mod mobile_export;
 #[cfg(any(target_os = "ios", test))]
 mod mobile_files;
 mod name_filter;
@@ -43,6 +46,7 @@ struct OpenedArchive {
 #[cfg(any(
     target_arch = "wasm32",
     target_os = "android",
+    target_os = "ios",
     target_os = "macos",
     target_os = "linux",
     target_os = "windows"
@@ -165,6 +169,7 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -173,6 +178,7 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -853,6 +859,7 @@ pub fn App() -> impl IntoElement {
     let can_extract = browser::can_extract();
     #[cfg(any(
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -861,6 +868,7 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -895,8 +903,8 @@ pub fn App() -> impl IntoElement {
                 Ok(None) => status.set("Extraction cancelled.".into()),
                 Err(error) => status.set(format!("Could not extract archive: {error}")),
             }
-            #[cfg(target_os = "android")]
-            match extract_android_archive(bytes, paths, options).await {
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            match extract_mobile_archive(bytes, paths, options).await {
                 Ok(Some(report)) => status.set(report),
                 Ok(None) => status.set("Extraction cancelled.".into()),
                 Err(error) => status.set(format!("Could not extract archive: {error}")),
@@ -915,6 +923,7 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -1237,6 +1246,7 @@ pub fn App() -> impl IntoElement {
     #[cfg(any(
         target_arch = "wasm32",
         target_os = "android",
+        target_os = "ios",
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
@@ -1458,8 +1468,8 @@ fn desktop_shortcut(command: Command, key: &'static str) -> Command {
     }
 }
 
-#[cfg(target_os = "android")]
-async fn extract_android_archive(
+#[cfg(any(target_os = "android", target_os = "ios"))]
+async fn extract_mobile_archive(
     bytes: Arc<Vec<u8>>,
     selected: Vec<String>,
     options: peazip_core::ExtractOptions,
@@ -1475,7 +1485,7 @@ async fn extract_android_archive(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
-    android::export_entries(entries).await
+    mobile_archive::export_entries(entries).await
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]

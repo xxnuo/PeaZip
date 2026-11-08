@@ -358,3 +358,17 @@ pub async fn save_archive(
         _ => Err("Unexpected iOS export response.".into()),
     }
 }
+
+pub async fn export_entries(entries: Vec<MemoryEntry>) -> Result<Option<String>, String> {
+    let count = entries.len();
+    let staged = nsh_core::prelude::blocking(move || {
+        crate::mobile_export::stage_entries(&entries, Limits::default())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    match present(Some(staged)).await? {
+        None => Ok(None),
+        Some(Output::Name(name)) => Ok(Some(format!("Extracted {count} entries to {name}"))),
+        _ => Err("Unexpected iOS directory export response.".into()),
+    }
+}

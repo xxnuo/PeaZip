@@ -391,3 +391,15 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - simulator/device release、SDK Mach-O 检查及 simulator ad-hoc 签名通过；两个 iOS bundle 的 bridge/core 依赖图共 79 份许可证逐字节验证。device app 未签名、无 provisioning，未实际运行；Android APK 构建、Windows GNU check/release/PE 验证通过，未新增这些目标的实际运行声明。Windows 构建后的变更仅在 iOS 原生模块/目标依赖特性与 iOS 打包/测试脚本，不改变 Windows 编译代码。
 - 新创建/保存及 import/cancel 四项验收加入现有 iOS CI，诊断日志、导出文件、xcresult 留存；退出时先关闭再删除本步骤创建的 UDID，远程 CI 未执行。汇总当前源码、最终二进制、测试和产物 hashes 见 target/ios-create-evidence.json。iOS 输入文件夹、提取、外部 openURL 编辑、持久保存位置、provider/OS 范围和完整原版创建工作区仍待迁移，不将本单元视为阶段 2a 或六平台完成。
 - 最终四项执行与全部导出字节验证通过后已核名关闭并移除 PeaZip-CreateSave-20261108；测试源与产物按 SHA 清理，旧诊断私有临时文件随该自建模拟器删除，不改其它模拟器或 wp-phone-tools。UIKit directoryURL 仅请求以 Documents 起始，最终目的地由系统/provider 决定；本次实际验证的是本地 Files 根目录，不将子目录导航自动化的失败或未验收状态掩盖为通过。
+
+
+## iOS 选择解压与系统目录导出（IOS-EXTRACT-01）
+
+- iOS 启用既有 Extract… 命令和 All / Selected / Displayed、Full paths / Files only 表单；请求在打开表单前冻结归档字节、实际选择/显示路径及筛选说明，后台编辑受既有 modal/busy 门禁约束。与 Android 共用 core 提取调用，成功或取消不改变原归档、导航、筛选和选择；core 错误在任何外部输出前返回。
+- 新 `mobile_export::stage_entries` 在 fresh 私有 TempDir 下生成普通 PeaZip-随机名根目录，复用 core 公开的 `validate_memory_entries` 检查路径、冲突、类型和既有逻辑条目/字节预算；该 validator 本身不是 CRC 验证，调用链先通过 core 提取校验。显式与隐式父目录用借用字符串集合预计数，上限 16,384 个物理节点（不含 staging/导出根），创建前拒绝深路径展开。文件以 create_new / 0600 写入，支持 Unicode、二进制、零字节文件、隐式父目录和真实空目录；失败自动清理全部私有暂存，未写外部目标。
+- 完整写入并关闭源树后复用 UIKit 单根 URL / asCopy=true 系统导出。成功采用返回的目标名称，状态 entry count 是逻辑成员数，不冒充物理节点或逐项 provider 校验。取消/交互式关闭、scene 结果不确定、权限/源树持有与已有 iOS 保存桥接一致；未知导出结果保守保留私有源，不删除外部目标。系统/provider 处理重名、合并、覆盖及用户改名，不继承桌面原子排他发布保证，也不声称远端上传完成或所有 provider 保留目录/空目录。
+- Apple 的目录访问文档描述打开目录权限，不等同本次目录导出保证。`forExportingURLs` 无 folder UTType 参数，本轮使用真实普通目录，不伪装 package；目录兼容性以实测为准（https://developer.apple.com/documentation/uikit/uidocumentpickerviewcontroller/init(forexporting:ascopy:)）。当前实际验收为 iOS 27.2 本地 Files provider 根目录，第三方/云 provider、重名目录交互、用户重命名和真机仍待验收；不将这些未验证路径缩成已完成。
+- 最终 iPhone 17 / iOS 27.2 实际 XCTest 四项全通过，记录 target/ios-extract-final-suite：TAR.GZ Selected 目录含中文/二进制/空子目录，7z Files only 的扁平文件、7z All 含未选 other.txt，Displayed 冻结筛选仅输出匹配文件；表单及系统取消保留快照/选择且可重试。主机按预期目录集合和每个成员字节独立核对，未将取消输出或其它路径冒充结果，输出树按核对后的证据清理。新增暂存目录残留 0，最终 App hash 与测试记录一致。
+- 工作区 360 次测试执行、Web 全量 133 项、Python 9 项、4 项 staging 测试通过；host/iOS/WASM Clippy、格式及 simulator/device release 检查通过。Android APK、Windows core/native/UI 测试交叉检查与 GNU release/PE/hash 通过，未实际运行 Windows/Android；device app 未签名且未真机运行。新物理节点上限仅用于 iOS 私有目录 staging，未据此宣称所有平台输出已有同样节点预算。
+- iOS CI 增加 --extract 四场景与实际导出树/xcresult/log artifact，仍只操作本步骤新建的专用 UDID，远程 CI 未执行。本轮没有修改 nsh，原版界面完整迁移、iOS 大文件流式与全部生命周期/提供方范围仍未完成。最终 source/build/test/tree hashes 汇总 target/ios-extract-evidence.json。
+- 最终交接证据另存 target/ios-extract-accepted，tested/current/installed App SHA256 均为 77ccd6f2b1d73096f8fd55cba83f85800a4071d5e32405aec6d3135ea4f5a32b；生产与 harness source hashes 一致，新增 private staging 和 provider 测试导出残留均为零。附加创建/保存回归在主线程请求冻结交接时中止，不计为完整通过，不表示用户暂停整体目标。

@@ -186,6 +186,112 @@ final class Smoke: XCTestCase {
         record("existing-zip-exported", app)
     }
 
+    func archiveSnapshot(_ app: XCUIApplication) -> [String: String] {
+        let table = app.otherElements.matching(NSPredicate(format: "label == %@", "Archive contents")).firstMatch
+        XCTAssertTrue(table.exists, app.debugDescription)
+        var snapshot = ["archive": app.textFields["Archive path"].value as? String ?? ""]
+        for (index, row) in table.buttons.allElementsBoundByIndex.enumerated() {
+            snapshot["row-\(index)-" + row.label] = row.value as? String ?? ""
+        }
+        snapshot["selection"] = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", " selected")).firstMatch.label
+        snapshot["filter"] = app.textFields["Filter names"].value as? String ?? ""
+        return snapshot
+    }
+
+    func extractChoice(_ label: String, _ app: XCUIApplication) {
+        let form = app.otherElements.matching(NSPredicate(format: "label == %@", "Extract archive")).firstMatch
+        let choices = form.buttons.matching(NSPredicate(format: "label == %@", label))
+            .allElementsBoundByIndex.filter { $0.isEnabled && $0.isHittable }
+        XCTAssertEqual(choices.count, 1, "Expected one visible enabled extraction choice: " + label + "\n" + app.debugDescription)
+        guard let choice = choices.first else { return }
+        waitReady(choice, app)
+        choice.tap()
+    }
+
+    func extractForm(_ app: XCUIApplication, scope: String, paths: String) {
+        waitReady(app.buttons["Extract…"], app)
+        app.buttons["Extract…"].tap()
+        waitReady(app.buttons["Continue"], app)
+        extractChoice(scope, app)
+        extractChoice(paths, app)
+    }
+
+    func extractCase(_ fixture: String, scope: String, paths: String, filtered: Bool = false, cancellations: Bool = false) {
+        continueAfterFailure = false
+        let app = XCUIApplication(bundleIdentifier: "io.peazip.rust")
+        app.launch()
+        waitReady(app.buttons["Open archive…"], app)
+        app.buttons["Open archive…"].tap()
+        waitPicker(app)
+        downloads(app)
+        let sample = app.cells.containing(.staticText, identifier: fixture).firstMatch
+        waitReady(sample, app)
+        sample.tap()
+        let docs = app.buttons.matching(NSPredicate(format: "label == %@", "docs/")).firstMatch
+        waitReady(docs, app)
+        docs.tap()
+        XCTAssertTrue(app.staticTexts["1 selected"].waitForExistence(timeout: 10), app.debugDescription)
+        if filtered {
+            app.buttons["Open folder docs/"].tap()
+            let filter = app.textFields["Filter names"]
+            waitReady(filter, app)
+            filter.tap()
+            filter.typeText("你好\n")
+            XCTAssertTrue(app.staticTexts["1 of 3 rows shown"].waitForExistence(timeout: 10), app.debugDescription)
+        }
+        let before = archiveSnapshot(app)
+        if cancellations {
+            extractForm(app, scope: scope, paths: "Files only (no folders)")
+            app.buttons["Cancel"].tap()
+            waitReady(app.buttons["Extract…"], app)
+            XCTAssertEqual(archiveSnapshot(app), before, app.debugDescription)
+            record("extract-form-cancelled", app)
+            for attempt in 1...2 {
+                extractForm(app, scope: scope, paths: paths)
+                app.buttons["Continue"].tap()
+                waitPicker(app)
+                record("extract-system-cancel-\(attempt)", app)
+                cancelPicker(app)
+                XCTAssertTrue(app.staticTexts["Extraction cancelled."].waitForExistence(timeout: 15), app.debugDescription)
+                waitReady(app.buttons["Extract…"], app)
+                XCTAssertEqual(archiveSnapshot(app), before, app.debugDescription)
+            }
+        }
+        extractForm(app, scope: scope, paths: paths)
+        if filtered {
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "Current view: /docs/", "你好")).firstMatch.exists, app.debugDescription)
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "1 in displayed scope")).firstMatch.exists, app.debugDescription)
+        }
+        record("extract-frozen-form-" + fixture + "-" + scope + "-" + paths, app)
+        app.buttons["Continue"].tap()
+        waitPicker(app)
+        localRoot(app)
+        record("extract-provider-root", app)
+        let save = app.buttons.matching(NSPredicate(format: "label IN %@", ["Save", "保存", "Export", "导出", "Copy", "拷贝"])).firstMatch
+        waitReady(save, app)
+        save.tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Extracted ")).firstMatch.waitForExistence(timeout: 20), app.debugDescription)
+        waitReady(app.buttons["Extract…"], app)
+        XCTAssertEqual(archiveSnapshot(app), before, app.debugDescription)
+        record("extract-exported-" + fixture + "-" + scope + "-" + paths, app)
+    }
+
+    func testExtractSelectedDirectory() {
+        extractCase("__EXTRACT_TAR_NAME__", scope: "Selected entries", paths: "Full paths", cancellations: true)
+    }
+
+    func testExtractFilesOnly() {
+        extractCase("__EXTRACT_7Z_NAME__", scope: "Selected entries", paths: "Files only (no folders)")
+    }
+
+    func testExtractDisplayedFrozen() {
+        extractCase("__EXTRACT_TAR_NAME__", scope: "Displayed entries", paths: "Full paths", filtered: true)
+    }
+
+    func testExtractAll() {
+        extractCase("__EXTRACT_7Z_NAME__", scope: "All entries", paths: "Full paths")
+    }
+
     func testImportAndNavigate() {
         continueAfterFailure = false
         let app = XCUIApplication(bundleIdentifier: "io.peazip.rust")

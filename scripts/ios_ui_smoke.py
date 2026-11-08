@@ -20,6 +20,21 @@ CREATE_INPUTS = {"输入你好.txt": "iOS 创建你好\n".encode(),
                  "data.bin": bytes([0, 127, 255]) + bytes(range(256)), "empty.txt": b""}
 
 
+def read_export_tree(root):
+    files, directories = {}, set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(f"Unexpected symlink in real directory export: {path}")
+        name = path.relative_to(root).as_posix()
+        if path.is_dir():
+            directories.add(name)
+        elif path.is_file():
+            files[name] = path.read_bytes()
+        else:
+            raise ValueError(f"Unexpected export entry: {path}")
+    return files, directories
+
+
 def output(*command):
     return subprocess.check_output(command, cwd=ROOT, text=True, stderr=subprocess.PIPE).strip()
 
@@ -48,9 +63,15 @@ def main():
     parser.add_argument("--out", type=Path)
     parser.add_argument("--fixture", type=Path, help="Seed sample.tar.gz in this simulator's local Files Downloads, then use the real picker")
     parser.add_argument("--create-save", action="store_true", help="Create and export ZIP/TAR/TAR.GZ through real system pickers; independently verify every exported byte")
+    parser.add_argument("--extract", action="store_true", help="Import TAR.GZ/7Z and verify Selected/Files only/Displayed/All directory exports and cancellations")
+    parser.add_argument("--extract-case", choices=("selected", "files-only", "displayed", "all"), help="Run one --extract case for focused diagnosis")
     parser.add_argument("--cancel-export-only", action="store_true", help="Dismiss the current real export sheet by gesture and verify the existing archive snapshot/selection")
     parser.add_argument("--save-existing-zip", action="store_true", help="Export the existing three-file ZIP snapshot to the local provider root and independently verify it")
     args = parser.parse_args()
+    if args.extract_case and not args.extract:
+        parser.error("--extract-case requires --extract")
+    if args.extract and any((args.create_save, args.cancel_export_only, args.save_existing_zip, args.fixture)):
+        parser.error("--extract seeds its own real archive fixtures and runs independently")
     if args.cancel_export_only and (args.fixture or args.create_save):
         parser.error("--cancel-export-only uses the existing app snapshot and cannot seed/create another archive")
     if args.save_existing_zip and (args.fixture or args.create_save or args.cancel_export_only):
@@ -91,13 +112,18 @@ def main():
     manifest = {"udid": args.udid, "device": device, "runtime": runtime, "app": str(app),
                 "binary_sha256": digest(app / executable), "info_plist_sha256": digest(app / "Info.plist"),
                 "installed_info_plist_sha256": digest(installed / "Info.plist"), "xcode": output("xcodebuild", "-version"),
+                "production_source_sha256": {name: digest(ROOT / name) for name in (
+                    "crates/peazip-core/src/lib.rs", "crates/peazip-ui/src/lib.rs",
+                    "crates/peazip-ui/src/ios.rs", "crates/peazip-ui/src/mobile_export.rs")
+                    if (ROOT / name).is_file()},
                 "git_head": output("git", "rev-parse", "HEAD"), "started_utc": stamp,
                 "scope": "; ".join(scope for enabled, scope in [
                     (args.create_save, "XCTest real multi-file ZIP/TAR/TAR.GZ creation/export and cancellation; host independent byte verification"),
                     (bool(args.fixture), "XCTest local-provider gzip TAR import/navigation and repeated picker cancellation"),
                     (args.cancel_export_only, "XCTest real export sheet gesture dismissal; existing archive snapshot/selection retained"),
                     (args.save_existing_zip, "XCTest single existing ZIP export to the local provider root; independent byte verification"),
-                    (not any((args.fixture, args.create_save, args.cancel_export_only, args.save_existing_zip)), "XCTest real Open archive button and repeated picker cancellation")
+                    (args.extract, "XCTest selected directory extraction/export via real pickers; host independent tree/byte verification"),
+                    (not any((args.fixture, args.create_save, args.cancel_export_only, args.save_existing_zip, args.extract)), "XCTest real Open archive button and repeated picker cancellation")
                 ] if enabled)}
     (evidence / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     (evidence / "source-status.txt").write_text(output("git", "status", "--short") + "\n")
@@ -115,8 +141,39 @@ def main():
     created_directories = []
     exported_root = None
     try:
-        if args.fixture or args.create_save or args.save_existing_zip:
+        if args.fixture or args.create_save or args.save_existing_zip or args.extract:
             downloads = local_downloads(device)
+        if args.extract:
+            exported_root = downloads.parent
+            export_inventory_before = {path.name for path in exported_root.iterdir()}
+            replacements = {}
+            fixtures = []
+            for suffix, token in (("tar.gz", "__EXTRACT_TAR_NAME__"), ("7z", "__EXTRACT_7Z_NAME__")):
+                source = ROOT / f"tests/fixtures/sample.{suffix}"
+                candidate = downloads / f"peazip-extract-{stamp}.{suffix}"
+                payload = source.read_bytes()
+                with candidate.open("xb") as stream:
+                    seeds.append((candidate, hashlib.sha256(payload).hexdigest()))
+                    stream.write(payload)
+                replacements[token] = candidate.name
+                fixtures.append({"source": str(source), "seed": str(candidate), "sha256": digest(source)})
+            swift = project / "Smoke.swift"
+            swift_source = swift.read_text()
+            for token, name in replacements.items():
+                swift_source = swift_source.replace(token, name)
+            swift.write_text(swift_source)
+            directories = {"docs", "docs/empty", "docs/nested"}
+            tar_files = {"docs/你好.txt": "tar 你好\n".encode(), "docs/nested/data.bin": bytes([0, 127, 255])}
+            seven_files = {**tar_files, "docs/你好.txt": "7z 你好\n".encode()}
+            extract_cases = {
+                "selected": ("testExtractSelectedDirectory", tar_files, directories),
+                "files-only": ("testExtractFilesOnly", {Path(name).name: data for name, data in seven_files.items()}, set()),
+                "displayed": ("testExtractDisplayedFrozen", {"docs/你好.txt": tar_files["docs/你好.txt"]}, {"docs"}),
+                "all": ("testExtractAll", {**seven_files, "other.txt": b"not selected\n"}, directories),
+            }
+            if args.extract_case:
+                extract_cases = {args.extract_case: extract_cases[args.extract_case]}
+            manifest.update(extract_fixtures=fixtures, export_root=str(exported_root), extract_cases=list(extract_cases))
         if args.fixture:
             filename = f"peazip-smoke-{stamp}.tar.gz"
             candidate = downloads / filename
@@ -160,6 +217,8 @@ def main():
         for action in ("build-for-testing", "test-without-building"):
             command = [*common, action]
             if action == "test-without-building":
+                if args.extract:
+                    command += [f"-only-testing:Smoke/Smoke/{case[0]}" for case in extract_cases.values()]
                 if args.save_existing_zip:
                     command += ["-only-testing:Smoke/Smoke/testSaveExistingZip"]
                 if args.cancel_export_only:
@@ -169,13 +228,38 @@ def main():
                 if args.fixture:
                     command += ["-only-testing:Smoke/Smoke/testImportAndNavigate",
                                 "-only-testing:Smoke/Smoke/testOpenAndCancel"]
-                elif not any((args.create_save, args.cancel_export_only, args.save_existing_zip)):
+                elif not any((args.create_save, args.cancel_export_only, args.save_existing_zip, args.extract)):
                     command += ["-only-testing:Smoke/Smoke/testOpenAndCancel"]
                 command += ["-resultBundlePath", str(evidence / "Smoke.xcresult")]
             (evidence / f"{action}.command.json").write_text(json.dumps(command, indent=2) + "\n")
             with (evidence / f"{action}.log").open("w") as stream:
                 subprocess.run(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT,
                                check=True, timeout=600)
+        if args.extract:
+            new_paths = [path for path in exported_root.iterdir() if path.name not in export_inventory_before]
+            if len(new_paths) != len(extract_cases):
+                raise ValueError(f"Expected {len(extract_cases)} real directory exports, got {new_paths}")
+            unmatched = dict(extract_cases)
+            verified = []
+            for path in new_paths:
+                if path.is_symlink() or not path.is_dir() or not path.name.startswith("PeaZip-"):
+                    raise ValueError(f"Expected a randomly named PeaZip directory: {path}")
+                actual_files, actual_directories = read_export_tree(path)
+                matches = [name for name, (_, files, directories) in unmatched.items()
+                           if actual_files == files and actual_directories == directories]
+                if len(matches) != 1:
+                    raise ValueError(f"Export does not match one expected tree: {path}, files={list(actual_files)}, directories={sorted(actual_directories)}")
+                case = matches[0]
+                del unmatched[case]
+                shutil.copytree(path, evidence / path.name)
+                verified.append({"case": case, "path": str(path), "directories": sorted(actual_directories),
+                    "files": {name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                              for name, data in actual_files.items()}})
+                for name, data in actual_files.items():
+                    seeds.append((path / name, hashlib.sha256(data).hexdigest()))
+                created_directories.extend([path, *sorted((path / name for name in actual_directories), key=lambda p: len(p.parts))])
+            manifest["verified_extract_exports"] = verified
+            (evidence / "verified-extract-exports.json").write_text(json.dumps(verified, ensure_ascii=False, indent=2) + "\n")
         if args.create_save or args.save_existing_zip:
             verified = []
             filenames = ("Archive.zip",) if args.save_existing_zip else ("Archive.zip", "Archive.tar", "Archive.tar.gz")
@@ -265,10 +349,11 @@ def main():
     if manifest["result"] != "PASS":
         raise RuntimeError(f"Smoke cleanup or evidence capture failed: {evidence}")
     print(f"PASS: {'ZIP/TAR/TAR.GZ created/exported and independently verified; ' if args.create_save else ''}"
+          f"{'selected directory exported and independently verified; ' if args.extract else ''}"
           f"{'real gzip TAR imported/navigated; ' if args.fixture else ''}"
           f"{'export gesture cancellation verified; ' if args.cancel_export_only else ''}"
           f"{'existing ZIP exported and independently verified; ' if args.save_existing_zip else ''}"
-          f"{'picker opened/cancelled twice; ' if args.fixture or not any((args.create_save, args.cancel_export_only, args.save_existing_zip)) else ''}{evidence}", flush=True)
+          f"{'picker opened/cancelled twice; ' if args.fixture or not any((args.create_save, args.cancel_export_only, args.save_existing_zip, args.extract)) else ''}{evidence}", flush=True)
 
 
 if __name__ == "__main__":

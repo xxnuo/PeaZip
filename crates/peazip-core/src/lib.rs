@@ -612,7 +612,7 @@ pub fn create_zip(entries: &[MemoryEntry], limits: Limits) -> Result<Vec<u8>, Er
     create_zip_with_options(entries, limits, ZipOptions::default())
 }
 
-fn validate_memory_entries(entries: &[MemoryEntry], limits: Limits) -> Result<(), Error> {
+pub fn validate_memory_entries(entries: &[MemoryEntry], limits: Limits) -> Result<(), Error> {
     check(
         entries.len() as u64,
         limits.max_entries as u64,

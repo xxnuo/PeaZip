@@ -142,6 +142,7 @@ jobs:
           uv run python scripts/smoke_ios.py --udid "$ios_smoke_udid" --output target/ios-smoke
           uv run python scripts/ios_ui_smoke.py --udid "$ios_smoke_udid" --device-name PeaZip-CI --app target/ios/aarch64-apple-ios-sim/release/PeaZip.app --out target/ios-ui-smoke
           uv run python scripts/ios_ui_smoke.py --udid "$ios_smoke_udid" --device-name PeaZip-CI --app target/ios/aarch64-apple-ios-sim/release/PeaZip.app --create-save --fixture tests/fixtures/sample.tar.gz --out target/ios-archive-smoke
+          uv run python scripts/ios_ui_smoke.py --udid "$ios_smoke_udid" --device-name PeaZip-CI --app target/ios/aarch64-apple-ios-sim/release/PeaZip.app --extract --out target/ios-extract-smoke
       - run: ditto -c -k --sequesterRsrc --keepParent target/ios/aarch64-apple-ios-sim/release/PeaZip.app target/ios/PeaZip-simulator.zip
       - if: always()
         uses: actions/upload-artifact@v4
@@ -159,6 +160,10 @@ jobs:
             target/ios-archive-smoke/Archive.*
             target/ios-archive-smoke/Smoke.xcresult/
             target/ios-archive-smoke/*.log
+            target/ios-extract-smoke/manifest.json
+            target/ios-extract-smoke/PeaZip-*/
+            target/ios-extract-smoke/Smoke.xcresult/
+            target/ios-extract-smoke/*.log
   upstream-report:
     runs-on: ubuntu-latest
     steps:
