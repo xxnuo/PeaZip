@@ -4,7 +4,7 @@ use nsh_core::prelude::*;
 use peazip_native::{DirectoryEntry, DirectorySnapshot, EntryKind};
 
 use crate::{
-    columns::{self, Column, ColumnWidths},
+    columns::{self, Column, ColumnVisibility, ColumnWidths},
     commands::{self, CommandId, Commands},
     navigation::Sort,
 };
@@ -292,10 +292,11 @@ pub fn browser(
     busy: Signal<bool>,
     sort: Signal<Sort>,
     commands: Commands,
-    widths: ColumnWidths,
+    columns: (ColumnWidths, ColumnVisibility),
     open_entry: impl Fn(usize) + Copy + 'static,
     go: impl Fn(PathBuf) + Copy + 'static,
 ) -> impl IntoElement {
+    let (widths, visibility) = columns;
     let order = computed(move || {
         let pattern = files.pattern.get();
         files.current.with(|current| {
@@ -312,34 +313,35 @@ pub fn browser(
     });
     let wide = signal(false);
     let viewport = signal(Size::new(px(0.0), px(0.0)));
+    let show_type = move || wide.get() && visibility.shown(Column::Type);
+    let show_size = move || visibility.shown(Column::Size);
     let type_width = move || {
-        if wide.get() {
+        if show_type() {
             widths.get(Column::Type, 85.0)
         } else {
             0.0
         }
     };
     let size_width = move || {
-        if wide.get() {
+        if !show_size() {
+            0.0
+        } else if wide.get() {
             widths.get(Column::Size, 110.0)
         } else {
             110.0
         }
     };
+    let gutters = move || 60.0 + 8.0 * (u8::from(show_type()) + u8::from(show_size())) as f32;
     // The Name column includes the checkbox and icon; gutters/open action stay fixed.
     let name_width = move || {
-        let fallback = viewport.get().width.0
-            - type_width()
-            - size_width()
-            - if wide.get() { 76.0 } else { 68.0 };
+        let fallback = viewport.get().width.0 - type_width() - size_width() - gutters();
         if wide.get() {
             widths.get(Column::Name, fallback.max(160.0))
         } else {
             fallback.max(0.0)
         }
     };
-    let table_width =
-        move || name_width() + type_width() + size_width() + if wide.get() { 76.0 } else { 68.0 };
+    let table_width = move || name_width() + type_width() + size_width() + gutters();
     let filter_input = element_ref();
     effect(move || {
         let _ = files.version.get();
@@ -585,12 +587,12 @@ pub fn browser(
                         .border_color(move || theme().border)
                         .child(columns::header(widths, Column::Name, sort_name.clone(), "Name", name_width, busy, wide))
                         .child(when(
-                            move || wide.get(),
+                            show_type,
                             move || columns::header(widths, Column::Type, sort_type.clone(), "Type", type_width, busy, wide),
                         ))
-                        .child(
+                        .child(when(show_size, move ||
                             columns::header(widths, Column::Size, sort_size.clone(), "Size (bytes)", size_width, busy, wide),
-                        )
+                        ))
                         .child(view().w(px(28.0)).flex_shrink_0()),
                 )
                 .child(
@@ -689,7 +691,7 @@ pub fn browser(
                                             .pr_2(),
                                         )
                                         .child(when(
-                                            move || wide.get(),
+                                            show_type,
                                             move || {
                                                 text(move || {
                                                     row()
@@ -702,7 +704,7 @@ pub fn browser(
                                                 .flex_shrink_0()
                                             },
                                         ))
-                                        .child(
+                                        .child(when(show_size, move ||
                                             text(move || {
                                                 row()
                                                     .and_then(|entry| entry.size)
@@ -714,7 +716,7 @@ pub fn browser(
                                             .w(move || px(size_width()))
                                             .px_2()
                                             .flex_shrink_0(),
-                                        ),
+                                        )),
                                 )
                                 .child(
                                     view().w(px(36.0)).flex_shrink_0().child(

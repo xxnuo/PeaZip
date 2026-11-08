@@ -1,4 +1,4 @@
-use crate::columns::{self, Column, ColumnWidths};
+use crate::columns::{self, Column, ColumnVisibility, ColumnWidths};
 use crate::commands::{self, CommandId, Commands};
 use crate::navigation::{self, BrowserRow, BrowserState, Sort};
 use nsh_base::{button, checkbox, input, theme, toolbar};
@@ -21,6 +21,7 @@ pub(crate) struct Controls {
     pub content: ElementRef,
     pub visible: Memo<Vec<BrowserRow>>,
     pub widths: ColumnWidths,
+    pub visibility: ColumnVisibility,
 }
 
 impl Controls {
@@ -50,6 +51,7 @@ impl Controls {
             content: element_ref(),
             visible,
             widths: ColumnWidths::new(),
+            visibility: ColumnVisibility::new(),
         }
     }
 }
@@ -87,6 +89,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
         content,
         visible,
         widths,
+        visibility,
     } = controls;
     let back = commands.get(CommandId::Back).unwrap();
     let forward = commands.get(CommandId::Forward).unwrap();
@@ -104,36 +107,44 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
     let filter_input = element_ref();
     let wide = signal(false);
     let packed_order = move || matches!(sort.get(), Sort::PackedAsc | Sort::PackedDesc);
-    let show_size = move || wide.get() || !packed_order();
-    let show_packed = move || wide.get() || packed_order();
+    let show_type = move || wide.get() && visibility.shown(Column::Type);
+    let show_size = move || {
+        visibility.shown(Column::Size)
+            && (wide.get() || !visibility.shown(Column::Packed) || !packed_order())
+    };
+    let show_packed = move || {
+        visibility.shown(Column::Packed)
+            && (wide.get() || !visibility.shown(Column::Size) || packed_order())
+    };
     let table_viewport = signal((0.0_f32, 0.0_f32));
     let type_width = move || {
-        if wide.get() {
+        if show_type() {
             widths.get(Column::Type, 85.0)
         } else {
             0.0
         }
     };
     let size_width = move || {
-        if wide.get() {
+        if !show_size() {
+            0.0
+        } else if wide.get() {
             widths.get(Column::Size, 110.0)
         } else {
             110.0
         }
     };
     let packed_width = move || {
-        if wide.get() {
+        if !show_packed() {
+            0.0
+        } else if wide.get() {
             widths.get(Column::Packed, 110.0)
         } else {
             110.0
         }
     };
     let name_width = move || {
-        let remaining = table_viewport.get().0
-            - 36.0
-            - type_width()
-            - if show_size() { size_width() } else { 0.0 }
-            - if show_packed() { packed_width() } else { 0.0 };
+        let remaining =
+            table_viewport.get().0 - 36.0 - type_width() - size_width() - packed_width();
         if wide.get() {
             widths.get(Column::Name, remaining.max(160.0))
         } else {
@@ -244,7 +255,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                         .child(view().w(move || px(table_width())).h(move || px(table_viewport.get().1)).min_h(px(0.0))
                 .child(view().flex_row().flex_shrink(0.0).py_1().bg(move || theme().muted).border_b_1().border_color(move || theme().border)
                     .child(columns::header(widths, Column::Name, sort_name, "Name", name_width, busy, wide))
-                    .child(when(move || wide.get(), move || columns::header(widths, Column::Type, sort_type.clone(), "Type", type_width, busy, wide)))
+                    .child(when(show_type, move || columns::header(widths, Column::Type, sort_type.clone(), "Type", type_width, busy, wide)))
                     .child(when(show_size, move || columns::header(widths, Column::Size, sort_size.clone(), "Size (bytes)", size_width, busy, wide)))
                     .child(when(show_packed, move || columns::header(widths, Column::Packed, sort_packed.clone(), "Packed (bytes)", packed_width, busy, wide)))
                     .child(view().w(px(36.0)).flex_shrink(0.0)))
@@ -268,7 +279,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
                                 .child(when(move || row().is_some_and(|row|row.is_dir), || crate::icons::icon("folder")))
                                 .child(when(move || row().is_some_and(|row|!row.is_dir), || crate::icons::icon("file")))
                                 .child(text(move || row().map(|row|row.name).unwrap_or_default()).number_of_lines(1).flex_1().min_w(px(0.0))))
-                            .child(when(move || wide.get(), move || text(move || row().map(|row| row.kind_label()).unwrap_or_default()).number_of_lines(1).w(move || px(type_width())).flex_shrink(0.0).px_2()))
+                            .child(when(show_type, move || text(move || row().map(|row| row.kind_label()).unwrap_or_default()).number_of_lines(1).w(move || px(type_width())).flex_shrink(0.0).px_2()))
                             .child(when(show_size, move || text(move || row().map(|row| if row.is_dir {"—".into()}else{row.size.to_string()}).unwrap_or_default())
                                 .label(move || row().map(|row| if row.is_dir {"Size in bytes: not applicable".into()} else {format!("Size in bytes: {}",row.size)}).unwrap_or_default()).number_of_lines(1).w(move || px(size_width())).flex_shrink(0.0).px_2()))
                             .child(when(show_packed, move || text(move || row().and_then(|row|row.packed_size).map(|size|size.to_string()).unwrap_or_else(||"—".into()))

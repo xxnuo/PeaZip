@@ -401,6 +401,111 @@ assert_fixed_columns 0 yes
 selection_count 1
 capture_sizes archive-auto-adjust-fixed-columns
 pass auto-adjust-menu-shortcut-idempotent-shared-widths-selection
+# Match the complete native Show <column> column row, not Sort by <column>.
+toggle_column() {
+ menu_open Layout
+ ocr
+ read -r mx my < <(awk -F '\t' -v wanted="$1" -v left="$menu_x" '
+ $1==5 && $7/3>=left-25 && $7/3<left+280 && $8/3>30 {
+  key=$2 FS $3 FS $4 FS $5
+  line[key]=line[key] " " $12
+  if($12==wanted){x[key]=int(($7+$9/2)/3);y[key]=int(($8+$10/2)/3)}
+ }
+ END{for(k in line)if(line[k] ~ ("Show "wanted" column")){print x[k],y[k];found=1;exit}if(!found)exit 1}' "$artifacts/current.tsv")
+ screen "menu-show-$1"
+ xdotool mousemove "$mx" "$my" click 1
+ sleep .4
+}
+headers() {
+ ocr
+ for label in Name Type Size Packed; do
+  if awk -F '\t' -v label="$label" '$1==5 && $12==label{found=1} END{exit !found}' "$artifacts/current.tsv"; then
+   printf '%s\n' "$label"
+  fi
+ done > "$artifacts/headers.txt"
+}
+assert_headers() {
+ headers
+ printf '%s\n' "$@" > "$artifacts/expected-headers.txt"
+ diff -u "$artifacts/expected-headers.txt" "$artifacts/headers.txt"
+}
+drag_name
+read -r tx ty < <(header_left Type)
+read -r sx sy < <(header_left Size)
+# Type's trailing 9px handle precedes the next header's 8px padding.
+xdotool mousemove "$((sx-10))" "$ty" mousedown 1
+for delta in 10 20 30 40 50; do
+ xdotool mousemove "$((sx-10+delta))" "$ty"
+ sleep .08
+done
+xdotool mouseup 1
+sleep .3
+read -r custom_type custom_y < <(header_left Type)
+read -r custom_size custom_y < <(header_left Size)
+assert_delta "$custom_size" "$sx" 47 53
+toggle_column type
+assert_headers Name Size Packed
+selection_count 1
+toggle_column type
+assert_headers Name Type Size Packed
+read -r restored_type unused < <(header_left Type)
+read -r restored_size unused < <(header_left Size)
+assert_delta "$restored_type" "$custom_type" -3 3
+assert_delta "$restored_size" "$custom_size" -3 3
+pass hide-show-restores-custom-name-and-type-widths
+toggle_column type
+toggle_column size
+toggle_column packed
+assert_headers Name
+selection_count 1
+menu_action Layout '^Auto$'
+assert_headers Name
+selection_count 1
+capture_sizes archive-name-only-after-auto-adjust
+click_word '^docs$' 0 260 400 170 1
+wait_status '^6 entries'
+assert_headers Name
+capture_sizes archive-docs-name-only
+menu_action Browser '^Up$'
+assert_headers Name
+menu_action File '^Close$'
+wait_status '^3 items'
+assert_headers Name
+capture_sizes filesystem-shared-name-only
+# Folder table's remaining columns stay hidden while switching back to archive.
+open_archive sample.7z
+assert_headers Name
+select_row '^docs$'
+selection_count 1
+resize 700 600
+assert_headers Name
+screen narrow-name-only
+toggle_column size
+assert_headers Name Size
+toggle_column packed
+# Both preferences on: existing narrow sort policy chooses one numeric column.
+menu_action Layout '^packed$'
+assert_headers Name Packed
+toggle_column size
+assert_headers Name Packed
+toggle_column packed
+assert_headers Name
+resize 1440 900
+toggle_column type
+toggle_column size
+toggle_column packed
+assert_headers Name Type Size Packed
+assert_fixed_columns 0 yes
+selection_count 1
+capture_sizes archive-all-columns-restored
+# Re-enabled columns must still allow real sorting and directory navigation.
+click_word '^Name$'
+click_word '^docs$' 0 260 400 170 1
+wait_status '^6 entries'
+assert_headers Name Type Size Packed
+menu_action Browser '^Up$'
+selection_count 1
+pass column-visibility-name-only-auto-adjust-shared-narrow-and-restore
 sha256sum -c "$artifacts/source.sha256"
 if grep -Ei 'panic|critical|segmentation' "$artifacts/gtk.log"; then exit 1; fi
 printf 'GUI_COLUMNS_DRAG_KEYBOARD_SCROLL_SELECTION_EXTRACT_FS_OK %s\n' "$run_dir"

@@ -356,3 +356,15 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 验证：工作区 348 次测试执行、Web 全量 128 项通过；新增 4 项 headless App 流程与 4 项真实浏览器测试覆盖菜单/快捷键、幂等、跨 FS/归档共享和隐藏列恢复、筛选/排序/选择/实际文件字节保持、NotEditing、busy/modal、窄屏返回宽屏及长数值行高。主机/WASM Clippy、格式检查通过。Linux GTK 完整列宽流程含新增菜单及快捷键实际重置通过，1024×600/1440×900 归档和文件系统截图、script/source/build hashes 位于 target/linux-columns-reset，脚本沿用既有 Linux CI；远程 CI 未运行。
 - Web 固定列宽后的两尺寸亮/暗截图及 viewport/theme/source/WASM hashes 位于 target/columns-adjusted-{1024-light,1440-dark}.{png,json}，已目视检查。Windows GNU check/release/native 测试交叉检查和 PE/hash 通过，源码哈希一致，未实际运行；iOS 未新增运行验收。汇总证据 target/adjust-columns-evidence.json；本单元不代表阶段 2a 完成。
 - Android API36 最终 APK（SHA256 3b2e6e23c55d316234a8ca09019c7b0f531c7022c3bae5bf2f8fc8b0147fbcda）完整导航与 Auto adjust columns 真实菜单点击通过，窄屏 Name/Size 边界、选择、完整原始大小标签与源字节保持；SAF 取消/提取及父子选择排除输出回归通过，target Clippy 通过。17 张截图与源码/脚本/APK hashes 位于 target/auto-adjust-android-evidence.json，日志 target/auto-adjust-android-navigation-final.log。测试文件已清理，专用模拟器与自有容器已关闭，未动 wp-phone-tools；真实设备、其他 provider 及完整六平台验收仍待完成。Python 8 项回归通过；上游复查相对固定基线无新增提交。
+
+
+## 详细列表列显示控制（UI-COLUMNS-VISIBILITY-01）
+
+- Layout 新增 Show type column / Show size column / Show packed column，默认全开，菜单 checked 直接跟随共享会话偏好。Name 恒显示，归档和文件夹共享 Type/Size 显隐；文件夹尚无原版 Info 第四列，Packed 开关在该视图明确禁用、归档偏好保留。未提供空操作或填充伪造 Info 数据。
+- 显隐独立于保存的列宽，隐藏不写零宽；恢复时保持已调整值，Auto adjust 只重置宽度且不改变显隐。表头、行、手柄、未知 Packed 提示和总宽/gutter 使用一致的显示条件。排序键、筛选、选择及归档/源文件字节不改变，隐藏列仍可从 Layout 的独立排序命令排序。
+- 小于 760 逻辑像素时 Type 仍隐藏；Size/Packed 都允许时沿用当前排序选择其中一列，仅允许一项时显示该项，均关闭时只显示 Name，返回宽屏恢复显隐和宽度。名称与目录打开按钮始终可用，不因隐藏数值列产生虚假的横向空白；自定义 Name 宽本身超过视口时仍可正常横滚。
+- 原版参照 peach.lfm:17300、23350 和 peach.pas:21032、23377、68516、68537、40018、41540、26290、63913、39969、40002、64377、64413。原版是 Layout/Columns 与表头右键的 Type、Size、Info / Packed 开关，默认全开，无单独显隐快捷键；Ctrl+Alt+1/2/3 是排序。原版通过 Width=0 与缓存宽度隐藏/恢复，但开关处理自身不先 savecol，Auto adjust 也可能在菜单仍未勾选时暂时显示列。本轮分别维护显隐/宽度，修正此状态不一致；尚未迁移嵌套 Columns 菜单、表头右键、文件系统 Info、My Computer 特殊列及重启配置持久化，不声称原版逐项完成。
+- 验证：工作区 352 次测试执行、完整 Web 133 项通过；列宽/显隐 headless 共 12 项，新增 4 项覆盖 FS/归档与刷新共享偏好、隐藏宽度、隐藏排序/筛选与真实输出字节、全数值隐藏和门禁。新 5 项真实浏览器测试与旧 9 项列宽测试全部通过，含 360×600 九项菜单实际触达、全隐藏/恢复、部分隐藏选择与实际解压、窄屏偏好、busy/modal 强制旧事件拒绝。主机/WASM/Android target Clippy、格式和 Python 8 项通过。两尺寸隐藏/恢复截图与 360×600 菜单截图及源码/WASM 哈希位于 target/columns-visibility-*，已目视检查。
+- Linux GTK 最终完整流程通过，保留原拖动/键盘/横滚/选择/提取字节断言，并验证列开关、隐藏宽度恢复、Auto adjust 保持隐藏、FS/归档共享、窄屏与恢复后的排序/目录打开。实际截图、日志、当前 script/source/build hashes 位于 target/linux-columns-visibility；现有 CI 脚本入口继续使用，远程 CI 未运行。Windows GNU check/release 与 PE/hash 通过、源码一致，未实际运行 Windows；iOS 本轮未新增 SDK/运行验收。汇总证据 target/column-visibility-evidence.json，完整六平台界面与发布仍未完成。
+- Android API36 最终 APK（SHA256 1d64bb8e134bb49a423b84d60b01e35e04721640b067eb65333228a869595aac）完整导航及列显隐菜单测试通过，实际 360 宽 Name-only/Packed-only/Both、菜单勾选、完整数值标签、排序偏好、选择和源字节保持；SAF 取消/提取与父子排除回归通过。证据 target/column-visibility-android-evidence.json，测试文件清理、屏幕设置恢复，核名后关闭专用 AVD。
+- 用户安装 Xcode 27.2 后已重新验证：iPhoneSimulator27.2 SDK 可用，uv run python scripts/build_ios.py --target aarch64-apple-ios-sim 首次 release 构建/SDK Mach-O 平台检查/ad-hoc 签名验证通过，生成 target/ios/aarch64-apple-ios-sim/release/PeaZip.app；日志 target/ios-xcode-simulator-build.log。此前“缺完整 SDK”的构建阻塞已解除；模拟器运行时仍在下载安装，尚未取得 iOS 实际运行或列显隐验收，不把构建通过等同完整平台完成。

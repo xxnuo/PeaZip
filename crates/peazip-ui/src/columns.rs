@@ -35,6 +35,26 @@ fn resized(column: Column, start: f32, offset: f32) -> Option<f32> {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct ColumnVisibility(Signal<[bool; 4]>);
+
+impl ColumnVisibility {
+    pub fn new() -> Self {
+        Self(signal([true; 4]))
+    }
+
+    pub fn shown(self, column: Column) -> bool {
+        self.0.with(|columns| columns[column.index()])
+    }
+
+    pub fn toggle(self, column: Column) {
+        if !matches!(column, Column::Name) {
+            self.0
+                .update(|columns| columns[column.index()] = !columns[column.index()]);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct ColumnWidths(Signal<[Option<f32>; 4]>);
 
 impl ColumnWidths {

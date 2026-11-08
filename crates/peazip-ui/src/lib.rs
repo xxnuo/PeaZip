@@ -695,6 +695,33 @@ pub fn App() -> impl IntoElement {
             )
         }),
     ];
+    for (id, label, column) in [
+        (
+            CommandId::ToggleTypeColumn,
+            "Show type column",
+            columns::Column::Type,
+        ),
+        (
+            CommandId::ToggleSizeColumn,
+            "Show size column",
+            columns::Column::Size,
+        ),
+        (
+            CommandId::TogglePackedColumn,
+            "Show packed column",
+            columns::Column::Packed,
+        ),
+    ] {
+        all.push(
+            Command::new(
+                id,
+                label,
+                move || !busy.get() && (id != CommandId::TogglePackedColumn || !file_view()),
+                move || controls.visibility.toggle(column),
+            )
+            .checked(move || controls.visibility.shown(column)),
+        );
+    }
     all.push(keyboard_shortcut(
         Command::new(
             CommandId::AdjustColumns,
@@ -1075,7 +1102,7 @@ pub fn App() -> impl IntoElement {
                     editing_locked,
                     controls.sort,
                     pane_commands.clone(),
-                    controls.widths,
+                    (controls.widths, controls.visibility),
                     move |id| disk.open_entry(id),
                     move |path| disk.go(path),
                 )

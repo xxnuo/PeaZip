@@ -57,6 +57,7 @@ class NavigationSmoke(smoke_android.Smoke):
         self.label("All entries")
         self.navigation_rows({"docs/": False, "other.txt": False})
         self.label("0 selected")
+        self.column_visibility(name, contents, remote)
         self.save("navigation-root")
         self.tap("Open folder docs/")
         docs = {"docs/empty/": False, "docs/nested/": False, "docs/你好.txt": False}
@@ -205,6 +206,61 @@ class NavigationSmoke(smoke_android.Smoke):
         assert self.adb("exec-out", "cat", remote, binary=True) == (smoke_android.ROOT / "tests/fixtures/sample.tar").read_bytes()
         self.save("navigation-auto-adjust-narrow-preserved")
         print("PASS narrow Layout Auto adjust columns: real menu tap; Name/Size bounds, selection, raw size label and source bytes preserved", flush=True)
+
+    def layout_command(self, label, checked=None, evidence=None):
+        self.tap("Layout")
+        tree = self.wait(label, lambda tree: bool(MenuSmoke.menu_items(tree, label)))
+        items = MenuSmoke.menu_items(tree, label)
+        assert len(items) == 1 and items[0].get("enabled") == "true" and items[0].get("clickable") == "true"
+        if checked is not None:
+            assert items[0].get("checked") == str(checked).lower(), (label, items[0].attrib)
+        if evidence:
+            self.save(evidence)
+        x1, y1, x2, y2 = MenuSmoke.bounds(items[0])
+        self.adb("shell", "input", "tap", (x1 + x2) // 2, (y1 + y2) // 2)
+        self.wait("Layout dismissed", lambda tree: not MenuSmoke.menu_items(tree))
+
+    def visibility_state(self, name, contents, remote, size, packed, evidence):
+        self.navigation_rows({"docs/": False, "other.txt": True})
+        self.label(name)
+        self.label("1 selected")
+        tree = self.dump()
+        for label, shown in (("Size (bytes)", size), ("Packed (bytes)", packed), ("Type", False)):
+            assert any(self.match(node, label) for node in tree.iter("node")) == shown, (label, shown)
+        row = next(node for node in tree.iter("node") if node.get("class") == "android.widget.CheckBox"
+                   and node.get("content-desc") == "other.txt")
+        assert any(node.get("content-desc") == f"Size in bytes: {len(contents['other.txt'])}"
+                   for node in row.iter("node")) == size
+        assert any(node.get("content-desc") == "Packed bytes: 512" for node in row.iter("node")) == packed
+        assert any(node.get("text") == "other.txt" for node in row.iter("node"))
+        assert self.adb("exec-out", "cat", remote, binary=True) == (smoke_android.ROOT / "tests/fixtures/sample.tar").read_bytes()
+        self.save(evidence)
+
+    def column_visibility(self, name, contents, remote):
+        self.set_checkbox("other.txt", True)
+        self.layout_command("Sort by size")
+        self.layout_command("Show size column", checked=True, evidence="visibility-size-menu-360")
+        self.layout_command("Show packed column", checked=True, evidence="visibility-packed-menu-360")
+        self.visibility_state(name, contents, remote, False, False, "visibility-name-only-360")
+        self.layout_command("Show packed column", checked=False)
+        self.visibility_state(name, contents, remote, False, True, "visibility-packed-only-360")
+        self.tap("Layout")
+        tree = self.wait("Layout checked state", lambda tree: bool(MenuSmoke.menu_items(tree, "Show packed column")))
+        for label, checked in (("Show size column", False), ("Show packed column", True), ("Sort by size", True), ("Sort by packed size", False)):
+            item = MenuSmoke.menu_items(tree, label)
+            assert len(item) == 1 and item[0].get("checked") == str(checked).lower(), label
+        self.save("visibility-packed-sort-preserved-menu-360")
+        self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
+        self.wait("Layout dismissed", lambda tree: not MenuSmoke.menu_items(tree))
+        self.layout_command("Show size column", checked=False)
+        self.visibility_state(name, contents, remote, True, False, "visibility-both-size-view-360")
+        self.layout_command("Sort by packed size")
+        self.visibility_state(name, contents, remote, False, True, "visibility-both-packed-view-360")
+        self.layout_command("Sort by name")
+        self.visibility_state(name, contents, remote, True, False, "visibility-both-restored-360")
+        self.set_checkbox("other.txt", False)
+        self.label("0 selected")
+        print("PASS 360-wide column visibility: real menu checked states; Name-only/Packed-only/Both; full size/packed labels, sort preference, selection and source bytes preserved", flush=True)
 
     def set_checkbox(self, path, checked):
         tree = self.dump()

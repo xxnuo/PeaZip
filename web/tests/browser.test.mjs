@@ -2971,3 +2971,216 @@ with zipfile.ZipFile(sys.argv[1], 'w', compression=zipfile.ZIP_STORED) as archiv
   await expect(button('Extract…')).toBeEnabled();
   await expectDetailAlignment(page);
 });
+
+async function toggleDetailColumn(page, label, enabled) {
+  await page.getByRole('button', { name: 'Layout', exact: true }).click();
+  const item = page.getByRole('menuitemcheckbox', { name: label, exact: true });
+  await expect(item).toBeEnabled();
+  if ((await item.getAttribute('aria-checked') === 'true') !== enabled) {
+    await item.click();
+  } else await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+}
+
+async function expectColumnPreferences(page, expected) {
+  await page.getByRole('button', { name: 'Layout', exact: true }).click();
+  for (const [label, enabled] of Object.entries(expected)) {
+    const item = page.getByRole('menuitemcheckbox', { name: label, exact: true });
+    if (enabled) await expect(item).toBeChecked();
+    else await expect(item).not.toBeChecked();
+  }
+  await page.keyboard.press('Escape');
+}
+
+const showColumnLabels = ['Show type column', 'Show size column', 'Show packed column'];
+
+test('Column visibility Size toggle removes header/body/handle and restores width and selection', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await navigationPage(t, { width: 1024, height: 600 });
+  await choose();
+  const selected = page.getByRole('checkbox', { name: 'other.txt', exact: true });
+  await selected.click();
+  const widths = await changeEveryDetailColumn(page);
+  const state = await detailSelectionState(page);
+  await toggleDetailColumn(page, 'Show size column', false);
+  await expect(button('Size (bytes)')).toHaveCount(0);
+  await expect(resizeColumn(page, 'Size (bytes)')).toHaveCount(0);
+  await expect(page.getByRole('checkbox').getByLabel(/^Size in bytes:/)).toHaveCount(0);
+  await expect(selected).toBeChecked();
+  assert.deepEqual(await detailSelectionState(page), state);
+  await expectColumnPreferences(page, { 'Show type column': true, 'Show size column': false, 'Show packed column': true });
+  await toggleDetailColumn(page, 'Show size column', true);
+  await expectDetailWidths(page, widths);
+  await expectDetailAlignment(page);
+  assert.deepEqual(await detailSelectionState(page), state);
+});
+
+async function visibleDetailColumns(page, shown, wide = true) {
+  const headers = [];
+  for (const name of detailColumnNames) {
+    const present = name === 'Name' || shown.includes(name);
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(present ? 1 : 0);
+    await expect(resizeColumn(page, name)).toHaveCount(present && wide ? 1 : 0);
+    if (present && wide) headers.push([name, await detailHeader(page, name)]);
+  }
+  for (const row of await page.getByRole('checkbox').all()) {
+    const path = await row.getAttribute('aria-label');
+    const basename = path.replace(/\/$/, '').split('/').at(-1);
+    const type = path.endsWith('/') ? 'Folder' : basename.includes('.') ? basename.split('.').at(-1).toUpperCase() : 'File';
+    const locators = { Type: row.getByLabel(type, { exact: true }),
+      'Size (bytes)': row.getByLabel(/^Size in bytes:/), 'Packed (bytes)': row.getByLabel(/^Packed bytes:/) };
+    for (const [name, cell] of Object.entries(locators)) await expect(cell).toHaveCount(shown.includes(name) ? 1 : 0);
+    if (!wide) continue;
+    const box = await row.boundingBox();
+    let end = box.x;
+    for (const [name, header] of headers) {
+      assert.ok(Math.abs(header.x - end) < 3, `${path}: hidden columns must leave no gap before ${name}`);
+      if (name !== 'Name') {
+        const cell = await locators[name].boundingBox();
+        assert.ok(Math.abs(cell.x - header.x) < 3 && Math.abs(cell.width - header.width) < 3,
+          `${path}: ${name} header and body boundaries differ`);
+      }
+      end += header.width;
+    }
+    assert.ok(Math.abs(box.x + box.width - end) < 3, `${path}: checkbox row must end with the last shown column`);
+  }
+}
+
+async function saveVisibilityScreenshot(page, name, preferences) {
+  const { createHash } = await import('node:crypto');
+  const hashes = {};
+  for (const file of ['columns.rs', 'explorer.rs', 'lib.rs', 'commands.rs', 'menus.rs', 'filesystem.rs']) {
+    hashes[file] = createHash('sha256').update(await readFile(new URL(`../../crates/peazip-ui/src/${file}`, import.meta.url))).digest('hex');
+  }
+  hashes.wasm = createHash('sha256').update(await readFile(resolve(root, 'peazip.wasm'))).digest('hex');
+  const data = { viewport: page.viewportSize(),
+    theme: await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+    preferences, sourceHashes: hashes,
+    hashScope: 'Source file hashes are capture-time bytes; wasm is the served compiled artifact, not proof that later source formatting was rebuilt.',
+    state: await detailSelectionState(page) };
+  const output = fileURLToPath(new URL(`../../target/${name}`, import.meta.url));
+  await page.screenshot({ path: `${output}.png`, animations: 'disabled' });
+  await writeFile(`${output}.json`, JSON.stringify(data, null, 2) + '\n');
+}
+
+test('Column visibility hides every optional cell without gaps and preserves partial hidden selection, sort and real bytes', { timeout: 120_000 }, async (t) => {
+  const { page, button, tree } = await extractionPage(t, true, { viewport: { width: 1024, height: 600 }, colorScheme: 'light' });
+  const picker = page.waitForEvent('filechooser');
+  await button('Open archive…').click();
+  await (await picker).setFiles(fileURLToPath(new URL('../../tests/fixtures/sample.tar', import.meta.url)));
+  await expect(page.getByText('5 entries', { exact: true })).toBeVisible();
+  await button('Folder view').click();
+  await page.getByRole('checkbox', { name: 'docs/', exact: true }).click();
+  await button('Open folder docs/').click();
+  await page.getByRole('checkbox', { name: 'docs/你好.txt', exact: true }).click();
+  await button('Archive root').click();
+  await page.getByRole('checkbox', { name: 'other.txt', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: 'docs/', exact: true })).toHaveAttribute('aria-checked', 'mixed');
+  await button('Layout').click();
+  await page.getByRole('menuitemcheckbox', { name: 'Sort by packed size', exact: true }).click();
+  const filter = page.getByRole('textbox', { name: 'Filter names', exact: true });
+  await filter.fill('docs'); await filter.press('Enter');
+  const state = await detailSelectionState(page);
+  const snapshot = await downloadArchive(page, button('Download TAR'));
+  const widths = await changeEveryDetailColumn(page);
+  for (const label of showColumnLabels) await toggleDetailColumn(page, label, false);
+  await visibleDetailColumns(page, []);
+  const hidden = Object.fromEntries(showColumnLabels.map(label => [label, false]));
+  await expectColumnPreferences(page, hidden);
+  assert.deepEqual(await detailSelectionState(page), state);
+  await saveVisibilityScreenshot(page, 'columns-visibility-1024-hidden', hidden);
+  for (const label of showColumnLabels) await toggleDetailColumn(page, label, true);
+  await expectDetailWidths(page, widths); await expectDetailAlignment(page);
+  await saveVisibilityScreenshot(page, 'columns-visibility-1024-restored', Object.fromEntries(showColumnLabels.map(label => [label, true])));
+  await page.setViewportSize({ width: 1440, height: 900 }); await page.emulateMedia({ colorScheme: 'dark' });
+  for (const label of showColumnLabels) await toggleDetailColumn(page, label, false);
+  await visibleDetailColumns(page, []);
+  await saveVisibilityScreenshot(page, 'columns-visibility-1440-hidden', hidden);
+  await adjustColumnsMenu(page);
+  await expectColumnPreferences(page, hidden); await visibleDetailColumns(page, []);
+  assert.equal((await detailHeader(page, 'Name')).width, 240);
+  for (const label of showColumnLabels) await toggleDetailColumn(page, label, true);
+  await expectDetailWidths(page, adjustedDetailWidths); await expectDetailAlignment(page);
+  await saveVisibilityScreenshot(page, 'columns-visibility-1440-restored', Object.fromEntries(showColumnLabels.map(label => [label, true])));
+  assert.deepEqual(await detailSelectionState(page), state);
+  await button('Layout').click();
+  await expect(page.getByRole('menuitemcheckbox', { name: 'Sort by packed size', exact: true })).toBeChecked();
+  await page.keyboard.press('Escape');
+  assert.deepEqual(await downloadArchive(page, button('Download TAR')), snapshot);
+  await button('Extract…').click();
+  await expect(page.getByRole('radio', { name: 'Selected entries', exact: true })).toBeChecked();
+  const folder = await finishExtraction(page, button);
+  assert.deepEqual(await tree(), { ...sentinelTree, [folder]: {
+    docs: { empty: {}, nested: { 'data.bin': [0, 127, 255] } }, 'other.txt': Array.from(Buffer.from('not selected\n')),
+  } });
+});
+
+test('Column visibility narrow rules preserve preferences and remembered widths across viewport changes', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await navigationPage(t, { width: 1024, height: 600 });
+  await choose(); const widths = await changeEveryDetailColumn(page);
+  await page.setViewportSize({ width: 360, height: 600 });
+  await visibleDetailColumns(page, ['Size (bytes)'], false);
+  await button('Layout').click();
+  await page.getByRole('menuitemcheckbox', { name: 'Sort by packed size', exact: true }).click();
+  await visibleDetailColumns(page, ['Packed (bytes)'], false);
+  await toggleDetailColumn(page, 'Show packed column', false);
+  await visibleDetailColumns(page, ['Size (bytes)'], false);
+  await toggleDetailColumn(page, 'Show size column', false);
+  await visibleDetailColumns(page, [], false);
+  await toggleDetailColumn(page, 'Show packed column', true);
+  await button('Layout').click();
+  await page.getByRole('menuitemcheckbox', { name: 'Sort by name', exact: true }).click();
+  await visibleDetailColumns(page, ['Packed (bytes)'], false);
+  await toggleDetailColumn(page, 'Show size column', true);
+  await visibleDetailColumns(page, ['Size (bytes)'], false);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await expectDetailWidths(page, widths); await expectDetailAlignment(page);
+  await expectColumnPreferences(page, Object.fromEntries(showColumnLabels.map(label => [label, true])));
+});
+
+test('Column visibility rejects stale and forced menu events while modal or worker busy', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await navigationPage(t, { width: 1024, height: 600 }); await choose();
+  const widths = await changeEveryDetailColumn(page);
+  await button('Layout').click();
+  const stale = await page.getByRole('menuitemcheckbox', { name: 'Show size column', exact: true }).elementHandle();
+  await page.keyboard.press('Escape'); await button('Create archive…').click();
+  const modal = page.getByRole('group', { name: 'Create archive', exact: true }); await expect(modal).toBeVisible();
+  await stale.evaluate(node => node.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await button('Layout').dispatchEvent('click'); await expect(page.getByRole('menu')).toHaveCount(0);
+  await expectDetailWidths(page, widths); await visibleDetailColumns(page, detailColumnNames.slice(1));
+  await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+  let release, intercepted = false; const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/worker-core_bg.wasm', async route => { intercepted = true; await gate; await route.continue().catch(() => {}); });
+  try {
+    await button('Test archive').click(); await expect.poll(() => intercepted).toBe(true); await button('Layout').click();
+    for (const label of showColumnLabels) {
+      const item = page.getByRole('menuitemcheckbox', { name: label, exact: true });
+      await expect(item).toBeDisabled(); await item.dispatchEvent('click'); await expect(item).toBeChecked();
+    }
+    await stale.evaluate(node => node.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await expectDetailWidths(page, widths); await page.keyboard.press('Escape'); await button('Cancel').click();
+    await expect(page.getByText('Archive test cancelled.', { exact: true })).toBeVisible();
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); await stale.dispose(); }
+  await expectColumnPreferences(page, Object.fromEntries(showColumnLabels.map(label => [label, true])));
+  await expectDetailWidths(page, widths);
+});
+
+test('Column visibility Layout nine commands are reachable and dismiss correctly at 360x600', { timeout: 120_000 }, async (t) => {
+  const { page, button, choose } = await navigationPage(t, { width: 360, height: 600 }); await choose();
+  const labels = ['All entries', 'Auto adjust columns', 'Sort by name', 'Sort by type', 'Sort by size',
+    'Sort by packed size', ...showColumnLabels];
+  for (const label of labels) {
+    await button('Layout').click(); const menu = page.getByRole('menu'); await expect(menu).toHaveCount(1);
+    await expect(menu.locator('[role="menuitem"],[role="menuitemcheckbox"]')).toHaveCount(9);
+    const bounds = await menu.boundingBox();
+    assert.ok(bounds.x >= -1 && bounds.y >= -1 && bounds.x + bounds.width <= 361 && bounds.y + bounds.height <= 601,
+      `360x600 menu must fit: ${JSON.stringify(bounds)}`);
+    const item = menu.getByRole(label === 'Auto adjust columns' ? 'menuitem' : 'menuitemcheckbox', { name: label, exact: true });
+    await item.scrollIntoViewIfNeeded(); await expect(item).toBeInViewport({ ratio: 1 });
+    if (label === 'Show packed column') {
+      await saveVisibilityScreenshot(page, 'columns-visibility-menu-360x600', 'nine menu commands; last item fully visible');
+    }
+    await item.click(); await expect(menu).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+});
