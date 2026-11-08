@@ -1717,6 +1717,60 @@ for (const width of [1024, 360]) {
   });
 }
 
+for (const width of [1024, 360]) {
+  test(`Name filter preserves hidden selections and bounds displayed extraction at ${width}px`, { timeout: 120_000 }, async (t) => {
+    const { page, button, tree } = await extractionPage(t, true, { viewport: { width, height: 800 }, isMobile: width < 600, hasTouch: width < 600 });
+    const picker = page.waitForEvent('filechooser');
+    await button('Open archive…').click();
+    await (await picker).setFiles(await extractionFixture([['docs/你好.txt', '中文'], ['docs/plain.txt', 'plain'], ['outside.txt', 'outside'], ['literal[1].txt', 'literal']]));
+    await expect(page.getByText('4 entries', { exact: true })).toBeVisible();
+    const filter = page.getByRole('textbox', { name: 'Filter names', exact: true });
+    await page.getByRole('checkbox', { name: 'outside.txt', exact: true }).click();
+    await filter.fill('你好');
+    await expect(page.getByRole('checkbox')).toHaveCount(1);
+    await expect(page.getByText('1 of 4 rows shown', { exact: true })).toBeVisible();
+    await filter.press('Enter');
+    await button('Select all').click();
+    await button('Extract…').click();
+    const selected = await finishExtraction(page, button);
+    let expected = { ...sentinelTree, [selected]: { docs: { '你好.txt': Array.from(Buffer.from('中文')) }, 'outside.txt': Array.from(Buffer.from('outside')) } };
+    assert.deepEqual(await tree(), expected);
+    await button('Clear selection').click();
+    await filter.fill('PLAIN.TXT');
+    await filter.press('Enter');
+    await button('Extract…').click();
+    const modal = page.getByRole('group', { name: 'Extract archive', exact: true });
+    await expect(modal.getByRole('radio', { name: 'Displayed entries', exact: true })).toBeChecked();
+    await expect(modal.getByText(/Names contain: PLAIN.TXT/)).toBeVisible();
+    const displayed = await finishExtraction(page, button);
+    expected = { ...expected, [displayed]: { docs: { 'plain.txt': Array.from(Buffer.from('plain')) } } };
+    assert.deepEqual(await tree(), expected);
+    await filter.fill('[1]');
+    await expect(page.getByRole('checkbox')).toHaveCount(1);
+    await expect(page.getByRole('checkbox', { name: 'literal[1].txt', exact: true })).toBeVisible();
+    await filter.fill('no matches');
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    await expect(button('Select all')).toBeDisabled();
+    await expect(button('Invert selection')).toBeDisabled();
+    await filter.press('Enter');
+    await button('Extract…').click();
+    await expect(modal.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+    await expect(modal.getByRole('radio', { name: 'All entries', exact: true })).toBeEnabled();
+    await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await button('Clear filter').click();
+    await expect(page.getByRole('checkbox')).toHaveCount(4);
+    const screenshot = fileURLToPath(new URL(`../../target/name-filter-${width}.png`, import.meta.url));
+    await filter.fill('docs');
+    await page.screenshot({ path: screenshot });
+    await button('Folder view').click();
+    await expect(filter).toHaveValue('docs');
+    await button('Open folder docs/').click();
+    await expect(filter).toHaveValue('');
+    await expect(page.getByRole('checkbox')).toHaveCount(2);
+    assert.deepEqual(await tree(), expected);
+  });
+}
+
 async function packedFixture() {
   const { stdout } = await promisify(execFile)('uv', ['run', 'python', '-c', `
 import base64, io, json, zipfile

@@ -13,6 +13,7 @@ pub(crate) struct Controls {
     pub flat: Signal<bool>,
     pub sort: Signal<Sort>,
     pub draft: Signal<String>,
+    pub filter: Signal<String>,
     pub input: ElementRef,
     pub content: ElementRef,
     pub visible: Memo<Vec<BrowserRow>>,
@@ -22,16 +23,21 @@ impl Controls {
     pub fn new(entries: Signal<Vec<Entry>>, navigation: Signal<BrowserState>) -> Self {
         let flat = signal(false);
         let sort = signal(Sort::NameAsc);
+        let filter = signal(String::new());
         let visible = computed(move || {
             entries.with(|items| {
-                navigation
-                    .with(|state| navigation::rows(items, state.current(), flat.get(), sort.get()))
+                let mut rows = navigation
+                    .with(|state| navigation::rows(items, state.current(), flat.get(), sort.get()));
+                let query = filter.get();
+                rows.retain(|row| navigation::name_matches(&row.name, &query));
+                rows
             })
         });
         Self {
             flat,
             sort,
             draft: signal("/".into()),
+            filter,
             input: element_ref(),
             content: element_ref(),
             visible,
@@ -65,6 +71,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
         flat,
         sort,
         draft,
+        filter,
         input: path_input,
         content,
         visible,
@@ -82,6 +89,7 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
     let sort_type = commands.get(CommandId::SortType).unwrap();
     let sort_packed = commands.get(CommandId::SortPacked).unwrap();
     let error = signal(String::new());
+    let filter_input = element_ref();
     let wide = signal(false);
     let packed_order = move || matches!(sort.get(), Sort::PackedAsc | Sort::PackedDesc);
     let show_size = move || wide.get() || !packed_order();
@@ -140,6 +148,16 @@ pub(crate) fn explorer(context: Explorer) -> impl IntoElement {
             .child(input().element_ref(&path_input).submit_behavior(SubmitBehavior::Submit).auto_capitalize(AutoCapitalize::None).auto_correct(false).value(move || draft.get()).on_change(move |value: &str| draft.set(value.to_owned())).on_submit(move |_: &str| enter(draft.get_untracked())).label("Archive path").placeholder("Archive path").disabled(move || busy.get()).flex_1().min_w(px(110.0)).border_1().border_color(move || theme().border).px_2().py_1())
             .child(button().disabled(move || busy.get()).on_press(move || enter(draft.get_untracked())).px_2().py_1().child(text("Go"))))
         .child(when(move || !error.with(String::is_empty), move || text(move || error.get()).px_3().py_1().text_color(move || theme().destructive)))
+        .child(view().flex_row().flex_wrap().items_center().gap_2().px_3().py_1().border_b_1().border_color(move || theme().border)
+            .child(input().element_ref(&filter_input).label("Filter names").placeholder("Filter names").value(move || filter.get())
+                .on_change(move |value: &str| {if !busy.get_untracked(){filter.set(value.chars().take(256).collect());}})
+                .max_length(256).auto_capitalize(AutoCapitalize::None).auto_correct(false).submit_behavior(SubmitBehavior::Submit)
+                .on_submit(move |_: &str| {filter_input.blur(); content.focus();}).disabled(move || busy.get()).flex_1().min_w(px(120.0))
+                .border_1().border_color(move || theme().border).px_2().py_1())
+            .child(button().accessibility_label("Clear filter").disabled(move || busy.get() || filter.with(String::is_empty))
+                .on_press(move || {if !busy.get_untracked(){filter.set(String::new());filter_input.blur();content.focus();}}).px_2().py_1().child(text("Clear filter")))
+            .child(text(move || format!("{} of {} rows shown", visible.with(Vec::len), entries.with(|items| navigation.with(|state| navigation::rows(items,state.current(),flat.get(),Sort::NameAsc).len()))))))
+        .child(when(move || !filter.with(String::is_empty), || text("Names contain the text (case insensitive). Matching folders include their contents. Hidden selections are retained.").px_3().py_1().text_color(move || theme().muted_foreground)))
         .child(toolbar().flex_row().flex_wrap().gap_3().px_3().py_1().border_b_1().border_color(move || theme().border)
             .child(commands::button(&toggle_flat).child(text(move || if flat.get() { "Folder view" } else { "All entries" })))
             .child(commands::button(&select_all).child(text("Select all")))

@@ -5,7 +5,7 @@ use peazip_native::{DirectoryEntry, DirectorySnapshot, EntryKind};
 
 use crate::{
     commands::{self, CommandId, Commands},
-    navigation::Sort,
+    navigation::{Sort, name_matches},
 };
 use nsh_base::{button, checkbox, input, theme, toolbar};
 use nsh_core::element::{AutoCapitalize, Position, SubmitBehavior};
@@ -121,6 +121,7 @@ pub struct Files {
     pub selected: Signal<BTreeSet<usize>>,
     pub history: Signal<History>,
     pub draft: Signal<String>,
+    pub filter: Signal<String>,
     pub input: ElementRef,
     pub content: ElementRef,
     pub version: Signal<u64>,
@@ -135,10 +136,28 @@ impl Files {
             selected: signal(BTreeSet::new()),
             history: signal(History::default()),
             draft: signal(String::new()),
+            filter: signal(String::new()),
             input: element_ref(),
             content: element_ref(),
             version: signal(0),
         }
+    }
+
+    pub fn visible_ids(&self) -> Vec<usize> {
+        let filter = self.filter.get();
+        self.current.with(|current| {
+            current
+                .as_ref()
+                .map(|view| {
+                    view.0
+                        .entries()
+                        .iter()
+                        .filter(|entry| name_matches(&entry.display_name, &filter))
+                        .map(|entry| entry.id)
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
     }
 
     pub fn apply_directory(&self, snapshot: Arc<DirectorySnapshot>, change: HistoryChange) -> bool {
@@ -147,11 +166,19 @@ impl Files {
         if !history.apply(Location::Folder(path.clone()), change) {
             return false;
         }
+        let changed_path = self.current.with_untracked(|current| {
+            current
+                .as_ref()
+                .is_none_or(|view| view.0.path() != path.as_path())
+        });
         batch(|| {
             self.history.set(history);
             self.draft.set(path.to_string_lossy().into_owned());
             self.current.set(Some(DirectoryView(snapshot)));
             self.selected.set(BTreeSet::new());
+            if changed_path {
+                self.filter.set(String::new());
+            }
             self.context.set(true);
             self.active.set(true);
             self.version
@@ -260,19 +287,27 @@ pub fn browser(
     go: impl Fn(PathBuf) + Copy + 'static,
 ) -> impl IntoElement {
     let order = computed(move || {
+        let filter = files.filter.get();
         files.current.with(|current| {
             current
                 .as_ref()
-                .map(|view| ordered_entries(view.0.entries(), sort.get()))
+                .map(|view| {
+                    let entries = view.0.entries();
+                    let mut order = ordered_entries(entries, sort.get());
+                    order.retain(|&index| name_matches(&entries[index].display_name, &filter));
+                    order
+                })
                 .unwrap_or_default()
         })
     });
     let wide = signal(false);
+    let filter_input = element_ref();
     effect(move || {
         let _ = files.version.get();
         if files.active.get() {
             after_answer(move || {
                 files.input.blur();
+                filter_input.blur();
                 files.content.focus();
             });
         }
@@ -312,6 +347,75 @@ pub fn browser(
             .border_b_1()
             .border_color(move || theme().border),
         )
+        .child(
+            view()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .border_b_1()
+                .border_color(move || theme().border)
+                .child(
+                    input()
+                        .element_ref(&filter_input)
+                        .label("Filter names")
+                        .placeholder("Filter names")
+                        .value(move || files.filter.get())
+                        .on_change(move |value: &str| {
+                            if !busy.get_untracked() {
+                                files.filter.set(value.chars().take(256).collect());
+                            }
+                        })
+                        .max_length(256)
+                        .auto_capitalize(AutoCapitalize::None)
+                        .auto_correct(false)
+                        .submit_behavior(SubmitBehavior::Submit)
+                        .on_submit(move |_: &str| {
+                            filter_input.blur();
+                            files.content.focus();
+                        })
+                        .disabled(move || busy.get())
+                        .flex_1()
+                        .min_w(px(120.0))
+                        .border_1()
+                        .border_color(move || theme().border)
+                        .px_2()
+                        .py_1(),
+                )
+                .child(
+                    button()
+                        .accessibility_label("Clear filter")
+                        .disabled(move || busy.get() || files.filter.with(String::is_empty))
+                        .on_press(move || {
+                            if !busy.get_untracked() {
+                                files.filter.set(String::new());
+                                filter_input.blur();
+                                files.content.focus();
+                            }
+                        })
+                        .px_2()
+                        .py_1()
+                        .child(text("Clear filter")),
+                )
+                .child(text(move || {
+                    format!(
+                        "{} of {} items shown",
+                        order.with(Vec::len),
+                        files.current.with(|current| current
+                            .as_ref()
+                            .map_or(0, |view| view.0.entries().len()))
+                    )
+                })),
+        )
+        .child(when(
+            move || !files.filter.with(String::is_empty),
+            || text("Names contain the text (case insensitive). Hidden selections remain selected for Open selected and Create ZIP.")
+                .px_3()
+                .py_1()
+                .text_color(move || theme().muted_foreground),
+        ))
         .child(
             toolbar()
                 .flex_row()

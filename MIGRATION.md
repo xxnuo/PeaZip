@@ -273,3 +273,15 @@ CI 先验证三个桌面系统的核心测试与 Web 编译；这不等于 UI、
 - 归档复用当前显示的 basename 扩展名类型标签（大小写统一、无扩展名为 File），本地目录复用已有 File/Link/Other 分类，不跟随链接，不新增 MIME 探测。排序只变更行顺序，不修改选择路径、快照 ID 或历史，也不触发 Packed 列模式。原版列头切换升降序参考固定 `peach.pas:67671`。
 - 主机工作区 265 次测试执行、完整浏览器 95 项通过，主机/WASM/Android target Clippy、格式检查及 Android APK 构建通过。浏览器新增 1024/360 两种宽度的菜单/列头升降序、名称 tie、父目录带点与无后缀、选择保持和实际 Worker/OPFS 提取字节核对；菜单关闭后截图再次生成，两个定向流程通过。证据 `target/type-sort-workspace-tests.log`、`type-sort-web-tests.log`、`type-sort-web-final.log`。
 - 本轮未新增 Linux/Android 实机、Windows/iOS 构建运行验收，不沿用旧证据宣称新功能已在所有目标运行。完整类型识别、时间/属性列、列宽调整和其余详细列表验收仍待完成。
+
+## 名称筛选（UI-FILTER-01）
+
+- 归档和本地目录增加独立 Filter names 输入、Clear filter 与显示/总行数。当前实现为不区分大小写的字面子串匹配，最多 256 字符；目录浏览匹配名称，归档平铺匹配完整显示路径。筛选只计算可见行，不重读归档或删除底层条目；空匹配禁用全选/反选，导航区仍可操作。
+- 隐藏选择保持，界面明确提示。筛选非空时全选追加可见路径/ID、反选只改变可见范围；无筛选归档全选保留原有选择表示与计数行为。Selected 解压及桌面 ZIP 创建使用全部已有选择，Displayed 解压仅使用打开表单时冻结的筛选范围，匹配文件夹包含真实后代；无匹配时 Displayed 禁止确认，必须明确选 All 才能解压整个归档。
+- 成功改变当前目录/重新打开归档清除筛选，失败导航保留筛选；排序和平铺切换不清除。桌面同路径刷新保留筛选但按既有规则清空旧快照选择。输入 Enter 明确失焦返回内容，后续 Ctrl+A 可选文件；Clear 只清除筛选，不导航。文件系统操作仍使用原始 OsString 和稳定快照 ID，转义显示名称及筛选文本不用于重建路径。
+- 固定原版列表筛选参考 `peach.pas:42668`、`:42709` 和 `:66044`：原版地址输入 KeyUp 调用 MatchesMask，不区分大小写且支持掩码；当前独立输入框使用字面匹配，尚未实现通配掩码、原版地址框联动及高级过滤。原版删当前行/恢复旧缓存的选择行为也不等同于当前稳定选择保留策略，不将本增量称为完整原版搜索迁移。
+- 最终主机工作区 275 次测试执行、完整 Web 97 项通过；最后焦点修复重建后 2 项筛选浏览器流程再次通过。主机/WASM/Android target Clippy、格式及 Android APK 构建通过。新增归档 5 项和文件系统 5 项界面测试覆盖 Unicode、字面特殊字符、长度上限、选择保留、三种提取范围、清空/排序/导航/刷新、真实导出字节与无匹配门禁。Linux 文件系统 6 项测试含实际非 UTF-8 名称分支通过，记录 `target/linux-filesystem/filesystem-filter-final.log`。
+- 浏览器 1024/360 宽度真实 Worker/OPFS 流程核对筛选后的导出及旧输出哨兵，并已检查截图；OPFS 不替代真实外部目录权限验收。证据 `target/filter-workspace-final.log`、`filter-web-tests-final.log`、`filter-web-focused-final.log`。本轮未新增 Android 实机或 Windows/iOS 构建运行声明。
+
+- 真实 Linux GTK/X11 筛选流程通过，记录 `target/linux-filter/run2.log`：7z/TAR 实时名称筛选、隐藏选择保留、可见全选/反选、筛选目录范围解压字节、无匹配 Displayed 禁止确认且不回退 All、成功导航清筛选，以及本地目录稳定 ID 选择创建 ZIP 的独立内容对照均通过。源文件与既有输出哨兵保持；新增脚本纳入 Linux CI，远程 CI 尚未执行。首轮仅因 OCR 将零读为 O 停止，最终脚本单独识别计数并保留实际文件/门禁检查。
+- 汇总源码哈希及验证记录在 `target/filter-evidence.json`。通配掩码、递归搜索、更多高级过滤、六平台完整实机及原版界面验收仍保留为未完成。

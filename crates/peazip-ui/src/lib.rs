@@ -122,6 +122,19 @@ pub fn App() -> impl IntoElement {
     let activity = signal("Opening archive…".to_owned());
     let selected = signal(BTreeSet::<String>::new());
     let controls = explorer::Controls::new(entries, navigation);
+    let filter_location = stored(None::<(u64, String)>);
+    effect(move || {
+        let location = (
+            archive_version.get(),
+            navigation.with(|state| state.current().to_owned()),
+        );
+        if filter_location
+            .replace(Some(location.clone()))
+            .is_some_and(|previous| previous != location)
+        {
+            controls.filter.set(String::new());
+        }
+    });
     let owner = Owner::current();
     let creating = signal(None::<bool>);
     let extracting = signal(false);
@@ -290,11 +303,7 @@ pub fn App() -> impl IntoElement {
         }
         #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         if files.active.get() {
-            return files.current.with(|current| {
-                current
-                    .as_ref()
-                    .is_some_and(|view| !view.0.entries().is_empty())
-            });
+            return !files.visible_ids().is_empty();
         }
         !controls.visible.with(Vec::is_empty)
     };
@@ -370,21 +379,22 @@ pub fn App() -> impl IntoElement {
             Command::new(CommandId::SelectAll, "Select all", can_select, move || {
                 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
                 if files.active.get_untracked() {
-                    files.selected.set(files.current.with(|current| {
-                        current
-                            .as_ref()
-                            .map(|view| view.0.entries().iter().map(|entry| entry.id).collect())
-                            .unwrap_or_default()
-                    }));
+                    let visible = files.visible_ids();
+                    files.selected.update(|selected| selected.extend(visible));
                     return;
                 }
-                selected.set(entries.with(|items| {
+                let paths = entries.with(|items| {
                     controls.visible.with(|rows| {
                         rows.iter()
                             .flat_map(|row| navigation::selection_paths(row, items))
-                            .collect()
+                            .collect::<BTreeSet<_>>()
                     })
-                }));
+                });
+                if controls.filter.with(String::is_empty) {
+                    selected.set(paths);
+                } else {
+                    selected.update(|selected| selected.extend(paths));
+                }
             }),
             "mod+a",
         ),
@@ -396,17 +406,14 @@ pub fn App() -> impl IntoElement {
                 move || {
                     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
                     if files.active.get_untracked() {
-                        if let Some(view) = files.current.get_untracked() {
-                            files.selected.update(|selected| {
-                                *selected = view
-                                    .0
-                                    .entries()
-                                    .iter()
-                                    .map(|entry| entry.id)
-                                    .filter(|id| !selected.contains(id))
-                                    .collect();
-                            });
-                        }
+                        let visible = files.visible_ids();
+                        files.selected.update(|selected| {
+                            for id in visible {
+                                if !selected.remove(&id) {
+                                    selected.insert(id);
+                                }
+                            }
+                        });
                         return;
                     }
                     entries.with(|items| {
@@ -860,10 +867,18 @@ pub fn App() -> impl IntoElement {
                             .visible
                             .with(|rows| navigation::displayed_paths(items, rows))
                     }),
-                    displayed_location: if controls.flat.get_untracked() {
-                        "All entries view".into()
-                    } else {
-                        navigation.with(|state| format!("Current view: /{}", state.current()))
+                    displayed_location: {
+                        let location = if controls.flat.get_untracked() {
+                            "All entries view".into()
+                        } else {
+                            navigation.with(|state| format!("Current view: /{}", state.current()))
+                        };
+                        let query = controls.filter.get_untracked();
+                        if query.is_empty() {
+                            location
+                        } else {
+                            format!("{location} · Names contain: {query}")
+                        }
                     },
                 }));
                 extracting.set(true);
